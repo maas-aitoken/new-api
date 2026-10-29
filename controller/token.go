@@ -36,12 +36,14 @@ type tokenRequest struct {
 	model.Token
 	AutoGroups tokenAutoGroupsInput `json:"auto_groups"`
 	// 指针区分“未传”和显式 false：新建时未传即开启，更新时未传则保留原值。
-	AllowUserQuotaQuery *bool `json:"allow_user_quota_query"`
+	AllowUserQuotaQuery   *bool                         `json:"allow_user_quota_query"`
+	RoutingPreferenceMode *common.RoutingPreferenceMode `json:"routing_preference_mode"`
 }
 
 type tokenResponse struct {
 	*model.Token
-	AutoGroups []string `json:"auto_groups"`
+	AutoGroups            []string                     `json:"auto_groups"`
+	RoutingPreferenceMode common.RoutingPreferenceMode `json:"routing_preference_mode"`
 }
 
 func maxTokenQuota() int {
@@ -68,7 +70,11 @@ func buildMaskedTokenResponse(token *model.Token) *tokenResponse {
 	if len(autoGroups) == 0 {
 		autoGroups = nil
 	}
-	return &tokenResponse{Token: &maskedToken, AutoGroups: autoGroups}
+	return &tokenResponse{
+		Token:                 &maskedToken,
+		AutoGroups:            autoGroups,
+		RoutingPreferenceMode: token.GetRoutingPreferenceMode(),
+	}
 }
 
 func buildMaskedTokenResponses(tokens []*model.Token) []*tokenResponse {
@@ -347,6 +353,7 @@ func AddToken(c *gin.Context) {
 		common.SysLog(common.LogText("failed to generate token key: %s", err.Error()))
 		return
 	}
+
 	cleanToken := model.Token{
 		UserId:             c.GetInt("id"),
 		Name:               token.Name,
@@ -362,8 +369,18 @@ func AddToken(c *gin.Context) {
 		Group:              token.Group,
 		CrossGroupRetry:    token.CrossGroupRetry,
 		AutoGroups:         token.AutoGroups,
+		Scene:              common.NormalizeTokenScene(string(token.Scene)),
+		Description:        token.Description,
 	}
 	cleanToken.AllowUserQuotaQuery = request.AllowUserQuotaQuery == nil || *request.AllowUserQuotaQuery
+
+	if request.RoutingPreferenceMode != nil {
+		if err := cleanToken.SetRoutingPreferenceMode(*request.RoutingPreferenceMode); err != nil {
+			common.ApiError(c, err)
+			return
+		}
+	}
+
 	err = cleanToken.Insert()
 	if err != nil {
 		common.ApiError(c, err)
@@ -462,6 +479,16 @@ func UpdateToken(c *gin.Context) {
 		}
 		cleanToken.Group = token.Group
 		cleanToken.CrossGroupRetry = token.CrossGroupRetry
+		cleanToken.Scene = common.NormalizeTokenScene(string(token.Scene))
+		cleanToken.Description = token.Description
+
+		if request.RoutingPreferenceMode != nil {
+			if err := cleanToken.SetRoutingPreferenceMode(*request.RoutingPreferenceMode); err != nil {
+				common.ApiError(c, err)
+				return
+			}
+		}
+
 		if token.Group != "auto" {
 			cleanToken.CrossGroupRetry = false
 			_ = cleanToken.SetAutoGroups(nil)
@@ -497,6 +524,9 @@ func UpdateToken(c *gin.Context) {
 			{"group", previous.Group != cleanToken.Group},
 			{"cross_group_retry", previous.CrossGroupRetry != cleanToken.CrossGroupRetry},
 			{"auto_groups", previous.AutoGroups != cleanToken.AutoGroups},
+			{"scene", previous.Scene != cleanToken.Scene},
+			{"description", previous.Description != cleanToken.Description},
+			{"routing_preference", previous.RoutingPreference != cleanToken.RoutingPreference},
 		} {
 			if field.changed {
 				changedFields = append(changedFields, field.name)

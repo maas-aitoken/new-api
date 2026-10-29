@@ -13,27 +13,32 @@ import (
 )
 
 type Token struct {
-	Id                 int            `json:"id"`
-	UserId             int            `json:"user_id" gorm:"index"`
-	Key                string         `json:"key" gorm:"type:varchar(128);uniqueIndex"`
-	Status             int            `json:"status" gorm:"default:1"`
-	Name               string         `json:"name" gorm:"index" `
-	CreatedTime        int64          `json:"created_time" gorm:"bigint"`
-	AccessedTime       int64          `json:"accessed_time" gorm:"bigint"`
-	ExpiredTime        int64          `json:"expired_time" gorm:"bigint;default:-1"` // -1 means never expired
-	RemainQuota        int            `json:"remain_quota" gorm:"default:0"`
-	UnlimitedQuota     bool           `json:"unlimited_quota"`
-	ModelLimitsEnabled bool           `json:"model_limits_enabled"`
-	ModelLimits        string         `json:"model_limits" gorm:"type:text"`
-	AllowIps           *string        `json:"allow_ips" gorm:"default:''"`
-	UsedQuota          int            `json:"used_quota" gorm:"default:0"` // used quota
-	Group              string         `json:"group" gorm:"default:''"`
-	CrossGroupRetry    bool           `json:"cross_group_retry"` // 跨分组重试，仅auto分组有效
-	AutoGroups         string         `json:"-" gorm:"type:text"`
-	RoutingPreference  string         `json:"-" gorm:"type:text"` // Scheduler 路由倾向(JSON)，仅通过专用接口读写
-	DeletedAt          gorm.DeletedAt `gorm:"index"`
+	Id                 int     `json:"id"`
+	UserId             int     `json:"user_id" gorm:"index"`
+	Key                string  `json:"key" gorm:"type:varchar(128);uniqueIndex"`
+	Status             int     `json:"status" gorm:"default:1"`
+	Name               string  `json:"name" gorm:"index" `
+	CreatedTime        int64   `json:"created_time" gorm:"bigint"`
+	AccessedTime       int64   `json:"accessed_time" gorm:"bigint"`
+	ExpiredTime        int64   `json:"expired_time" gorm:"bigint;default:-1"` // -1 means never expired
+	RemainQuota        int     `json:"remain_quota" gorm:"default:0"`
+	UnlimitedQuota     bool    `json:"unlimited_quota"`
+	ModelLimitsEnabled bool    `json:"model_limits_enabled"`
+	ModelLimits        string  `json:"model_limits" gorm:"type:text"`
+	AllowIps           *string `json:"allow_ips" gorm:"default:''"`
+	UsedQuota          int     `json:"used_quota" gorm:"default:0"` // used quota
+	Group              string  `json:"group" gorm:"default:''"`
+	CrossGroupRetry    bool    `json:"cross_group_retry"` // 跨分组重试，仅auto分组有效
+	AutoGroups         string  `json:"-" gorm:"type:text"`
+	// Scheduler 路由倾向(JSON)。整体读写用 Get/SetRoutingPreference，
+	// 只取排序模式用 Get/SetRoutingPreferenceMode。
+	RoutingPreference string         `json:"-" gorm:"type:text"`
+	DeletedAt         gorm.DeletedAt `gorm:"index"`
 	// 允许用此令牌查询所属用户的额度；新建令牌默认开启，已有令牌升级后保持关闭
 	AllowUserQuotaQuery bool `json:"allow_user_quota_query"`
+	// MaaS 改造字段
+	Scene       common.TokenScene `json:"scene" gorm:"type:varchar(16);default:'office'"`
+	Description string            `json:"description" gorm:"type:varchar(255);default:''"`
 }
 
 func (token *Token) GetAutoGroups() ([]string, error) {
@@ -83,6 +88,30 @@ func (token *Token) SetRoutingPreference(preference *dto.RoutingPreference) erro
 	}
 	token.RoutingPreference = string(data)
 	return nil
+}
+
+// GetRoutingPreferenceMode 读取 routing_preference 中的排序模式，扁平枚举形式。
+// 与 GetRoutingPreference 的区别：那个返回整个对象（未配置时为 nil），这个只取
+// Mode 且恒有值 —— 未配置或解析失败都回落 balanced，与 service 层的
+// schedulerDefaultMode 一致，所以坏数据只退回平台默认策略，不会让请求失败。
+func (token *Token) GetRoutingPreferenceMode() common.RoutingPreferenceMode {
+	preference, err := token.GetRoutingPreference()
+	if err != nil || preference == nil {
+		return common.RoutingPreferenceModeBalanced
+	}
+	return common.NormalizeRoutingPreferenceMode(preference.Mode)
+}
+
+// SetRoutingPreferenceMode 把扁平枚举写进 routing_preference(JSON)。
+// 要清除整条偏好请用 SetRoutingPreference(nil)，本方法总是写入一个具体模式。
+//
+// balanced 也写显式 JSON 而非空串：Update() 用 Updates(struct) 会跳过零值，
+// 空串会导致「从 price 改回 balanced」静默写不进去。schedulerDefaultMode
+// 本身就是 balanced，显式写入与空值的调度行为完全一致。
+func (token *Token) SetRoutingPreferenceMode(mode common.RoutingPreferenceMode) error {
+	return token.SetRoutingPreference(&dto.RoutingPreference{
+		Mode: string(common.NormalizeRoutingPreferenceMode(string(mode))),
+	})
 }
 
 // UpdateRoutingPreference 只写 routing_preference 列（允许写空值以清除），
@@ -352,7 +381,7 @@ func (token *Token) Update() (err error) {
 	}
 	return DB.Model(token).Select("name", "status", "expired_time", "remain_quota", "unlimited_quota",
 		"model_limits_enabled", "model_limits", "allow_ips", "group", "cross_group_retry", "auto_groups",
-		"allow_user_quota_query").Updates(token).Error
+		"allow_user_quota_query", "scene", "description", "routing_preference").Updates(token).Error
 }
 
 func (token *Token) SelectUpdate() (err error) {

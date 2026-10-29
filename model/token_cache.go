@@ -66,7 +66,7 @@ if redis.call('EXISTS', KEYS[2]) == 1 then
   return 0
 end
 if redis.call('EXISTS', KEYS[1]) == 1 then
-  redis.call('EXPIRE', KEYS[1], ARGV[19])
+  redis.call('EXPIRE', KEYS[1], ARGV[20])
   return 2
 end
 redis.call('HSET', KEYS[1],
@@ -75,8 +75,9 @@ redis.call('HSET', KEYS[1],
   'UnlimitedQuota', ARGV[8], 'ModelLimitsEnabled', ARGV[9], 'ModelLimits', ARGV[10],
   'AllowIps', ARGV[11], 'Group', ARGV[12], 'CrossGroupRetry', ARGV[13],
   'AutoGroups', ARGV[14], 'RemainQuota', ARGV[15], 'UsedQuota', ARGV[16],
-  'AllowUserQuotaQuery', ARGV[17], 'RoutingPreference', ARGV[18])
-redis.call('EXPIRE', KEYS[1], ARGV[19])
+  'AllowUserQuotaQuery', ARGV[17], 'RoutingPreference', ARGV[18],
+  'Scene', ARGV[19])
+redis.call('EXPIRE', KEYS[1], ARGV[20])
 return 1`
 
 	return common.RDB.Eval(context.Background(), script, []string{
@@ -89,6 +90,8 @@ return 1`
 		token.AutoGroups, token.RemainQuota, token.UsedQuota,
 		strconv.FormatBool(token.AllowUserQuotaQuery),
 		token.RoutingPreference,
+		// go-redis 按具体类型分派参数，具名类型 TokenScene 会触发 can't marshal。
+		string(token.Scene),
 		tokenCacheTTLSeconds(),
 	).Int()
 }

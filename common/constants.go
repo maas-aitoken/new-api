@@ -2,6 +2,8 @@ package common
 
 import (
 	"crypto/tls"
+	"strings"
+
 	//"os"
 	//"strconv"
 	"sync"
@@ -290,3 +292,38 @@ const (
 	TopUpStatusFailed  = "failed"
 	TopUpStatusExpired = "expired"
 )
+
+type TokenScene string
+
+const (
+	TokenSceneOffice   TokenScene = "office"   // 办公：消耗个人配额
+	TokenSceneBusiness TokenScene = "business" // 业务：不扣费，但是记录费用
+)
+
+func NormalizeTokenScene(scene string) TokenScene {
+	if strings.TrimSpace(scene) == string(TokenSceneBusiness) {
+		return TokenSceneBusiness
+	}
+	return TokenSceneOffice
+}
+
+type RoutingPreferenceMode string
+
+const (
+	RoutingPreferenceModeBalanced   RoutingPreferenceMode = "balanced"   // 均衡（平台默认）
+	RoutingPreferenceModePrice      RoutingPreferenceMode = "price"      // 价格最低优先
+	RoutingPreferenceModeThroughput RoutingPreferenceMode = "throughput" // 吞吐量最高优先
+	RoutingPreferenceModeLatency    RoutingPreferenceMode = "latency"    // 延迟最低优先
+	RoutingPreferenceModeQuality    RoutingPreferenceMode = "quality"    // 质量（工具调用）优先
+)
+
+// 非法值一律 balanced
+func NormalizeRoutingPreferenceMode(mode string) RoutingPreferenceMode {
+	switch RoutingPreferenceMode(strings.TrimSpace(mode)) {
+	case RoutingPreferenceModePrice, RoutingPreferenceModeThroughput,
+		RoutingPreferenceModeLatency, RoutingPreferenceModeQuality:
+		return RoutingPreferenceMode(strings.TrimSpace(mode))
+	default:
+		return RoutingPreferenceModeBalanced
+	}
+}

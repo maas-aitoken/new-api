@@ -500,34 +500,34 @@ func buildSelfUserData(user *model.User) map[string]any {
 	permissions := calculateUserPermissions(user.Role)
 	permissions["admin_permissions"] = authz.Capabilities(user.Id, user.Role)
 	return map[string]any{
-		"id":                user.Id,
-		"username":          user.Username,
-		"display_name":      user.DisplayName,
-		"avatar":            user.Avatar,
-		"has_password":      user.HasPassword,
-		"role":              user.Role,
-		"status":            user.Status,
-		"email":             user.Email,
-		"github_id":         user.GitHubId,
-		"discord_id":        user.DiscordId,
-		"oidc_id":           user.OidcId,
-		"wechat_id":         user.WeChatId,
-		"telegram_id":       user.TelegramId,
-		"group":             user.Group,
-		"quota":             user.Quota,
-		"used_quota":        user.UsedQuota,
-		"request_count":     user.RequestCount,
-		"aff_code":          user.AffCode,
-		"aff_count":         user.AffCount,
-		"aff_quota":         user.AffQuota,
-		"aff_history_quota": user.AffHistoryQuota,
-		"inviter_id":        user.InviterId,
-		"linux_do_id":       user.LinuxDOId,
-		"hoidc_id":          user.HoidcId,
-		"setting":           user.Setting,
-		"stripe_customer":   user.StripeCustomer,
-		"sidebar_modules":   userSetting.SidebarModules, // 正确提取sidebar_modules字段
-		"permissions":       permissions,
+		"id":                    user.Id,
+		"username":              user.Username,
+		"display_name":          user.DisplayName,
+		"avatar":                user.Avatar,
+		"has_password":          user.HasPassword,
+		"role":                  user.Role,
+		"status":                user.Status,
+		"email":                 user.Email,
+		"github_id":             user.GitHubId,
+		"discord_id":            user.DiscordId,
+		"oidc_id":               user.OidcId,
+		"wechat_id":             user.WeChatId,
+		"telegram_id":           user.TelegramId,
+		"group":                 user.Group,
+		"quota":                 user.Quota,
+		"used_quota":            user.UsedQuota,
+		"request_count":         user.RequestCount,
+		"aff_code":              user.AffCode,
+		"aff_count":             user.AffCount,
+		"aff_quota":             user.AffQuota,
+		"aff_history_quota":     user.AffHistoryQuota,
+		"inviter_id":            user.InviterId,
+		"linux_do_id":           user.LinuxDOId,
+		"hoidc_id":              user.HoidcId,
+		"setting":               user.Setting,
+		"stripe_customer":       user.StripeCustomer,
+		"sidebar_modules":       userSetting.SidebarModules, // 正确提取sidebar_modules字段
+		"permissions":           permissions,
 		"secondaryOrganization": user.SecondaryOrganization,
 		"tertiaryOrganization":  user.TertiaryOrganization,
 		"team":                  user.Team,
@@ -745,6 +745,73 @@ func GetUserModelProviders(c *gin.Context) {
 		})
 	}
 	common.ApiSuccess(c, providers)
+}
+
+// GetUserModelsMeta 返回当前用户可用模型及其厂商元数据
+func GetUserModelsMeta(c *gin.Context) {
+	id, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		id = c.GetInt("id")
+	}
+	user, err := model.GetUserCache(id)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+
+	groups := service.GetUserUsableGroups(user.Group)
+	groupsToQuery := make([]string, 0, len(groups))
+	for g := range groups {
+		groupsToQuery = append(groupsToQuery, g)
+	}
+	allowed := make(map[string]struct{})
+	for _, name := range service.GetGroupsEnabledModels(groupsToQuery) {
+		allowed[name] = struct{}{}
+	}
+
+	vendorById := make(map[int]model.PricingVendor)
+	for _, v := range model.GetVendors() {
+		vendorById[v.ID] = v
+	}
+
+	type modelMeta struct {
+		ModelName   string `json:"model_name"`
+		VendorName  string `json:"vendor_name,omitempty"`
+		VendorIcon  string `json:"vendor_icon,omitempty"`
+		Icon        string `json:"icon,omitempty"`
+		Tags        string `json:"tags,omitempty"`
+		Description string `json:"description,omitempty"`
+	}
+
+	items := make([]modelMeta, 0, len(allowed))
+	seen := make(map[string]struct{}, len(allowed))
+	for _, p := range model.GetPricing() {
+		if _, ok := allowed[p.ModelName]; !ok {
+			continue
+		}
+		if _, dup := seen[p.ModelName]; dup {
+			continue
+		}
+		seen[p.ModelName] = struct{}{}
+		meta := modelMeta{
+			ModelName:   p.ModelName,
+			Icon:        p.Icon,
+			Tags:        p.Tags,
+			Description: p.Description,
+		}
+		if v, ok := vendorById[p.VendorID]; ok {
+			meta.VendorName, meta.VendorIcon = v.Name, v.Icon
+		}
+		items = append(items, meta)
+	}
+	// pricing 缓存里没有的可用模型也要回
+	for name := range allowed {
+		if _, ok := seen[name]; !ok {
+			items = append(items, modelMeta{ModelName: name})
+		}
+	}
+
+	common.ApiSuccess(c, items)
 }
 
 func UpdateUser(c *gin.Context) {

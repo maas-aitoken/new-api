@@ -41,6 +41,42 @@ func TestTokenAllowUserQuotaQueryRoundTripsThroughRedisHashCache(t *testing.T) {
 	assert.Positive(t, server.TTL(getTokenCacheKey(token.Key)))
 }
 
+func TestTokenSceneRoundTripsThroughRedisHashCache(t *testing.T) {
+	server := useUserCacheMiniRedis(t)
+	token := Token{Id: 44, UserId: 7, Key: "token-scene-cache-key", Name: "scene-cache", Scene: common.TokenSceneBusiness}
+
+	initialized, err := cacheInitToken(token)
+	require.NoError(t, err)
+	require.Equal(t, 1, initialized)
+	cached, err := cacheGetTokenByKey(token.Key)
+	require.NoError(t, err)
+	assert.Equal(t, common.TokenSceneBusiness, cached.Scene)
+	assert.Positive(t, server.TTL(getTokenCacheKey(token.Key)))
+}
+
+func TestTokenUpdatePersistsScene(t *testing.T) {
+	truncateTables(t)
+	useUserCacheMiniRedis(t)
+	token := Token{
+		UserId:         7,
+		Key:            "token-scene-update-key",
+		Name:           "scene-update",
+		Status:         common.TokenStatusEnabled,
+		ExpiredTime:    -1,
+		UnlimitedQuota: true,
+		Scene:          common.TokenSceneOffice,
+	}
+	require.NoError(t, token.Insert())
+
+	token.Scene = common.TokenSceneBusiness
+	require.NoError(t, token.Update())
+
+	// Update 的 Select 是手工维护的白名单，漏列字段会静默不落库。
+	reloaded, err := GetTokenByKey(token.Key, false)
+	require.NoError(t, err)
+	assert.Equal(t, common.TokenSceneBusiness, reloaded.Scene)
+}
+
 func TestTokenUpdateSynchronouslyNarrowsPreheatedAutoGroupsCache(t *testing.T) {
 	truncateTables(t)
 	useUserCacheMiniRedis(t)
