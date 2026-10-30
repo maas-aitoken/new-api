@@ -31,6 +31,13 @@ const continuation = {
   threshold: 0.5,
   continued: false,
 }
+const mode = {
+  shares: { capability: 0.1, balanced: 0.6, cost: 0.3 },
+  position: 1.2,
+  weight: 0.116,
+  tiers: { capability: 0, balanced: 0.07, cost: 0.3 },
+}
+const comparedLadder = [{ profile: 'code.build', outcome: 'compared', model: 'sonnet' }]
 
 function detailOf(trace: Partial<RouteTrace> & { judgment: string }) {
   return { trace: { request, ...trace } } as RouteLogDetail
@@ -76,6 +83,26 @@ test.each([
     'a request no model could serve',
     detailOf({ judgment: 'unroutable' }),
     ['request', 'judgment', 'result'],
+  ],
+  [
+    'an adaptive request that compared quality and price shows how its cost weight was judged, right before the selection',
+    detailOf({ judgment: 'live', trust, mode, continuation, ladder: comparedLadder, effort }),
+    ['request', 'judgment', 'trust', 'continuation', 'mode', 'selection', 'effort', 'result'],
+  ],
+  [
+    'an adaptive request that kept the previous model never used its cost weight',
+    detailOf({ judgment: 'cache', trust, mode, continuation, ladder: [{ outcome: 'inherited' }], effort }),
+    ['request', 'judgment', 'trust', 'continuation', 'selection', 'effort', 'result'],
+  ],
+  [
+    'an adaptive request that took the first servable model never used it either',
+    detailOf({ judgment: 'live', trust, mode, ladder, effort }),
+    ['request', 'judgment', 'trust', 'selection', 'effort', 'result'],
+  ],
+  [
+    'a fixed preference leaves no mode, so none is shown even when it compared',
+    detailOf({ judgment: 'live', trust, ladder: comparedLadder, effort }),
+    ['request', 'judgment', 'trust', 'selection', 'effort', 'result'],
   ],
 ])('%s lists exactly the steps it went through', (_name, detail, expected) => {
   expect(routeProcessSteps(detail as RouteLogDetail | null)).toEqual(expected)

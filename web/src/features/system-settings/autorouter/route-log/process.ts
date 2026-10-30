@@ -23,6 +23,7 @@ export type RouteProcessStepId =
   | 'judgment'
   | 'trust'
   | 'continuation'
+  | 'mode'
   | 'selection'
   | 'effort'
   | 'result'
@@ -51,6 +52,11 @@ export function routeProcessSteps(
     steps.push('trust')
   }
   if (trace.continuation) steps.push('continuation')
+  // The cost weight only matters to a request that compared quality and price. One
+  // that kept the previous model or took the first servable model never used it.
+  if (trace.mode && trace.ladder?.some((step) => step.outcome === 'compared')) {
+    steps.push('mode')
+  }
   if (trace.ladder?.length) steps.push('selection')
   if (trace.effort) steps.push('effort')
   steps.push('result')

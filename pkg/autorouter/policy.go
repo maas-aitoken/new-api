@@ -50,6 +50,9 @@ type Policy struct {
 	// score; zero means the best-scored model always wins.
 	Preference string
 	CostWeight float64
+	// Tiers are the platform's weights of the three fixed preferences. An adaptive
+	// request replaces CostWeight with a weight read from them by its mode answer.
+	Tiers TierWeights
 }
 
 // DefaultProfile is the ranking DefaultModels follow when no task-specific
@@ -135,6 +138,16 @@ func trustedProfiles(decision *Decision, policy Policy) ([]string, Trust) {
 func SelectRoute(decision *Decision, previous *Route, policy Policy, candidates Candidates, trace *Trace) (route Route, inherited, ok bool, pick *Pick) {
 	if trace == nil {
 		trace = &Trace{}
+	}
+	if policy.Preference == PreferenceAdaptive {
+		// mode 问题与任务类型是否可信无关：判断可信与否只决定走哪个榜单，成本倾向照样可用。
+		var probabilities map[string]float64
+		if decision != nil {
+			probabilities = decision.ModeProbabilities
+		}
+		mode := policy.Tiers.Blend(probabilities)
+		policy.CostWeight = mode.Weight
+		trace.Mode = &mode
 	}
 	available, overridable := candidates.Available, candidates.Overridable
 	profiles, trust := trustedProfiles(decision, policy)

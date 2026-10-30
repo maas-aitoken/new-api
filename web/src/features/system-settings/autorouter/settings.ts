@@ -19,7 +19,10 @@ For commercial licensing, please contact support@quantumnous.com
 import type { TFunction } from 'i18next'
 import * as z from 'zod'
 
-import { AUTO_PREFERENCES } from '@/features/keys/lib'
+import {
+  AUTO_PREFERENCES,
+  type SELECTABLE_AUTO_PREFERENCES,
+} from '@/features/keys/lib'
 
 import type { UpdateOptionRequest } from '../types'
 
@@ -52,8 +55,12 @@ export function fractionBetween(t: TFunction) {
   return z.number().min(0, message).max(1, message)
 }
 
+/** A preference that carries a cost weight of its own. */
 export type AutoPreference = (typeof AUTO_PREFERENCES)[number]
 export type CostWeights = Record<AutoPreference, number>
+/** What the platform default can be: a weighted preference, or deciding per request. */
+export type SelectableAutoPreference =
+  (typeof SELECTABLE_AUTO_PREFERENCES)[number]
 
 /** Reasoning efforts a route can carry, weakest first. */
 export const AUTO_ROUTER_EFFORTS: readonly string[] = [

@@ -654,6 +654,8 @@ func TestTokenAutoPreferenceOnCreateAndUpdate(t *testing.T) {
 	}{
 		{name: "create without the field leaves the platform default", target: "/api/token/"},
 		{name: "create with a preference", target: "/api/token/", field: "cost", want: "cost"},
+		{name: "create with the adaptive preference", target: "/api/token/", field: "adaptive", want: "adaptive"},
+		{name: "update to the adaptive preference", target: "/api/token/", stored: common.GetPointer("cost"), field: "adaptive", want: "adaptive"},
 		{name: "create with an empty preference", target: "/api/token/", field: ""},
 		{name: "create with an unknown preference is rejected", target: "/api/token/", field: "turbo", rejected: true},
 		{name: "update without the field keeps the stored preference", target: "/api/token/", stored: common.GetPointer("cost"), want: "cost"},

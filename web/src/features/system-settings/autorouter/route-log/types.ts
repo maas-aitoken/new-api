@@ -128,6 +128,19 @@ export type RouteTraceContinuation = {
   continued: boolean
 }
 
+/** How an adaptive request got its cost weight; absent for a key with a fixed preference. */
+export type RouteTraceMode = {
+  /** Empty when the weight was judged; 'no_answer' when it fell back to the balanced weight. */
+  reason?: string
+  /** Each preference's share of the judged probability. */
+  shares?: Record<string, number>
+  /** Expected position on the capability (0), balanced (1), cost (2) scale. */
+  position: number
+  weight: number
+  /** The platform's three weights when the request ran. */
+  tiers: { capability: number; balanced: number; cost: number }
+}
+
 export type RouteTraceEffort = {
   difficulty: number
   base: string
@@ -153,6 +166,7 @@ export type RouteTrace = {
   judgment: string
   unroutable?: { reasons: RouteTraceReason[] }
   trust?: RouteTraceTrust
+  mode?: RouteTraceMode
   continuation?: RouteTraceContinuation
   effort?: RouteTraceEffort
   ladder?: RouteTraceStep[]

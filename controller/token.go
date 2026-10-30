@@ -47,7 +47,7 @@ type tokenRequest struct {
 
 // validAutoPreference 判断请求里的 auto_preference 是否可以写入：未传或空串（平台默认）都可以。
 func (r tokenRequest) validAutoPreference() bool {
-	return r.AutoPreference == nil || *r.AutoPreference == "" || slices.Contains(autorouter.Preferences, *r.AutoPreference)
+	return r.AutoPreference == nil || *r.AutoPreference == "" || slices.Contains(autorouter.SelectablePreferences, *r.AutoPreference)
 }
 
 type tokenResponse struct {

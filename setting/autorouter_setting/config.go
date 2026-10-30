@@ -212,20 +212,32 @@ func (s *AutoRouterSetting) Ranking() Ranking {
 	}
 }
 
+// costWeight is the weight of a fixed preference on the score scale: the option's,
+// else the built-in one.
+func (s *AutoRouterSetting) costWeight(preference string) float64 {
+	weight, set := s.CostWeights[preference]
+	if !set {
+		weight = defaultCostWeights[preference]
+	}
+	return scoreWeight(weight)
+}
+
 // Policy builds the routing policy for one request. preference is the key's own;
 // one that is empty or unknown uses DefaultPreference, and that falling back to
-// balanced when it is unknown too.
+// balanced when it is unknown too. An adaptive preference starts from the balanced
+// weight and takes the weight its mode answer reads from the three tiers.
 func (s *AutoRouterSetting) Policy(preference string) autorouter.Policy {
 	ranking := s.Ranking()
 	for _, candidate := range []string{preference, s.DefaultPreference, autorouter.PreferenceBalanced} {
-		if slices.Contains(autorouter.Preferences, candidate) {
+		if slices.Contains(autorouter.SelectablePreferences, candidate) {
 			preference = candidate
 			break
 		}
 	}
-	weight, set := s.CostWeights[preference]
-	if !set {
-		weight = defaultCostWeights[preference]
+	tiers := autorouter.TierWeights{
+		Capability: s.costWeight(autorouter.PreferenceCapability),
+		Balanced:   s.costWeight(autorouter.PreferenceBalanced),
+		Cost:       s.costWeight(autorouter.PreferenceCost),
 	}
 	return autorouter.Policy{
 		TaskModels:             ranking.TaskModels,
@@ -237,7 +249,8 @@ func (s *AutoRouterSetting) Policy(preference string) autorouter.Policy {
 		ContinuationTaskChange: s.ContinuationTaskChange,
 		TaskScores:             ranking.TaskScores,
 		Preference:             preference,
-		CostWeight:             scoreWeight(weight),
+		CostWeight:             tiers.Of(preference),
+		Tiers:                  tiers,
 	}
 }
 

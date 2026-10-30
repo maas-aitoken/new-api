@@ -97,6 +97,9 @@ func TestPolicyResolvesPreferenceAndWeight(t *testing.T) {
 		{"a weight above one is capped", "cost", "", map[string]float64{"cost": 7}, "cost", 1},
 		{"NaN becomes zero", "cost", "", map[string]float64{"cost": math.NaN()}, "cost", 0},
 		{"infinity is capped", "cost", "", map[string]float64{"cost": math.Inf(1)}, "cost", 1},
+		{"an adaptive key starts from the balanced weight", "adaptive", "cost", nil, "adaptive", 0.07},
+		{"a key without one follows an adaptive platform default", "", "adaptive", nil, "adaptive", 0.07},
+		{"the balanced weight the admin set is where an adaptive request starts", "adaptive", "", map[string]float64{"balanced": 0.12}, "adaptive", 0.12},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -106,6 +109,19 @@ func TestPolicyResolvesPreferenceAndWeight(t *testing.T) {
 			assert.Equal(t, tt.wantWeight, policy.CostWeight)
 		})
 	}
+}
+
+// 自适应请求从三档权重里读本次的权重，三档都要按同样的规则限幅，
+// 选项里写了 adaptive 这个键也不能当成一档。
+func TestPolicyCarriesTheTierWeightsAnAdaptiveRequestReads(t *testing.T) {
+	setting := GetAutoRouterSetting()
+	saved := *setting
+	t.Cleanup(func() { *setting = saved })
+
+	setting.CostWeights = map[string]float64{"capability": -1, "cost": 7, "adaptive": 0.5}
+	policy := setting.Policy("adaptive")
+	assert.Equal(t, autorouter.TierWeights{Capability: 0, Balanced: 0.07, Cost: 1}, policy.Tiers, "缺的取内置权重，越界的限幅")
+	assert.Equal(t, 0.07, policy.CostWeight)
 }
 
 func TestRankingFallsBackWhenTaxonomyChanged(t *testing.T) {
@@ -234,8 +250,10 @@ func TestValidateOption(t *testing.T) {
 		{"autorouter_setting.difficulty_efforts", `["low","extreme"]`, false},
 		{"autorouter_setting.difficulty_efforts", `low`, false},
 		{"autorouter_setting.default_preference", "cost", true},
+		{"autorouter_setting.default_preference", "adaptive", true},
 		{"autorouter_setting.default_preference", "cheap", false},
 		{"autorouter_setting.cost_weights", `{"balanced":0.1}`, true},
+		{"autorouter_setting.cost_weights", `{"adaptive":0.1}`, false},
 		{"autorouter_setting.cost_weights", `{"balanced":2}`, false},
 		{"autorouter_setting.cost_weights", `{"cheap":0.1}`, false},
 		{"autorouter_setting.cost_weights", `[0.1]`, false},

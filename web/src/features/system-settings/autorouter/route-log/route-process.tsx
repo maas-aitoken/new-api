@@ -16,7 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { ContinuationStep, TrustStep } from './decision-steps'
+import { ContinuationStep, ModeStep, TrustStep } from './decision-steps'
 import { JudgmentStep, RequestStep } from './input-steps'
 import { routeProcessSteps, type RouteProcessStepId } from './process'
 import { EffortStep, ResultStep } from './result-steps'
@@ -36,6 +36,8 @@ function ProcessStep(props: { id: RouteProcessStepId; detail: RouteLogDetail }) 
       return trace?.continuation ? (
         <ContinuationStep continuation={trace.continuation} />
       ) : null
+    case 'mode':
+      return trace?.mode ? <ModeStep mode={trace.mode} /> : null
     case 'selection':
       return trace?.ladder ? (
         <SelectionStep ladder={trace.ladder} pick={result?.pick} />

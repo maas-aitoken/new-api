@@ -380,6 +380,31 @@ describe('API keys mutate drawer auto model preference', () => {
       'cost',
     ])
   })
+
+  test('offers deciding per request and sends it as the key preference', async () => {
+    const createdPayloads: Array<Record<string, unknown>> = []
+    installApiFixtures(createdPayloads)
+    await renderCreateDrawer()
+
+    const user = userEvent.setup()
+    await user.click(getControlByLabel('Capability vs. price'))
+    await user.click(
+      await screen.findByRole('option', { name: 'Decide per request' })
+    )
+    expect(getControlByLabel('Capability vs. price').textContent).toContain(
+      'Decide per request'
+    )
+    expect(
+      screen.getByText(
+        'Judges each request on whether it stresses result quality or cost, and weighs capability against price to match.'
+      )
+    ).toBeVisible()
+
+    changeInput(getControlByLabel('Name'), 'adaptive')
+    fireEvent.click(findButton('Save changes', true))
+    await waitFor(() => expect(createdPayloads).toHaveLength(1))
+    expect(createdPayloads[0]?.auto_preference).toBe('adaptive')
+  })
 })
 
 describe('API keys mutate drawer user quota query switch', () => {

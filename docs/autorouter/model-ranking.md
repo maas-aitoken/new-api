@@ -102,6 +102,7 @@ Artificial Analysis 免费接口只返回指数，不含单项 benchmark 分数�
 - **不用语言类榜单**：中文、英文等分榜按提问语言切分，测的不是任务能力，任何画像都不使用。
 - **数学、逻辑题不单列**：互联网公司场景占比低，由 `general` 一级画像中的 `lb.reasoning` 覆盖。
 - **difficulty、task_change、larger_model_benefit 三个问题不变。**
+- **新增 `mode` 问题（问题集版本 v6）**：判断用户更看重结果质量与可靠（`capability`）、没有明显倾向（`balanced`），还是要省钱省时间（`cost`），返回三项的概率。判据只看用户这条消息本身，任务的难易不是依据，难度已经由 `difficulty` 管。每次调 jev 都问，不论令牌用哪种偏好，这样判断缓存里的每一条都带这个答案，令牌中途换成自适应偏好也不会拿到缺答案的缓存。问题集变了，缓存的判断随版本号失效一次。
 
 ## 5. 候选模型与名称匹配
 
@@ -174,6 +175,23 @@ jev 返回各二级类的概率。设概率最高的二级类为 `leaf`，其一
 | `cost` 成本优先 | 为低价让出较多的分 | 0.3 |
 
 令牌没设偏好（或值不认识）时用平台的 `default_preference`，出厂是 `balanced`；它也不认识时用 `balanced`。这个偏好只决定 auto 选哪个模型，和 Scheduler 的路由倾向（决定选定的模型走哪个渠道）互不相干，两边不读对方的设置。
+
+**自适应偏好**：令牌和 `default_preference` 还可以选 `adaptive`（界面上叫“按请求判断”）。它没有固定的 w，每个请求用 jev 的 `mode` 判断，从上面三档的 w 里折算出这个请求的 w，再按下面的步骤比较。`cost_weights` 仍只有三个键，写 `adaptive` 会被拒绝。
+
+折算方法：三档记为位置 0（`capability`）、1（`balanced`）、2（`cost`），先把 `mode` 给三项的概率归一，对位置求期望，再沿 (0, w能力)、(1, w均衡)、(2, w成本) 连成的折线读出 w。
+
+| 能力 / 均衡 / 成本 | 期望位置 | w |
+| --- | --- | --- |
+| 0 / 1 / 0 | 1 | 0.0700 |
+| 0.1 / 0.6 / 0.3 | 1.2 | 0.1160 |
+| 0.3 / 0.6 / 0.1 | 0.8 | 0.0560 |
+| 1/3 / 1/3 / 1/3 | 1 | 0.0700 |
+| 0.5 / 0 / 0.5 | 1 | 0.0700 |
+| 0 / 0 / 1 | 2 | 0.3000 |
+
+不直接对三档的 w 求平均，是因为默认的 0 / 0.07 / 0.3 间距不均：直接平均时三项各占三分之一得 0.123，一半能力一半成本得 0.15，拿不准的判断会偏向成本。这样折算后，判断完全确定时就是该档的 w，对称的不确定落在均衡档，概率从能力移向成本时 w 不会变小。三档的 w 在间距均匀时两种算法的结果相同；代价是只看期望位置，“一半能力一半成本”和“全是均衡”得到同一个 w。折线假定三档的 w 按能力、均衡、成本递增，界面和接口目前不强制这一点。
+
+没有可用的 `mode` 答案（没有判断、答案缺失、概率含负数或 NaN、总和不为正）时用均衡档的 w，选路日志里 `mode.reason` 是 `no_answer`。`mode` 与任务类型是否可信无关：任务类型不可信、改走默认模型时，成本倾向照样用。沿用上一轮模型的请求不做比较，w 只记录不使用。w 每次请求用缓存里的概率和当前的 `cost_weights` 重新算，平台改了三档的 w，已缓存的判断立刻按新值读。
 
 **候选**：列表里同时满足下面三条的模型。
 
@@ -403,6 +421,7 @@ w 从 0.07 调到 0.075，下限降低，`mimo-v2.6-pro`（0.9288 分，0.54 美
 - 判断从哪来：现调了 jev、命中判断缓存、jev 刚失败过（60 秒内不重试）、jev 调用失败、会话继承、后台辅助请求、没有可分类的指令，或者根本没有模型能服务。
 - 判断可不可信，不可信的原因（jev 没答、答案没有难度、没有任何任务类型或大类的概率够高）。
 - 有上一轮路由时，是否延续，以及任务变化值对阈值。
+- 自适应偏好的请求：三个偏好各占的概率、期望位置、本次用的 w 和当时平台设的三档 w；没有可用判断时写明回退到均衡档。抽屉里只在这次真的做了质量/价格比较时才显示这一步，沿用上一轮模型或按榜单顺序取第一个的请求没用到 w。
 - 难度怎么变成档位：难度对应的档位、是否因大模型收益提了一档、是否被上一轮的档位抬高。
 - 各榜单依次试了什么，每一级的结果（质量/价格比较选出、按列表顺序取第一个、没有可用的、沿用上一轮），以及榜单里分数够高却没被选中的模型各自的原因：令牌的模型白名单不允许、分组里没启用、没有启用的渠道、没有配价格、渠道能力不满足请求、按次计费没法比价、被客户端自己的推理设置排除。每个榜单最多记 8 个，其余只计数。
 - 没有任何模型能服务时，按原因汇总所有榜单里的模型个数，并各列几个例子。
@@ -440,8 +459,8 @@ w 从 0.07 调到 0.075，下限降低，`mimo-v2.6-pro`（0.9288 分，0.54 美
 | `autorouter_setting.task_models` | 内置榜单 | 画像名 → 模型列表 |
 | `autorouter_setting.task_scores` | 内置榜单 | 画像名 → 模型 → 榜单分，第 7.3 节比较用；与 `task_models` 一起生成、一起刷新 |
 | `autorouter_setting.default_models` | 内置榜单 | 默认模型列表 |
-| `autorouter_setting.default_preference` | `balanced` | 令牌没设 auto 偏好时用的偏好：`capability`、`balanced`、`cost`；不认识的值按 `balanced` |
-| `autorouter_setting.cost_weights` | `{"capability":0,"balanced":0.07,"cost":0.3}` | 第 7.3 节各偏好的 w：为了价格最多让出的榜单分；JSON 里没写的偏好用内置值，负数和 NaN 按 0，大于 1 按 1 |
+| `autorouter_setting.default_preference` | `balanced` | 令牌没设 auto 偏好时用的偏好：`capability`、`balanced`、`cost`、`adaptive`；不认识的值按 `balanced` |
+| `autorouter_setting.cost_weights` | `{"capability":0,"balanced":0.07,"cost":0.3}` | 第 7.3 节三个固定偏好的 w：为了价格最多让出的榜单分；JSON 里没写的偏好用内置值，负数和 NaN 按 0，大于 1 按 1；只接受这三个键，`adaptive` 没有自己的 w，写进来会被拒绝，自适应请求从这三个 w 里折算 |
 | `autorouter_setting.rank_sources` | 内置榜单 | 各来源快照日期、生成时间、`taxonomy_version` |
 | `autorouter_setting.jev_endpoint`、`jev_model`、`jev_api_key` | 空 | jev 的地址、模型和密钥；为空时分别回退到环境变量 `JEV_ENDPOINT`、`JEV_MODEL`、`JEV_API_KEY`。写入前服务端校验：地址必须是 http/https，密钥和模型不能含空白或换行 |
 | `autorouter_setting.artificial_analysis_api_key`、`design_arena_api_key`、`openrouter_api_key` | 空 | 三个榜单来源的 key；为空时回退到下面同名的环境变量 |
@@ -466,6 +485,10 @@ w 从 0.07 调到 0.075，下限降低，`mimo-v2.6-pro`（0.9288 分，0.54 美
 | `setting/autorouter_setting/` | 新的内置 `task_models.json`；`taxonomy_version` 校验；`task_scores` 从内置 `evidence` 播种，随 `task_models` 一起按版本退回内置；`default_preference`、`cost_weights`，`Policy(preference)` 按令牌的偏好取 w |
 | `model/token.go`、`model/token_cache.go`、`controller/token.go`、`middleware/auth.go` | 令牌新增 `auto_preference` 列（可空，空为平台默认），随令牌创建/更新接口读写，更新时不传则保留原值，不认识的值返回错误；Redis 令牌缓存脚本多存一个字段；鉴权后放进请求上下文 |
 | `web/src/features/keys/` | 令牌表单新增“Auto 模型偏好”下拉，独立于“路由倾向”；审计日志的变更字段多一个标签 |
+| `pkg/autorouter/jev.go`、`select.go`、`trace.go`、`policy.go` | 自适应偏好：jev 多问一个 `mode`，`QuestionsVersion` 升到 v6；`Decision.ModeProbabilities`；`PreferenceAdaptive` 和只含三个固定偏好的 `Preferences` 之外的 `SelectablePreferences`；`TierWeights.Blend` 按第 7.3 节折算 w；`SelectRoute` 在自适应偏好下用折算的 w 覆盖 `Policy.CostWeight`，并把过程记进 `trace.mode` |
+| `setting/autorouter_setting/`、`controller/token.go` | `Policy()` 同时带出三档的 w（`Policy.Tiers`），`default_preference` 和令牌的 `auto_preference` 接受 `adaptive`，`cost_weights` 仍只接受三个固定偏好 |
+| `web/src/features/system-settings/autorouter/`、`web/src/features/keys/` | 令牌表单和平台默认偏好多一项“按请求判断”（`SELECTABLE_AUTO_PREFERENCES`），成本权重编辑器仍是固定三档；选路过程抽屉多一步“成本倾向” |
+| `pkg/autorouter/jevexp/` | 汇总里多一行 `mode`：各偏好被选为最可能的次数、有多少条没有可用答案、期望位置的平均值，用来在切换令牌之前看真实流量里 `mode` 的分布 |
 | `controller/system_task_handlers.go` | 刷新任务的启用条件改为检查 `ARTIFICIAL_ANALYSIS_API_KEY`，以及 `DESIGN_ARENA_API_KEY` 或 `OPENROUTER_API_KEY`；刷新时同时写 `task_scores` |
 | `middleware/distributor.go`、`relay/helper/price.go` | 候选按“模型 + 渠道”判定可用；`RoutingPricer` 按用户侧价格给候选报价，只读价格配置，不写 `PriceData`、不碰额度 |
 | `service/autorouter.go`、`service/log_info_generate.go` | 调用 jev 前先检查有没有可用模型；比较过程写进 `admin_info.auto_router` |
@@ -486,5 +509,8 @@ w 从 0.07 调到 0.075，下限降低，`mimo-v2.6-pro`（0.9288 分，0.54 美
 - **w 调大，选中的不一定更便宜**：见第 7.4 节例 10。候选带随 w 变宽，进带的更便宜的模型会拉低价格下限，改变带内所有模型的折扣，所以 w 的取值和选中的模型之间不是单调的。
 - **折后分接近时选择不稳**：例 1 的均衡档里 `gpt-6.1-sol` 只比 `claude-opus-5-5` 高 0.0011，价格或榜单分的一点变动就会换人。这是 w 取值的自然结果，不是错误；`band` 里能看到这种近乎并列的情形。
 - **偏好只管选哪个模型**：思考强度仍由难度决定，不随偏好变；Scheduler 的路由倾向也与它无关。对话中途换偏好，要到下一个新任务才生效（同任务延续沿用上一次的模型）。
+- **`mode` 的线索很少**：送去判断的只有用户最近两句话，“省钱”“这是线上事故要稳”这类线索只能出自这两句话的措辞，多数请求没有，`mode` 会集中在 `balanced`，自适应偏好对普通流量的影响因此很小，值不值得开主要看三项判据怎么写。先看真实分布再把令牌切过去：选路日志默认模式 `decisions` 记下每次现调 jev 的请求，里面的 `decision.mode_probabilities` 就是 `mode` 的原始答案；有 Langfuse 导出时也可以用 `jevexp` 离线汇总。
+- **`mode` 的返回格式只在测试桩上验证过**：`mode` 是 choice 题，和 `task_type` 一样应该返回各选项的概率，但真实 jev 对这道新题是否如此还没有验证。只返回 `choice` 而没有概率时，三项都按 0 读，等于没有可用答案，自适应偏好退回均衡档，不会出错。
+- **自适应偏好每次都多问一题**：每次调 jev 多一个问题，延迟增加多少未测，上线后看选路日志的 `jev_latency_ms`。升到 v6 时已缓存的判断失效一次，之后每个仍活跃的（令牌，指令）多调一次 jev。
 - **单指标画像的分数偏薄**：`general.browser`、`general.research` 只有一个指标；`general.design`、`general.search`、`general.writing` 在 2026-10-28 的快照里因 `da.slides`、`lma.search`、`lma.document` 停更，实际只剩一到两个有效指标。用很小的分差换很大的价差，依据比多指标画像弱。
 - **比价用的是用户侧价格**：榜单文件里的 `price_per_mtok` 是 OpenRouter 的价格，只用来给 `default_models` 排序和本文示例。运行时按第 7.3 节用用户侧价格比较，两者可能差很多。
