@@ -394,6 +394,10 @@ func runSsoUserSync(_ context.Context) (*ssoSyncResult, error) {
 	}
 
 	result := &ssoSyncResult{Fetched: len(users)}
+	for i, u := range users {
+		common.SysLog(fmt.Sprintf("SSO user[%d]: uid=%d email=%q name=%q dept=%q",
+			i, u.Uid, u.Email, u.Name, u.DepartmentTreePathStr))
+	}
 	for _, u := range users {
 		email := strings.TrimSpace(u.Email)
 		if email == "" {
