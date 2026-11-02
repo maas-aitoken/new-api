@@ -43,9 +43,6 @@ export const channelSchema = z.object({
   status: z.number(), // 1: enabled, 0: manual disabled, 2: auto disabled
   name: z.string(),
   weight: z.number().nullish(),
-  rpm: z.number().nullish(),
-  tpm: z.number().nullish(),
-  max_concurrency: z.number().nullish(),
   created_time: z.number(),
   test_time: z.number(),
   response_time: z.number(), // in milliseconds
@@ -97,6 +94,11 @@ export interface ChannelSettings {
   http_protocol?: 'auto' | 'http1' | string
   http2_connection_shards?: number
   cost_multiplier?: Record<string, number>
+  /** <渠道, 上游模型> 的 RPM / TPM / 并发额度，在能力设置页编辑。 */
+  model_limits?: Record<
+    string,
+    { rpm?: number; tpm?: number; max_concurrency?: number }
+  >
   tls_insecure_skip_verify?: boolean
 }
 
@@ -396,9 +398,6 @@ export interface ChannelFormData {
   model_mapping?: string
   priority?: number
   weight?: number
-  rpm?: number
-  tpm?: number
-  max_concurrency?: number
   test_model?: string
   auto_ban?: number
   status: number

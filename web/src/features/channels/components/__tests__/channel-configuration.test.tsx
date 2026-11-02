@@ -1640,6 +1640,31 @@ test('a saved upstream TLS verification skip marks Other Settings and turning it
   )
 })
 
+test('saving a channel from the drawer keeps the per-model capacity limits it does not display', async () => {
+  // 额度在能力设置页编辑，抽屉不显示它；保存渠道不能把它冲掉。
+  editingChannel = {
+    ...editingChannel,
+    setting:
+      '{"model_limits":{"gpt-5":{"rpm":60,"tpm":90000,"max_concurrency":4}}}',
+  }
+  const put = vi
+    .spyOn(api, 'put')
+    .mockResolvedValue({ data: { success: true } })
+  const user = userEvent.setup()
+  render(<ConfigurationHarness currentRow={editingChannel} />)
+  await screen.findByDisplayValue('Existing channel')
+  await user.click(screen.getByRole('button', { name: 'Update Channel' }))
+  await waitFor(() => expect(put).toHaveBeenCalled())
+  const payload = put.mock.calls[0]?.[1] as Record<string, unknown>
+  expect(JSON.parse(payload.setting as string)).toMatchObject({
+    model_limits: { 'gpt-5': { rpm: 60, tpm: 90000, max_concurrency: 4 } },
+  })
+  // 渠道级额度已停用，不再随渠道一起提交。
+  expect(payload).not.toHaveProperty('rpm')
+  expect(payload).not.toHaveProperty('tpm')
+  expect(payload).not.toHaveProperty('max_concurrency')
+})
+
 test('turning on the upstream TLS verification skip saves it in the channel setting', async () => {
   const put = vi
     .spyOn(api, 'put')

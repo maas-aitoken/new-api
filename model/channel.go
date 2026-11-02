@@ -43,16 +43,16 @@ type Channel struct {
 	//MaxInputTokens     *int    `json:"max_input_tokens" gorm:"default:0"`
 	StatusCodeMapping *string `json:"status_code_mapping" gorm:"type:varchar(1024);default:''"`
 	Priority          *int64  `json:"priority" gorm:"bigint;default:0"`
-	RPM               int     `json:"rpm" gorm:"default:0"`
-	TPM               int     `json:"tpm" gorm:"default:0"`
-	MaxConcurrency    int     `json:"max_concurrency" gorm:"default:0"`
-	AutoBan           *int    `json:"auto_ban" gorm:"default:1"`
-	OtherInfo         string  `json:"other_info"`
-	Tag               *string `json:"tag" gorm:"index"`
-	Setting           *string `json:"setting" gorm:"type:text"` // 渠道额外设置
-	ParamOverride     *string `json:"param_override" gorm:"type:text"`
-	HeaderOverride    *string `json:"header_override" gorm:"type:text"`
-	Remark            *string `json:"remark" gorm:"type:varchar(255)" validate:"max=255"`
+	// 渠道级 rpm / tpm / max_concurrency 已停用，额度改为 <渠道, 上游模型> 级，
+	// 存在 setting.model_limits 里（见 SetChannelModelLimit）。数据库里这三列
+	// 保留不删（GORM 不会删列），旧值不再读写；回滚到旧版本时还能读回来。
+	AutoBan        *int    `json:"auto_ban" gorm:"default:1"`
+	OtherInfo      string  `json:"other_info"`
+	Tag            *string `json:"tag" gorm:"index"`
+	Setting        *string `json:"setting" gorm:"type:text"` // 渠道额外设置
+	ParamOverride  *string `json:"param_override" gorm:"type:text"`
+	HeaderOverride *string `json:"header_override" gorm:"type:text"`
+	Remark         *string `json:"remark" gorm:"type:varchar(255)" validate:"max=255"`
 	// add after v0.8.5
 	ChannelInfo ChannelInfo `json:"channel_info" gorm:"type:json"`
 

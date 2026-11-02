@@ -308,6 +308,7 @@ const SENSITIVE_FORM_FIELDS = [
   'system_prompt',
   'system_prompt_override',
   'cost_multiplier',
+  'model_limits',
   'allow_service_tier',
   'disable_store',
   'allow_safety_identifier',
@@ -2248,75 +2249,6 @@ export function ChannelMutateDrawer({
           )}
         />
       </div>
-
-      <FormField
-        control={form.control}
-        name='rpm'
-        render={({ field }) => (
-          <FormItem>
-            <FormLabel>{t('RPM Limit')}</FormLabel>
-            <FormControl>
-              <Input
-                type='number'
-                min={0}
-                placeholder='0'
-                {...field}
-                onChange={(e) => field.onChange(Number(e.target.value))}
-              />
-            </FormControl>
-            <FormDescription>
-              {t('Requests per minute; 0 means unlimited')}
-            </FormDescription>
-            <FormMessage />
-          </FormItem>
-        )}
-      />
-
-      <FormField
-        control={form.control}
-        name='tpm'
-        render={({ field }) => (
-          <FormItem>
-            <FormLabel>{t('TPM Limit')}</FormLabel>
-            <FormControl>
-              <Input
-                type='number'
-                min={0}
-                placeholder='0'
-                {...field}
-                onChange={(e) => field.onChange(Number(e.target.value))}
-              />
-            </FormControl>
-            <FormDescription>
-              {t('Tokens per minute; 0 means unlimited')}
-            </FormDescription>
-            <FormMessage />
-          </FormItem>
-        )}
-      />
-
-      <FormField
-        control={form.control}
-        name='max_concurrency'
-        render={({ field }) => (
-          <FormItem>
-            <FormLabel>{t('Max Concurrency')}</FormLabel>
-            <FormControl>
-              <Input
-                type='number'
-                min={0}
-                placeholder='0'
-                {...field}
-                onChange={(e) => field.onChange(Number(e.target.value))}
-              />
-            </FormControl>
-            <FormDescription>
-              {t('Concurrent requests; 0 means unlimited')}
-            </FormDescription>
-            <FormMessage />
-          </FormItem>
-        )}
-      />
 
       <FormField
         control={form.control}
