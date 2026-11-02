@@ -1111,6 +1111,12 @@ func (channel *Channel) ValidateSettings() error {
 	if err := channel.validateCostMultiplierModels(channelParams.CostMultiplierMap); err != nil {
 		return err
 	}
+	// model_limits 只校验取值，不像 cost_multiplier 那样对照模型列表：
+	// 改了 model_mapping 之后旧上游名的额度会变成孤儿，若在这里拒绝，
+	// 管理员在能力页看不到旧上游名也就清不掉，渠道就再也存不了。孤儿额度不会命中任何请求。
+	if err := channelParams.ValidateModelLimits(); err != nil {
+		return err
+	}
 	channelOtherSettings := &dto.ChannelOtherSettings{}
 	if channel.OtherSettings != "" {
 		err := common.UnmarshalJsonStr(channel.OtherSettings, channelOtherSettings)

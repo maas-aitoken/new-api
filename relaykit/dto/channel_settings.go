@@ -44,6 +44,12 @@ type ChannelSettings struct {
 	// channel's recorded cost can reflect its real upstream cost factor.
 	CostMultiplierMap map[string]float64 `json:"cost_multiplier,omitempty"`
 
+	// ModelLimits 是 <渠道, 上游模型> 的容量额度，键是请求走完 model_mapping
+	// 整条链之后真正发给上游的模型名（与 CostMultiplierMap 只解析一层不同）。
+	// 额度按整个渠道合计，不按 key 拆分：多个 key 来自不同账号时由管理员自己
+	// 乘以 key 数再填。网关只统计用量、不据此拦截，执行准入的是调度器。
+	ModelLimits map[string]ModelLimit `json:"model_limits,omitempty"`
+
 	// TLSInsecureSkipVerify accepts upstream certificates that fail
 	// verification, such as self-signed ones, for this channel only.
 	TLSInsecureSkipVerify bool `json:"tls_insecure_skip_verify,omitempty"`
@@ -131,6 +137,58 @@ func (s *ChannelSettings) ValidateCostMultiplier() error {
 		}
 		if multiplier <= 0 {
 			return fmt.Errorf("cost_multiplier for model %s must be positive, got %g", model, multiplier)
+		}
+	}
+	return nil
+}
+
+// ModelLimit 是一个 <渠道, 上游模型> 的三项额度，0 表示这一项不限。
+type ModelLimit struct {
+	RPM            int `json:"rpm,omitempty"`
+	TPM            int `json:"tpm,omitempty"`
+	MaxConcurrency int `json:"max_concurrency,omitempty"`
+}
+
+// MaxModelLimitValue 是单项额度的上限，挡住误填的超大数，
+// 免得调度器那边的计数与比较溢出。
+const MaxModelLimitValue = 1_000_000_000
+
+// IsZero 表示三项都没设，等价于没有配置这条额度。
+func (l ModelLimit) IsZero() bool {
+	return l.RPM == 0 && l.TPM == 0 && l.MaxConcurrency == 0
+}
+
+// Validate 拒绝负数和超过 MaxModelLimitValue 的值。
+func (l ModelLimit) Validate() error {
+	fields := []struct {
+		name  string
+		value int
+	}{{"rpm", l.RPM}, {"tpm", l.TPM}, {"max_concurrency", l.MaxConcurrency}}
+	for _, field := range fields {
+		if field.value < 0 || field.value > MaxModelLimitValue {
+			return fmt.Errorf("%s must be between 0 and %d, got %d", field.name, MaxModelLimitValue, field.value)
+		}
+	}
+	return nil
+}
+
+// ModelLimitFor 返回渠道对某个上游模型配置的额度，没配时返回零值（全不限）。
+func (s ChannelSettings) ModelLimitFor(upstreamModel string) ModelLimit {
+	return s.ModelLimits[upstreamModel]
+}
+
+// ValidateModelLimits 在保存渠道时校验 model_limits：模型名不能为空，
+// 每一项都在 [0, MaxModelLimitValue] 内。
+func (s *ChannelSettings) ValidateModelLimits() error {
+	if s == nil {
+		return nil
+	}
+	for model, limit := range s.ModelLimits {
+		if strings.TrimSpace(model) == "" {
+			return fmt.Errorf("model_limits has a blank model name")
+		}
+		if err := limit.Validate(); err != nil {
+			return fmt.Errorf("model_limits for model %s: %w", model, err)
 		}
 	}
 	return nil
