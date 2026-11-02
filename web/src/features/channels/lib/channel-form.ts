@@ -279,9 +279,10 @@ export const channelFormSchema = z
       .string()
       .optional()
       .refine(isOptionalCostMultiplier, ERROR_MESSAGES.INVALID_COST_MULTIPLIER),
-    // <渠道, 模型> 额度在能力设置页编辑；抽屉不显示，只把 setting 里的原文带回，
-    // 免得保存渠道时把它冲掉。
+    // <渠道, 模型> 额度在能力设置页编辑、容量池绑定在资源池页编辑；抽屉不显示，
+    // 只把 setting 里的原文带回，免得保存渠道时把它们冲掉。
     model_limits: z.string().optional(),
+    capacity_pools: z.string().optional(),
     // Type-specific settings (stored in settings JSON)
     is_enterprise_account: z.boolean().optional(), // OpenRouter specific
     vertex_key_type: z.enum(['json', 'api_key']).optional(), // Vertex AI specific
@@ -479,6 +480,7 @@ export const CHANNEL_FORM_DEFAULT_VALUES: ChannelFormValues = {
   system_prompt_override: false,
   cost_multiplier: '',
   model_limits: '',
+  capacity_pools: '',
   // Type-specific settings
   is_enterprise_account: false,
   vertex_key_type: 'json',
@@ -529,6 +531,7 @@ export function transformChannelToFormDefaults(
     system_prompt_override: false,
     cost_multiplier: '',
     model_limits: '',
+    capacity_pools: '',
   }
 
   if (channel.setting) {
@@ -557,6 +560,10 @@ export function transformChannelToFormDefaults(
         model_limits:
           parsed.model_limits && typeof parsed.model_limits === 'object'
             ? JSON.stringify(parsed.model_limits)
+            : '',
+        capacity_pools:
+          parsed.capacity_pools && typeof parsed.capacity_pools === 'object'
+            ? JSON.stringify(parsed.capacity_pools)
             : '',
       }
     } catch (error) {
@@ -722,20 +729,24 @@ export function buildSettingJSON(formData: ChannelFormValues): string {
     settingObj.cost_multiplier = costMultiplier
   }
 
-  // <渠道, 模型> 额度在能力设置页编辑，这里只原样带回。
-  const modelLimits = parseModelLimitsJSON(formData.model_limits)
+  // <渠道, 模型> 额度在能力设置页编辑、容量池绑定在资源池页编辑，这里只原样带回。
+  const modelLimits = parseSettingObjectJSON(formData.model_limits)
   if (modelLimits) {
     settingObj.model_limits = modelLimits
+  }
+  const capacityPools = parseSettingObjectJSON(formData.capacity_pools)
+  if (capacityPools) {
+    settingObj.capacity_pools = capacityPools
   }
 
   return JSON.stringify(settingObj)
 }
 
 /**
- * 把表单里原样保存的 model_limits 文本还原成对象；为空或不是 JSON 对象时
- * 返回 null，不写回。
+ * 把表单里原样保存的 setting 子对象（model_limits、capacity_pools）还原成对象；
+ * 为空或不是 JSON 对象时返回 null，不写回。
  */
-function parseModelLimitsJSON(
+function parseSettingObjectJSON(
   value: string | undefined
 ): Record<string, unknown> | null {
   if (!value?.trim()) return null

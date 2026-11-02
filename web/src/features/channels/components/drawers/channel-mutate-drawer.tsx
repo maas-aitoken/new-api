@@ -309,6 +309,7 @@ const SENSITIVE_FORM_FIELDS = [
   'system_prompt_override',
   'cost_multiplier',
   'model_limits',
+  'capacity_pools',
   'allow_service_tier',
   'disable_store',
   'allow_safety_identifier',

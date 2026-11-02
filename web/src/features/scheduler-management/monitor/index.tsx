@@ -21,6 +21,7 @@ import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
 import { Main } from '@/components/layout'
+import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 
@@ -206,6 +207,17 @@ export function SchedulerMonitorPage() {
                               })}
                             </div>
                           )}
+                          {endpoint.pool_exhausted ? (
+                            <Badge variant='destructive' className='mt-1'>
+                              {t('Exhausted')}
+                            </Badge>
+                          ) : null}
+                          {!endpoint.pool_exhausted &&
+                          endpoint.pool_dynamic_limit ? (
+                            <Badge variant='secondary' className='mt-1'>
+                              {t('Dynamic limit')}
+                            </Badge>
+                          ) : null}
                         </td>
                         <td className='px-2 py-3'>
                           <div>{endpoint.model ?? '-'}</div>

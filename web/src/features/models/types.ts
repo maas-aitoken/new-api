@@ -101,6 +101,12 @@ export interface CapabilityTargetChannel {
   /** 走完 model_mapping 链后真正发给上游的模型名，额度按它存放。 */
   upstream_model: string
   model_limit: ChannelModelLimit
+  /**
+   * 不为 0 表示这个上游模型绑在资源池页的容量池上：额度由池动态算出，
+   * model_limit 在绑定期间不生效，只能在资源池页移除。池已被删时名字为空。
+   */
+  capacity_pool_id: number
+  capacity_pool_name: string
 }
 
 /** 一个 <渠道, 上游模型> 此刻的用量与剩余量。 */
@@ -119,6 +125,18 @@ export interface ChannelModelCapacity {
     rpm: number | null
     tpm: number | null
     concurrency: number | null
+  }
+  /** 绑了容量池时，上面的额度、用量和剩余是整个池的；这里是池信息和成员自己的用量。 */
+  capacity_pool?: {
+    id: number
+    name: string
+    /** dynamic：动态额度；floor：还没算出或已过期，用保底额度。 */
+    source: 'dynamic' | 'floor'
+    exhausted: boolean
+    computed_at: number
+    member_rpm_used: number
+    member_tpm_used: number
+    member_in_flight: number
   }
 }
 

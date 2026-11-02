@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { getRouteApi } from '@tanstack/react-router'
+import { getRouteApi, Link } from '@tanstack/react-router'
 import type { ColumnDef } from '@tanstack/react-table'
 import type { TFunction } from 'i18next'
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
@@ -62,7 +62,10 @@ import {
 import { getChannelTypeLabel } from '@/features/channels/lib/channel-utils'
 import { useDebounce } from '@/hooks'
 import { useTableUrlState } from '@/hooks/use-table-url-state'
+import { toIntlLocale } from '@/i18n/languages'
+import { formatCompactNumber } from '@/lib/format'
 import { getServerErrorMessage } from '@/lib/server-error-message'
+import { cn } from '@/lib/utils'
 
 import {
   deleteChannelModelCapability,
@@ -74,7 +77,11 @@ import {
 import { getNameRuleConfig } from '../constants'
 import { useChannelModelCapacity } from '../hooks/use-channel-model-capacity'
 import { capabilityTargetsQueryKeys } from '../lib'
-import type { CapabilityTarget, CapabilityTargetChannel } from '../types'
+import type {
+  CapabilityTarget,
+  CapabilityTargetChannel,
+  ChannelModelCapacity,
+} from '../types'
 import {
   ChannelModelCapacityLine,
   ChannelModelLimitInputs,
@@ -401,10 +408,17 @@ function CapabilityChannelList(props: {
                 </Button>
               )}
             </div>
-            <ChannelModelLimitInputs
-              channel={channel}
-              modelName={props.target.model_name}
-            />
+            {channel.capacity_pool_id ? (
+              <CapacityPoolFollowNote
+                channel={channel}
+                capacity={capacityByChannel.get(channel.id)}
+              />
+            ) : (
+              <ChannelModelLimitInputs
+                channel={channel}
+                modelName={props.target.model_name}
+              />
+            )}
             {channel.upstream_model &&
             channel.upstream_model !== props.target.model_name ? (
               <div
@@ -436,6 +450,54 @@ function CapabilityChannelList(props: {
         </li>
       ) : null}
     </ul>
+  )
+}
+
+/**
+ * 绑在容量池上的 <渠道, 模型>：额度由资源池页的容量池按账号数和余量动态算出，
+ * 这里只读，下面的用量行显示整个池的数，这一行补上成员自己的用量。
+ */
+function CapacityPoolFollowNote(props: {
+  channel: CapabilityTargetChannel
+  capacity?: ChannelModelCapacity
+}) {
+  const { t, i18n } = useTranslation()
+  const locale = toIntlLocale(i18n.resolvedLanguage || i18n.language)
+  const pool = props.capacity?.capacity_pool
+  let sourceLabel = ''
+  if (pool?.exhausted) {
+    sourceLabel = t('Exhausted')
+  } else if (pool?.source === 'dynamic') {
+    sourceLabel = t('Dynamic limit')
+  } else if (pool) {
+    sourceLabel = t('Floor limit')
+  }
+  return (
+    <div className='text-muted-foreground flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-xs'>
+      <span className='truncate'>
+        {t('Follows capacity pool {{name}}', {
+          name:
+            props.channel.capacity_pool_name ||
+            `#${props.channel.capacity_pool_id}`,
+        })}
+      </span>
+      {sourceLabel ? (
+        <span className={cn(pool?.exhausted && 'text-destructive')}>
+          {sourceLabel}
+        </span>
+      ) : null}
+      {pool ? (
+        <span className='tabular-nums'>
+          {t('This channel: RPM {{rpm}}, in flight {{inFlight}}', {
+            rpm: formatCompactNumber(pool.member_rpm_used, locale),
+            inFlight: pool.member_in_flight,
+          })}
+        </span>
+      ) : null}
+      <Link to='/resource-pools' className='text-primary hover:underline'>
+        {t('Manage on the Resource Pools page')}
+      </Link>
+    </div>
   )
 }
 
