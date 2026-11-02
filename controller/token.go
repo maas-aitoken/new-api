@@ -636,3 +636,32 @@ func GetTokenKeysBatch(c *gin.Context) {
 	common.SetContextKey(c, constant.ContextKeyTokenAuditSucceeded, true)
 	common.ApiSuccess(c, gin.H{"keys": keysMap})
 }
+
+// ListUserTokens lets an admin list another user's tokens (masked keys only),
+// e.g. to populate the token filter of the admin usage records page.
+func ListUserTokens(c *gin.Context) {
+	userId, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	user, err := model.GetUserById(userId, false)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	if !canManageTargetRole(c.GetInt("role"), user.Role) {
+		common.ApiErrorT(c, "No permission to access users of same or higher level")
+		return
+	}
+	pageInfo := common.GetPageQuery(c)
+	tokens, err := model.GetAllUserTokens(userId, pageInfo.GetStartIdx(), pageInfo.GetPageSize())
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	total, _ := model.CountUserTokens(userId)
+	pageInfo.SetTotal(int(total))
+	pageInfo.SetItems(buildMaskedTokenResponses(tokens))
+	common.ApiSuccess(c, pageInfo)
+}
