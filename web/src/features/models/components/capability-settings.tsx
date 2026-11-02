@@ -72,8 +72,13 @@ import {
   saveChannelModelCostMultiplier,
 } from '../api'
 import { getNameRuleConfig } from '../constants'
+import { useChannelModelCapacity } from '../hooks/use-channel-model-capacity'
 import { capabilityTargetsQueryKeys } from '../lib'
 import type { CapabilityTarget, CapabilityTargetChannel } from '../types'
+import {
+  ChannelModelCapacityLine,
+  ChannelModelLimitInputs,
+} from './channel-model-limits'
 
 const route = getRouteApi('/_authenticated/models/$section')
 
@@ -334,6 +339,14 @@ function CapabilityChannelList(props: {
   onSelect: (channel: CapabilityTargetChannel) => void
 }) {
   const { t } = useTranslation()
+  const channelIds = props.target.channels.map((channel) => channel.id)
+  const capacityQuery = useChannelModelCapacity(
+    props.target.model_name,
+    channelIds
+  )
+  const capacityByChannel = new Map(
+    (capacityQuery.data?.items ?? []).map((item) => [item.channel_id, item])
+  )
   if (props.target.channels.length === 0) {
     return (
       <p className='text-muted-foreground text-sm'>
@@ -388,9 +401,40 @@ function CapabilityChannelList(props: {
                 </Button>
               )}
             </div>
+            <ChannelModelLimitInputs
+              channel={channel}
+              modelName={props.target.model_name}
+            />
+            {channel.upstream_model &&
+            channel.upstream_model !== props.target.model_name ? (
+              <div
+                className='text-muted-foreground truncate text-xs'
+                title={channel.upstream_model}
+              >
+                {t(
+                  'Upstream {{model}}; aliases of the same upstream share these limits',
+                  {
+                    model: channel.upstream_model,
+                  }
+                )}
+              </div>
+            ) : null}
+            <ChannelModelCapacityLine
+              capacity={capacityByChannel.get(channel.id)}
+            />
           </li>
         )
       })}
+      {capacityQuery.isError ? (
+        <li className='text-muted-foreground text-xs'>
+          {t('Live usage is unavailable right now.')}
+        </li>
+      ) : null}
+      {capacityQuery.data && !capacityQuery.data.shared ? (
+        <li className='text-muted-foreground text-xs'>
+          {t('Redis is not configured, so live usage reflects only this node.')}
+        </li>
+      ) : null}
     </ul>
   )
 }

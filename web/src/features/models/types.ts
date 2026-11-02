@@ -80,6 +80,16 @@ export interface Vendor {
   updated_time: number
 }
 
+/**
+ * <渠道, 上游模型> 的额度，每项 0 或缺省表示不限。额度按整个渠道合计，
+ * 网关只统计用量，执行准入的是调度器。
+ */
+export interface ChannelModelLimit {
+  rpm?: number
+  tpm?: number
+  max_concurrency?: number
+}
+
 /** 能力设置页的模型 → 渠道清单。 */
 export interface CapabilityTargetChannel {
   id: number
@@ -88,6 +98,35 @@ export interface CapabilityTargetChannel {
   configured: boolean
   /** 渠道对该模型的费用倍率；0 表示未配置（按 1 处理）。 */
   cost_multiplier: number
+  /** 走完 model_mapping 链后真正发给上游的模型名，额度按它存放。 */
+  upstream_model: string
+  model_limit: ChannelModelLimit
+}
+
+/** 一个 <渠道, 上游模型> 此刻的用量与剩余量。 */
+export interface ChannelModelCapacity {
+  channel_id: number
+  model: string
+  upstream_model: string
+  pool_id: string
+  limit: ChannelModelLimit
+  rpm_used: number
+  /** 在途请求只含输入估算，完成后才补上输出。 */
+  tpm_used: number
+  in_flight: number
+  /** 每项 = max(额度-用量, 0)；不限时为 null。 */
+  remaining: {
+    rpm: number | null
+    tpm: number | null
+    concurrency: number | null
+  }
+}
+
+export interface ChannelModelCapacityResult {
+  items: ChannelModelCapacity[]
+  /** false 表示没配 Redis，用量只反映处理这次查询的节点。 */
+  shared: boolean
+  window_seconds: number
 }
 
 export interface CapabilityTarget {

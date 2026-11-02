@@ -40,7 +40,7 @@ import { api } from '@/lib/api'
 import { useAuthStore } from '@/stores/auth-store'
 
 import { CapabilitySettings } from '../components/capability-settings'
-import type { CapabilityTarget } from '../types'
+import type { CapabilityTarget, ChannelModelCapacityResult } from '../types'
 
 const targets: CapabilityTarget[] = [
   {
@@ -57,6 +57,8 @@ const targets: CapabilityTarget[] = [
         type: 1,
         configured: true,
         cost_multiplier: 1.5,
+        upstream_model: 'sonnet-5',
+        model_limit: { rpm: 60, max_concurrency: 2 },
       },
       {
         id: 19,
@@ -64,6 +66,8 @@ const targets: CapabilityTarget[] = [
         type: 1,
         configured: false,
         cost_multiplier: 0,
+        upstream_model: 'claude-sonnet-5-20261001',
+        model_limit: {},
       },
     ],
   },
@@ -91,7 +95,15 @@ function Page() {
   )
 }
 
-async function renderTargets(items: CapabilityTarget[] = targets, total = 2) {
+async function renderTargets(
+  items: CapabilityTarget[] = targets,
+  total = 2,
+  capacity: ChannelModelCapacityResult = {
+    items: [],
+    shared: true,
+    window_seconds: 60,
+  }
+) {
   useAuthStore.getState().auth.setUser({ id: 1, username: 'admin', role: 100 })
   const get = vi.spyOn(api, 'get').mockImplementation(async (url) => {
     if (url === '/api/models/capability-targets') {
@@ -101,6 +113,9 @@ async function renderTargets(items: CapabilityTarget[] = targets, total = 2) {
           data: { items, total, page: 1, page_size: 20 },
         },
       }
+    }
+    if (url === '/api/channel-model-capabilities/capacity') {
+      return { data: { success: true, data: capacity } }
     }
     return { data: { success: true, data: { items: [] } } }
   })
@@ -201,6 +216,101 @@ it('saves a per-channel cost multiplier on blur', async () => {
       expect.anything()
     )
   )
+})
+
+it('saves the RPM, TPM and concurrency limits together once focus leaves the group', async () => {
+  const { put } = await renderTargets()
+  const user = userEvent.setup()
+  await user.click(screen.getByRole('button', { name: 'Expand' }))
+
+  const rpm = screen.getByLabelText('RPM limit for channel #12')
+  const tpm = screen.getByLabelText('TPM limit for channel #12')
+  expect(rpm).toHaveValue('60')
+  expect(tpm).toHaveValue('')
+  expect(
+    screen.getByLabelText('Concurrency limit for channel #12')
+  ).toHaveValue('2')
+
+  await user.clear(rpm)
+  await user.type(rpm, '120')
+  await user.click(tpm)
+  await user.type(tpm, '90000')
+  // 焦点还在这一组里，不逐项保存。
+  expect(put).not.toHaveBeenCalled()
+
+  await user.click(screen.getByLabelText('RPM limit for channel #19'))
+  await waitFor(() =>
+    expect(put).toHaveBeenCalledWith(
+      '/api/channel-model-capabilities/limit',
+      {
+        channel_id: 12,
+        model: 'sonnet-5',
+        rpm: 120,
+        tpm: 90000,
+        max_concurrency: 2,
+      },
+      expect.anything()
+    )
+  )
+  expect(put).toHaveBeenCalledTimes(1)
+})
+
+it('shows live usage and the remaining quota for channels with limits', async () => {
+  const { get } = await renderTargets(targets, 2, {
+    items: [
+      {
+        channel_id: 12,
+        model: 'sonnet-5',
+        upstream_model: 'sonnet-5',
+        pool_id: 'c12-aaaaaaaaaaaa',
+        limit: { rpm: 60, max_concurrency: 2 },
+        rpm_used: 12,
+        tpm_used: 900,
+        in_flight: 2,
+        remaining: { rpm: 48, tpm: null, concurrency: 0 },
+      },
+      {
+        channel_id: 19,
+        model: 'sonnet-5',
+        upstream_model: 'claude-sonnet-5-20261001',
+        pool_id: 'c19-bbbbbbbbbbbb',
+        limit: {},
+        rpm_used: 3,
+        tpm_used: 450,
+        in_flight: 1,
+        remaining: { rpm: null, tpm: null, concurrency: null },
+      },
+    ],
+    shared: false,
+    window_seconds: 60,
+  })
+  const user = userEvent.setup()
+  await user.click(screen.getByRole('button', { name: 'Expand' }))
+
+  await waitFor(() =>
+    expect(get).toHaveBeenCalledWith(
+      '/api/channel-model-capabilities/capacity',
+      { params: { model: 'sonnet-5', channel_ids: '12,19' } }
+    )
+  )
+  // 设了额度的维度显示"已用 / 额度 · 剩余"，没设的只显示已用。
+  expect(
+    await screen.findByLabelText('Live usage for channel #12')
+  ).toHaveTextContent('RPM 12 / 60 · 48 leftTPM 900In flight 2 / 2 · 0 left')
+  expect(screen.getByLabelText('Live usage for channel #19')).toHaveTextContent(
+    'RPM 3TPM 450In flight 1'
+  )
+  // 上游名与公开名不同时标出上游名；没配 Redis 时说明只是本节点的数据。
+  expect(
+    screen.getByText(
+      'Upstream claude-sonnet-5-20261001; aliases of the same upstream share these limits'
+    )
+  ).toBeVisible()
+  expect(
+    screen.getByText(
+      'Redis is not configured, so live usage reflects only this node.'
+    )
+  ).toBeVisible()
 })
 
 it('requests the filtered page when the model name and channel ID inputs change', async () => {
