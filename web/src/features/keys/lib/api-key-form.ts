@@ -24,9 +24,17 @@ import { parseQuotaFromDollars, quotaUnitsToDollars } from '@/lib/format'
 import { DEFAULT_GROUP } from '../constants'
 import type { ApiKey, ApiKeyFormData } from '../types'
 
-// Capability/price preferences the "auto" model accepts, from capability-first to
-// cost-first. The form adds 'default' for a key that follows the platform setting.
+// The preferences that carry a cost weight of their own, from capability-first to
+// cost-first. The platform sets one weight for each.
 export const AUTO_PREFERENCES = ['capability', 'balanced', 'cost'] as const
+
+// What a key or the platform default can choose: those three, or 'adaptive', which
+// reads each request's own weight from the three. The form adds 'default' for a key
+// that follows the platform setting.
+export const SELECTABLE_AUTO_PREFERENCES = [
+  ...AUTO_PREFERENCES,
+  'adaptive',
+] as const
 
 // ============================================================================
 // Form Schema
@@ -45,7 +53,7 @@ export function getApiKeyFormSchema(t: TFunction, maxAutoGroups = 5) {
       model_limits: z.array(z.string()),
       allow_ips: z.string().optional(),
       allow_user_quota_query: z.boolean(),
-      auto_preference: z.enum(['default', ...AUTO_PREFERENCES]),
+      auto_preference: z.enum(['default', ...SELECTABLE_AUTO_PREFERENCES]),
       group: z.string().optional(),
       auto_groups_mode: z.enum(['inherit', 'custom']),
       auto_groups: z.array(z.string()),
@@ -202,7 +210,7 @@ export function transformApiKeyToFormDefaults(
     allow_ips: apiKey.allow_ips || '',
     allow_user_quota_query: !!apiKey.allow_user_quota_query,
     auto_preference:
-      AUTO_PREFERENCES.find(
+      SELECTABLE_AUTO_PREFERENCES.find(
         (preference) => preference === apiKey.auto_preference
       ) ?? 'default',
     group: apiKey.group || DEFAULT_GROUP,

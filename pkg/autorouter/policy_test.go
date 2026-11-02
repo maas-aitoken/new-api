@@ -321,6 +321,146 @@ func TestSelectRoutePicksByQualityAndPrice(t *testing.T) {
 		assert.Equal(t, "legacy", route.Model)
 		assert.Nil(t, pick)
 	})
+
+	adaptive := policy
+	adaptive.Preference = PreferenceAdaptive
+	adaptive.Tiers = TierWeights{Capability: 0, Balanced: 0.07, Cost: 0.3}
+	withMode := func(d *Decision, capability, balanced, cost float64) *Decision {
+		d.ModeProbabilities = map[string]float64{PreferenceCapability: capability, PreferenceBalanced: balanced, PreferenceCost: cost}
+		return d
+	}
+
+	t.Run("an adaptive request picks by the weight its mode answer reads from the tiers", func(t *testing.T) {
+		tests := []struct {
+			name                       string
+			capability, balanced, cost float64
+			wantModel                  string
+			wantWeight                 float64
+		}{
+			{"certain cost", 0, 0, 1, "cheap", 0.3},
+			{"certain capability", 1, 0, 0, "top", 0},
+			{"certain balanced", 0, 1, 0, "mid", 0.07},
+			// 对三档权重直接求平均会得到 0.15，那个权重下选的是 cheap。
+			{"an even split between capability and cost reads as balanced", 0.5, 0, 0.5, "mid", 0.07},
+		}
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				trace := &Trace{}
+				route, _, ok, pick := SelectRoute(withMode(decide("code.build", 1), tt.capability, tt.balanced, tt.cost), nil, adaptive, priced, trace)
+				require.True(t, ok)
+				assert.Equal(t, tt.wantModel, route.Model)
+				require.NotNil(t, pick)
+				assert.InDelta(t, tt.wantWeight, pick.Weight, 1e-9)
+				require.NotNil(t, trace.Mode)
+				assert.Empty(t, trace.Mode.Reason)
+				assert.InDelta(t, tt.wantWeight, trace.Mode.Weight, 1e-9)
+			})
+		}
+	})
+	t.Run("the mode answer counts even when the task type is not trusted", func(t *testing.T) {
+		untrusted := &Decision{TaskType: "general.chat", TaskTypeProbability: 0.3, Difficulty: 1}
+		route, inherited, ok, pick := SelectRoute(withMode(untrusted, 1, 0, 0), nil, adaptive, priced, nil)
+		require.True(t, ok)
+		assert.True(t, inherited)
+		assert.Equal(t, "general", route.Model, "能力优先时兜底取分数最高的，退到均衡档会取更便宜的 general-cheap")
+		require.NotNil(t, pick)
+		assert.Equal(t, 0.0, pick.Weight)
+	})
+	t.Run("without a usable mode answer the balanced weight applies and the trace says so", func(t *testing.T) {
+		silent := decide("code.build", 1)
+		silent.ModeProbabilities = map[string]float64{PreferenceCapability: 0, PreferenceBalanced: 0, PreferenceCost: 0}
+		for name, decision := range map[string]*Decision{"no decision": nil, "no mode answer": decide("code.build", 1), "all zero": silent} {
+			trace := &Trace{}
+			_, _, ok, pick := SelectRoute(decision, nil, adaptive, priced, trace)
+			require.True(t, ok, name)
+			require.NotNil(t, pick, name)
+			assert.Equal(t, 0.07, pick.Weight, name)
+			require.NotNil(t, trace.Mode, name)
+			assert.Equal(t, ModeNoAnswer, trace.Mode.Reason, name)
+			assert.Equal(t, 0.07, trace.Mode.Weight, name)
+			assert.Nil(t, trace.Mode.Shares, name)
+		}
+	})
+	t.Run("a continuation keeps the previous model, so the judged weight is recorded but never used", func(t *testing.T) {
+		previous := &Route{Profile: "code.build", Model: "top", Effort: "medium"}
+		trace := &Trace{}
+		route, _, ok, pick := SelectRoute(withMode(decide("code.build", 0.1), 0, 0, 1), previous, adaptive, priced, trace)
+		require.True(t, ok)
+		assert.Equal(t, "top", route.Model)
+		assert.Nil(t, pick)
+		require.NotNil(t, trace.Mode)
+		assert.InDelta(t, 0.3, trace.Mode.Weight, 1e-9)
+	})
+	t.Run("a fixed preference ignores the mode answer and leaves no mode in the trace", func(t *testing.T) {
+		trace := &Trace{}
+		route, _, ok, pick := SelectRoute(withMode(decide("code.build", 1), 0, 0, 1), nil, policy, priced, trace)
+		require.True(t, ok)
+		assert.Equal(t, "mid", route.Model, "均衡档的权重 0.07 不受 mode 影响")
+		require.NotNil(t, pick)
+		assert.Equal(t, 0.07, pick.Weight)
+		assert.Nil(t, trace.Mode)
+	})
+}
+
+// 三档权重的间距不均（0、0.07、0.3），所以先对位置求期望再取权重：
+// 判断完全确定时就是该档的权重，对称的不确定落在均衡档，概率向成本移动权重不会变小。
+func TestTierWeightsBlend(t *testing.T) {
+	tiers := TierWeights{Capability: 0, Balanced: 0.07, Cost: 0.3}
+	mode := func(capability, balanced, cost float64) map[string]float64 {
+		return map[string]float64{PreferenceCapability: capability, PreferenceBalanced: balanced, PreferenceCost: cost}
+	}
+	tests := []struct {
+		name         string
+		tiers        TierWeights
+		probability  map[string]float64
+		wantPosition float64
+		wantWeight   float64
+	}{
+		{"certain capability", tiers, mode(1, 0, 0), 0, 0},
+		{"certain balanced", tiers, mode(0, 1, 0), 1, 0.07},
+		{"certain cost", tiers, mode(0, 0, 1), 2, 0.3},
+		{"between capability and balanced the weight follows the first segment", tiers, mode(0.2, 0.8, 0), 0.8, 0.056},
+		{"between balanced and cost it follows the second segment", tiers, mode(0, 0.7, 0.3), 1.3, 0.139},
+		{"leaning cost with some doubt", tiers, mode(0.1, 0.6, 0.3), 1.2, 0.116},
+		{"leaning capability with some doubt", tiers, mode(0.3, 0.6, 0.1), 0.8, 0.056},
+		{"an even three-way split is balanced, not the 0.123 average of the weights", tiers, mode(1.0/3, 1.0/3, 1.0/3), 1, 0.07},
+		{"an even split between the ends is balanced, not the 0.15 average", tiers, mode(0.5, 0, 0.5), 1, 0.07},
+		{"probabilities that do not sum to one are normalized", tiers, mode(2, 6, 2), 1, 0.07},
+		{"a missing preference counts as zero", tiers, map[string]float64{PreferenceCost: 1}, 2, 0.3},
+		{"evenly spaced weights make it the plain expectation", TierWeights{Capability: 0.1, Balanced: 0.2, Cost: 0.3}, mode(0.1, 0.2, 0.7), 1.6, 0.26},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := tt.tiers.Blend(tt.probability)
+			assert.Empty(t, got.Reason)
+			assert.InDelta(t, tt.wantPosition, got.Position, 1e-9)
+			assert.InDelta(t, tt.wantWeight, got.Weight, 1e-9)
+			assert.Equal(t, tt.tiers, got.Tiers)
+			sum := 0.0
+			for _, share := range got.Shares {
+				sum += share
+			}
+			assert.InDelta(t, 1, sum, 1e-9, "归一后的份额合计为 1")
+		})
+	}
+	t.Run("an answer that cannot be read falls back to the balanced weight", func(t *testing.T) {
+		unusable := map[string]map[string]float64{
+			"no answer":         nil,
+			"empty":             {},
+			"all zero":          {PreferenceCapability: 0, PreferenceBalanced: 0, PreferenceCost: 0},
+			"a negative":        {PreferenceCapability: -0.2, PreferenceBalanced: 0.6, PreferenceCost: 0.6},
+			"NaN":               {PreferenceCapability: math.NaN(), PreferenceBalanced: 0.5, PreferenceCost: 0.5},
+			"infinity":          {PreferenceCapability: math.Inf(1), PreferenceBalanced: 0.5, PreferenceCost: 0.5},
+			"only other labels": {"turbo": 1},
+		}
+		for name, probabilities := range unusable {
+			got := tiers.Blend(probabilities)
+			assert.Equal(t, ModeNoAnswer, got.Reason, name)
+			assert.Equal(t, 1.0, got.Position, name)
+			assert.Equal(t, 0.07, got.Weight, name)
+			assert.Nil(t, got.Shares, name)
+		}
+	})
 }
 
 func TestPolicyAnyModelAvailable(t *testing.T) {

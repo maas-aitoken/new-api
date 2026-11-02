@@ -39,8 +39,9 @@ type Token struct {
 	// 允许用此令牌查询所属用户的额度；新建令牌默认开启，已有令牌升级后保持关闭
 	AllowUserQuotaQuery bool `json:"allow_user_quota_query"`
 	// MaaS 改造字段
-	Scene       common.TokenScene `json:"scene" gorm:"type:varchar(16);default:'office'"`
-	Description string            `json:"description" gorm:"type:varchar(255);default:''"`
+	Scene       common.TokenScene       `json:"scene" gorm:"type:varchar(16);default:'office'"`
+	Description string                  `json:"description" gorm:"type:varchar(255);default:''"`
+	RoutingMode common.TokenRoutingMode `json:"routing_mode" gorm:"type:varchar(16);default:'smart'"`
 }
 
 func (token *Token) GetAutoGroups() ([]string, error) {
@@ -92,10 +93,6 @@ func (token *Token) SetRoutingPreference(preference *dto.RoutingPreference) erro
 	return nil
 }
 
-// GetRoutingPreferenceMode 读取 routing_preference 中的排序模式，扁平枚举形式。
-// 与 GetRoutingPreference 的区别：那个返回整个对象（未配置时为 nil），这个只取
-// Mode 且恒有值 —— 未配置或解析失败都回落 balanced，与 service 层的
-// schedulerDefaultMode 一致，所以坏数据只退回平台默认策略，不会让请求失败。
 func (token *Token) GetRoutingPreferenceMode() common.RoutingPreferenceMode {
 	preference, err := token.GetRoutingPreference()
 	if err != nil || preference == nil {
@@ -104,12 +101,6 @@ func (token *Token) GetRoutingPreferenceMode() common.RoutingPreferenceMode {
 	return common.NormalizeRoutingPreferenceMode(preference.Mode)
 }
 
-// SetRoutingPreferenceMode 把扁平枚举写进 routing_preference(JSON)。
-// 要清除整条偏好请用 SetRoutingPreference(nil)，本方法总是写入一个具体模式。
-//
-// balanced 也写显式 JSON 而非空串：Update() 用 Updates(struct) 会跳过零值，
-// 空串会导致「从 price 改回 balanced」静默写不进去。schedulerDefaultMode
-// 本身就是 balanced，显式写入与空值的调度行为完全一致。
 func (token *Token) SetRoutingPreferenceMode(mode common.RoutingPreferenceMode) error {
 	return token.SetRoutingPreference(&dto.RoutingPreference{
 		Mode: string(common.NormalizeRoutingPreferenceMode(string(mode))),
@@ -383,7 +374,8 @@ func (token *Token) Update() (err error) {
 	}
 	return DB.Model(token).Select("name", "status", "expired_time", "remain_quota", "unlimited_quota",
 		"model_limits_enabled", "model_limits", "allow_ips", "group", "cross_group_retry", "auto_groups",
-		"allow_user_quota_query", "auto_preference", "scene", "description").Updates(token).Error
+		"allow_user_quota_query", "auto_preference", "scene", "description",
+		"routing_mode").Updates(token).Error
 }
 
 func (token *Token) SelectUpdate() (err error) {

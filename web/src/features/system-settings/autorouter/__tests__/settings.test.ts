@@ -48,6 +48,13 @@ describe('parseCostWeights', () => {
       DEFAULT_COST_WEIGHTS
     )
   })
+
+  test('adaptive has no weight of its own, so a stored one is ignored and never written back', () => {
+    const weights = parseCostWeights('{"adaptive":0.5,"cost":0.2}')
+
+    expect(weights).toEqual({ ...DEFAULT_COST_WEIGHTS, cost: 0.2 })
+    expect(serializeCostWeights(weights)).not.toContain('adaptive')
+  })
 })
 
 test('serializeCostWeights writes every preference in a fixed order', () => {

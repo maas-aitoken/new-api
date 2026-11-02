@@ -10,10 +10,71 @@ const (
 	PreferenceCapability = "capability"
 	PreferenceBalanced   = "balanced"
 	PreferenceCost       = "cost"
+	// PreferenceAdaptive 没有固定权重：每次请求按 jev 的 mode 判断，再用三档权重折算出本次的权重。
+	PreferenceAdaptive = "adaptive"
 )
 
-// Preferences 按从重能力到重成本的顺序列出所有偏好。
+// Preferences 按从重能力到重成本的顺序列出有固定权重的偏好，cost_weights 只接受它们。
 var Preferences = []string{PreferenceCapability, PreferenceBalanced, PreferenceCost}
+
+// SelectablePreferences 是令牌和平台默认偏好可以选的全部取值：固定权重的三档加自适应。
+var SelectablePreferences = append(slices.Clone(Preferences), PreferenceAdaptive)
+
+// TierWeights 是平台给三个固定偏好设的成本权重，榜单分尺度，0 到 1。
+type TierWeights struct {
+	Capability float64 `json:"capability"`
+	Balanced   float64 `json:"balanced"`
+	Cost       float64 `json:"cost"`
+}
+
+// Of 返回一个偏好的权重。自适应偏好或不认识的偏好没有固定权重，按均衡档处理，
+// 自适应在没有可用的 mode 判断时正是这样兜底。
+func (t TierWeights) Of(preference string) float64 {
+	switch preference {
+	case PreferenceCapability:
+		return t.Capability
+	case PreferenceCost:
+		return t.Cost
+	}
+	return t.Balanced
+}
+
+// Blend 把 mode 问题给三个偏好的概率折算成本次请求的成本权重。
+//
+// 三个偏好按从重能力到重成本排成位置 0、1、2，先对位置求期望，再沿三档权重连成的折线取值。
+// 不直接对三档权重求期望，是因为默认权重（0、0.07、0.3）的间距不均，直接平均会让拿不准的判断偏向成本。
+// 这样取值有三个性质：判断完全确定时就是该档的权重；对称的不确定（各占三分之一，或一半能力一半成本）
+// 落在均衡档；概率从能力移向成本时权重不会变小。
+//
+// 概率先按三个偏好的总和归一，缺的算 0。有负数、非有限数，或总和不为正时没有可用的答案，
+// 取均衡档的权重，Reason 写明。
+func (t TierWeights) Blend(probabilities map[string]float64) ModeTrace {
+	unjudged := ModeTrace{Reason: ModeNoAnswer, Position: 1, Weight: t.Balanced, Tiers: t}
+	total := 0.0
+	for _, preference := range Preferences {
+		probability := probabilities[preference]
+		if probability < 0 || math.IsNaN(probability) {
+			return unjudged
+		}
+		total += probability
+	}
+	// 总和溢出成无穷时份额都会变成 0，不能当成“确定的能力优先”。
+	if total <= 0 || math.IsInf(total, 0) {
+		return unjudged
+	}
+
+	shares := make(map[string]float64, len(Preferences))
+	position := 0.0
+	for rank, preference := range Preferences {
+		shares[preference] = probabilities[preference] / total
+		position += float64(rank) * shares[preference]
+	}
+	weight := t.Capability + position*(t.Balanced-t.Capability)
+	if position > 1 {
+		weight = t.Balanced + (position-1)*(t.Cost-t.Balanced)
+	}
+	return ModeTrace{Shares: shares, Position: position, Weight: weight, Tiers: t}
+}
 
 // Candidates 回答一个候选模型在当前请求下的可用性和价格，由分发中间件提供。
 type Candidates struct {

@@ -295,11 +295,26 @@ func printSummary(items []*item) {
 	taskTypes := map[string]int{}
 	difficulties := map[int]int{}
 	taskChange, largerModel := 0, 0
+	modes := map[string]int{}
+	modeUnjudged, modePosition := 0, 0.0
 	failed := 0
 	for _, it := range items {
 		if it.Error != "" {
 			failed++
 			continue
+		}
+		// The platform's tier weights do not matter here, only the judged shares and position.
+		if mode := (autorouter.TierWeights{}).Blend(it.Decision.ModeProbabilities); mode.Reason != "" {
+			modeUnjudged++
+		} else {
+			likeliest := autorouter.Preferences[0]
+			for _, preference := range autorouter.Preferences {
+				if mode.Shares[preference] > mode.Shares[likeliest] {
+					likeliest = preference
+				}
+			}
+			modes[likeliest]++
+			modePosition += mode.Position
 		}
 		latencies = append(latencies, float64(it.LatencyMs))
 		if it.ServerLatencyMs != nil {
@@ -328,6 +343,13 @@ func printSummary(items []*item) {
 	}
 	fmt.Printf("task_type=%v\ndifficulty=%v\ntask_change>=0.5: %d  larger_model_benefit>=0.5: %d\n",
 		taskTypes, difficulties, taskChange, largerModel)
+	// mode counts the likeliest preference of each judged item (a tie goes to the earlier
+	// one); the mean position runs from 0 (capability) through 1 (balanced) to 2 (cost).
+	meanPosition := "-"
+	if judged := len(latencies) - modeUnjudged; judged > 0 {
+		meanPosition = fmt.Sprintf("%.3f", modePosition/float64(judged))
+	}
+	fmt.Printf("mode=%v  no_usable_answer=%d  mean_position=%s\n", modes, modeUnjudged, meanPosition)
 }
 
 // percentile uses nearest-rank on sorted values.

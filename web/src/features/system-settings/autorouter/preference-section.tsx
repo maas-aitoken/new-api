@@ -25,7 +25,7 @@ import { toast } from 'sonner'
 import * as z from 'zod'
 
 import { Form } from '@/components/ui/form'
-import { AUTO_PREFERENCES } from '@/features/keys/lib'
+import { SELECTABLE_AUTO_PREFERENCES } from '@/features/keys/lib'
 
 import {
   SettingsForm,
@@ -48,7 +48,7 @@ import type { AutoRouterSettings } from './types'
 
 function createSchema(t: TFunction) {
   return z.object({
-    default_preference: z.enum(AUTO_PREFERENCES),
+    default_preference: z.enum(SELECTABLE_AUTO_PREFERENCES),
     weights: z.object({
       capability: fractionBetween(t),
       balanced: fractionBetween(t),
@@ -72,8 +72,9 @@ export function PreferenceSection(props: PreferenceSectionProps) {
     const stored = props.settings['autorouter_setting.default_preference']
     return {
       default_preference:
-        AUTO_PREFERENCES.find((preference) => preference === stored) ??
-        'balanced',
+        SELECTABLE_AUTO_PREFERENCES.find(
+          (preference) => preference === stored
+        ) ?? 'balanced',
       weights: parseCostWeights(
         props.settings['autorouter_setting.cost_weights']
       ),
@@ -85,7 +86,8 @@ export function PreferenceSection(props: PreferenceSectionProps) {
   })
   useResetForm(form, defaults)
 
-  const options: Array<{
+  // The three preferences that carry a cost weight, which the weights below edit.
+  const tiers: Array<{
     value: AutoPreference
     label: string
     description: string
@@ -109,6 +111,16 @@ export function PreferenceSection(props: PreferenceSectionProps) {
       label: t('Cost first'),
       description: t(
         'Prefers much cheaper models and accepts a weaker one to save money.'
+      ),
+    },
+  ]
+  const options = [
+    ...tiers,
+    {
+      value: 'adaptive',
+      label: t('Decide per request'),
+      description: t(
+        'Judges each request on whether it stresses result quality or cost, then reads the cost weight for that request from the three weights below.'
       ),
     },
   ]
@@ -161,14 +173,14 @@ export function PreferenceSection(props: PreferenceSectionProps) {
           </div>
 
           <SettingsFormGrid>
-            {options.map((option) => (
+            {tiers.map((tier) => (
               <NumberSettingField
-                key={option.value}
+                key={tier.value}
                 control={form.control}
-                name={`weights.${option.value}`}
-                label={option.label}
+                name={`weights.${tier.value}`}
+                label={tier.label}
                 description={t('Built-in value: {{value}}', {
-                  value: DEFAULT_COST_WEIGHTS[option.value],
+                  value: DEFAULT_COST_WEIGHTS[tier.value],
                 })}
                 min={0}
                 max={1}

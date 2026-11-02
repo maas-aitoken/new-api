@@ -226,3 +226,17 @@ func TestDecisionPicksMostLikelyDifficultyRung(t *testing.T) {
 	assert.Equal(t, 1.0, *firstTurn.TaskChange)
 	assert.Equal(t, 0.2, *resp.Answers["task_change"].Noul, "raw answer is kept for audit")
 }
+
+func TestDecisionCarriesTheModeAnswer(t *testing.T) {
+	probabilities := map[string]float64{PreferenceCapability: 0.1, PreferenceBalanced: 0.2, PreferenceCost: 0.7}
+	withMode := JevResponse{Answers: map[string]JevAnswer{
+		"task_type": {Type: "choice", Choice: "code.build", Probabilities: map[string]float64{"code.build": 0.9}},
+		"mode":      {Type: "choice", Choice: PreferenceCost, Probabilities: probabilities},
+	}}
+	assert.Equal(t, probabilities, withMode.Decision(true).ModeProbabilities)
+
+	withoutMode := JevResponse{Answers: map[string]JevAnswer{
+		"task_type": {Type: "choice", Choice: "code.build", Probabilities: map[string]float64{"code.build": 0.9}},
+	}}
+	assert.Nil(t, withoutMode.Decision(true).ModeProbabilities, "老版本的 jev 不回答 mode 时没有这项概率")
+}

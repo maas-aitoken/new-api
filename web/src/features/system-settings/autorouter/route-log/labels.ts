@@ -208,6 +208,8 @@ export function preferenceLabel(t: TFunction, preference: string): string {
       return t('Balanced')
     case 'cost':
       return t('Cost first')
+    case 'adaptive':
+      return t('Decide per request')
     default:
       return preference
   }

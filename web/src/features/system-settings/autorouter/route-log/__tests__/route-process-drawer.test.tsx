@@ -23,7 +23,7 @@ import { expect, test, vi } from 'vitest'
 import { api } from '@/lib/api'
 
 import { RouteProcessDrawer } from '../route-process-drawer'
-import type { RouteLog, RouteResult } from '../types'
+import type { RouteLog, RouteResult, RouteTraceMode } from '../types'
 
 const logItem = {
   id: 1,
@@ -342,6 +342,80 @@ test('an untrusted classification says why and that the previous route is kept',
     screen.getByText('An untrusted answer keeps the previous route, or uses the default models.')
   ).toBeVisible()
   expect(screen.getByText('First servable model in list order')).toBeVisible()
+})
+
+const tiers = { capability: 0, balanced: 0.07, cost: 0.3 }
+
+// An adaptive request that compared quality and price at the weight its mode gave.
+function adaptiveLog(mode: RouteTraceMode): RouteLog {
+  return {
+    ...logItem,
+    model: 'haiku',
+    preference: 'adaptive',
+    detail: {
+      result: {
+        resolved_model: 'haiku',
+        model: 'haiku',
+        preference: 'adaptive',
+        pick: {
+          chosen: 'haiku',
+          weight: 0.1275,
+          band: [
+            { model: 'sonnet', score: 0.95, price: 4, discount: 0.1275, utility: 0.8225 },
+            { model: 'haiku', score: 0.93, price: 1, discount: 0, utility: 0.93 },
+          ],
+        },
+      },
+      trace: {
+        request: { protocol: 'chat', human_turns: 1, text_runes: 30 },
+        judgment: 'live',
+        trust: { threshold: 0.5, profiles: ['code.build'] },
+        mode,
+        ladder: [{ profile: 'code.build', models: 2, outcome: 'compared', model: 'haiku' }],
+      },
+    },
+  }
+}
+
+test('an adaptive request shows how its cost weight was judged, between the trust check and the model selection', async () => {
+  mockLog(
+    adaptiveLog({
+      shares: { capability: 0.1, balanced: 0.55, cost: 0.35 },
+      position: 1.25,
+      weight: 0.1275,
+      tiers,
+    })
+  )
+  renderDrawer({})
+
+  expect(await screen.findByText('Judged from the request')).toBeVisible()
+  const titles = ['Trust check', 'Cost preference', 'Model selection']
+  titles.slice(1).forEach((title, index) => {
+    expect(
+      screen.getByText(titles[index]).compareDocumentPosition(screen.getByText(title)) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+      `${title} comes after ${titles[index]}`
+    ).toBeTruthy()
+  })
+  expect(screen.getByText('Balanced 0.5500')).toBeVisible()
+  expect(screen.getByText('Cost first 0.3500')).toBeVisible()
+  expect(screen.getByText('Cost first 0.3000')).toBeVisible()
+  expect(screen.getByText('Expected position').nextElementSibling).toHaveTextContent('1.2500')
+  expect(screen.getByText('Cost weight').nextElementSibling).toHaveTextContent('0.1275')
+  expect(screen.getByText('Preference').nextElementSibling).toHaveTextContent('Decide per request')
+})
+
+test('an adaptive request with no usable judgment says the balanced weight applied', async () => {
+  mockLog(adaptiveLog({ reason: 'no_answer', position: 1, weight: 0.07, tiers }))
+  renderDrawer({})
+
+  expect(await screen.findByText('No usable judgment')).toBeVisible()
+  expect(
+    screen.getByText('The classifier gave no usable answer on cost, so the balanced weight applies.')
+  ).toBeVisible()
+  expect(screen.getByText('Cost weight').nextElementSibling).toHaveTextContent('0.0700')
+  expect(screen.queryByText('Expected position')).not.toBeInTheDocument()
+  expect(screen.queryByText('Probability of each preference')).not.toBeInTheDocument()
 })
 
 test('with no request selected the drawer stays closed and asks for nothing', () => {

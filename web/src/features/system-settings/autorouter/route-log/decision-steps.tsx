@@ -16,12 +16,29 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { GitCompareArrows, ShieldCheck } from 'lucide-react'
+import { GitCompareArrows, Scale, ShieldCheck } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
-import { formatScore, trustReasonLabel, type RouteTone } from './labels'
-import { Chips, Facts, StepFrame, ToneBadge } from './route-process-parts'
-import type { RouteTraceContinuation, RouteTraceTrust } from './types'
+import { AUTO_PREFERENCES } from '@/features/keys/lib'
+
+import {
+  formatScore,
+  preferenceLabel,
+  trustReasonLabel,
+  type RouteTone,
+} from './labels'
+import {
+  Chips,
+  Facts,
+  StepFrame,
+  ToneBadge,
+  type FactRow,
+} from './route-process-parts'
+import type {
+  RouteTraceContinuation,
+  RouteTraceMode,
+  RouteTraceTrust,
+} from './types'
 
 export function TrustStep(props: { trust: RouteTraceTrust }) {
   const { t } = useTranslation()
@@ -107,6 +124,54 @@ export function ContinuationStep(props: {
           ],
         ]}
       />
+    </StepFrame>
+  )
+}
+
+/** How an adaptive request got the cost weight its quality and price comparison used. */
+export function ModeStep(props: { mode: RouteTraceMode }) {
+  const { t } = useTranslation()
+  const mode = props.mode
+  const judged = !mode.reason
+  const shares = AUTO_PREFERENCES.map(
+    (preference) =>
+      `${preferenceLabel(t, preference)} ${formatScore(mode.shares?.[preference] ?? 0)}`
+  )
+  const tiers = AUTO_PREFERENCES.map(
+    (preference) =>
+      `${preferenceLabel(t, preference)} ${formatScore(mode.tiers[preference])}`
+  )
+  const facts: FactRow[] = [[t('Cost weight'), formatScore(mode.weight)]]
+  if (judged) {
+    facts.unshift([t('Expected position'), formatScore(mode.position)])
+  }
+
+  return (
+    <StepFrame icon={Scale} title={t('Cost preference')}>
+      <ToneBadge
+        tone={judged ? 'success' : 'warning'}
+        label={judged ? t('Judged from the request') : t('No usable judgment')}
+      />
+      {judged && (
+        <>
+          <p className='text-muted-foreground text-xs'>
+            {t('Probability of each preference')}
+          </p>
+          <Chips items={shares} />
+        </>
+      )}
+      <Facts rows={facts} />
+      <p className='text-muted-foreground text-xs'>{t('Platform cost weights')}</p>
+      <Chips items={tiers} />
+      <p className='text-muted-foreground text-xs'>
+        {judged
+          ? t(
+              'The expected position runs from 0 (capability first) through 1 (balanced) to 2 (cost first), and the cost weight is read from it along the line through the three platform weights.'
+            )
+          : t(
+              'The classifier gave no usable answer on cost, so the balanced weight applies.'
+            )}
+      </p>
     </StepFrame>
   )
 }

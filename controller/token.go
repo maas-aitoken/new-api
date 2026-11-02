@@ -47,16 +47,13 @@ type tokenRequest struct {
 
 // validAutoPreference 判断请求里的 auto_preference 是否可以写入：未传或空串（平台默认）都可以。
 func (r tokenRequest) validAutoPreference() bool {
-	return r.AutoPreference == nil || *r.AutoPreference == "" || slices.Contains(autorouter.Preferences, *r.AutoPreference)
+	return r.AutoPreference == nil || *r.AutoPreference == "" || slices.Contains(autorouter.SelectablePreferences, *r.AutoPreference)
 }
 
-// 刻意不暴露路由偏好：上游约定令牌列表/详情响应不携带该概念，读取走专用接口
-// GET /token/:id/routing-preference。token_routing_preference_test.go 用
-// strings.Contains(body, "routing_preference") 锁定了这一点，加任何含该子串的
-// 键都会被判定为泄露。
 type tokenResponse struct {
 	*model.Token
-	AutoGroups []string `json:"auto_groups"`
+	AutoGroups     []string                     `json:"auto_groups"`
+	PreferenceMode common.RoutingPreferenceMode `json:"preference_mode"`
 }
 
 func maxTokenQuota() int {
@@ -83,7 +80,11 @@ func buildMaskedTokenResponse(token *model.Token) *tokenResponse {
 	if len(autoGroups) == 0 {
 		autoGroups = nil
 	}
-	return &tokenResponse{Token: &maskedToken, AutoGroups: autoGroups}
+	return &tokenResponse{
+		Token:          &maskedToken,
+		AutoGroups:     autoGroups,
+		PreferenceMode: token.GetRoutingPreferenceMode(),
+	}
 }
 
 func buildMaskedTokenResponses(tokens []*model.Token) []*tokenResponse {
@@ -383,6 +384,7 @@ func AddToken(c *gin.Context) {
 		CrossGroupRetry:    token.CrossGroupRetry,
 		AutoGroups:         token.AutoGroups,
 		Scene:              common.NormalizeTokenScene(string(token.Scene)),
+		RoutingMode:        common.NormalizeTokenRoutingMode(string(token.RoutingMode)),
 		Description:        token.Description,
 	}
 	cleanToken.AllowUserQuotaQuery = request.AllowUserQuotaQuery == nil || *request.AllowUserQuotaQuery
@@ -503,6 +505,7 @@ func UpdateToken(c *gin.Context) {
 		cleanToken.Group = token.Group
 		cleanToken.CrossGroupRetry = token.CrossGroupRetry
 		cleanToken.Scene = common.NormalizeTokenScene(string(token.Scene))
+		cleanToken.RoutingMode = common.NormalizeTokenRoutingMode(string(token.RoutingMode))
 		cleanToken.Description = token.Description
 
 		if request.RoutingPreferenceMode != nil {
@@ -557,6 +560,7 @@ func UpdateToken(c *gin.Context) {
 			{"auto_groups", previous.AutoGroups != cleanToken.AutoGroups},
 			{"auto_preference", previous.AutoPreference != cleanToken.AutoPreference},
 			{"scene", previous.Scene != cleanToken.Scene},
+			{"routing_mode", previous.RoutingMode != cleanToken.RoutingMode},
 			{"description", previous.Description != cleanToken.Description},
 			{"routing_preference", previous.RoutingPreference != cleanToken.RoutingPreference},
 		} {

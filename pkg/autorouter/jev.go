@@ -20,7 +20,8 @@ import (
 // v3: state is an object with separate current_task/previous_task fields.
 // v4: task types are <class>.<leaf> under the code/data/general classes.
 // v5: general.search covers live fact lookups apart from general.research.
-const QuestionsVersion = "autorouter_v5"
+// v6: the mode question judges whether the request weighs capability or cost.
+const QuestionsVersion = "autorouter_v6"
 
 // TaxonomyVersion changes whenever the task types change, so a stored ranking
 // keyed by older task types is never used for the new ones.
@@ -112,6 +113,15 @@ var questions = map[string]jevQuestion{
 			"false": "常规能力的模型就能做好，更强的模型带来的提升很小",
 		},
 	},
+	"mode": {
+		Type:         "choice",
+		Instructions: "只根据这条用户消息本身判断：用户更看重结果的质量与可靠，还是更看重省钱和速度。",
+		Criteria: map[string]string{
+			PreferenceCapability: "明确强调结果必须正确、严谨、完整，或事关重大：线上事故、生产环境改动、正式提交的材料、涉及资金或合规，希望用最好的模型",
+			PreferenceBalanced:   "没有表现出对质量或成本的特别要求，或者两方面都兼顾",
+			PreferenceCost:       "明确表示要省钱、省时间、尽快出结果，或说明只是随手问问、粗略看看、先出个草稿，不需要很精确",
+		},
+	},
 }
 
 // BuildState builds the classification state from the current human
@@ -196,6 +206,9 @@ type Decision struct {
 	// TaskTypeProbabilities holds every task type's probability; a class's
 	// probability is the sum over its task types.
 	TaskTypeProbabilities map[string]float64 `json:"task_type_probabilities,omitempty"`
+	// ModeProbabilities is the probability of each preference the mode question
+	// offers; only an adaptive request reads it.
+	ModeProbabilities map[string]float64 `json:"mode_probabilities,omitempty"`
 	// Difficulty is the most likely rung, 1-based; DifficultyScore is jev's
 	// probability-weighted position, 0-based.
 	Difficulty         int      `json:"difficulty"`
@@ -215,6 +228,7 @@ func (r *JevResponse) Decision(hasPrevious bool) Decision {
 		TaskTypeConfidence:    taskType.Confidence,
 		TaskTypeProbability:   taskType.Probabilities[taskType.Choice],
 		TaskTypeProbabilities: taskType.Probabilities,
+		ModeProbabilities:     r.Answers["mode"].Probabilities,
 		DifficultyScore:       difficulty.Score,
 		TaskChange:            r.Answers["task_change"].Noul,
 		LargerModelBenefit:    r.Answers["larger_model_benefit"].Noul,

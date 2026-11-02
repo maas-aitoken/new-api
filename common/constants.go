@@ -307,6 +307,20 @@ func NormalizeTokenScene(scene string) TokenScene {
 	return TokenSceneOffice
 }
 
+type TokenRoutingMode string
+
+const (
+	TokenRoutingModeSmart TokenRoutingMode = "smart" // 智能路由
+	TokenRoutingModeFixed TokenRoutingMode = "fixed" // 锁定模型
+)
+
+func NormalizeTokenRoutingMode(mode string) TokenRoutingMode {
+	if strings.TrimSpace(mode) == string(TokenRoutingModeFixed) {
+		return TokenRoutingModeFixed
+	}
+	return TokenRoutingModeSmart
+}
+
 type RoutingPreferenceMode string
 
 const (

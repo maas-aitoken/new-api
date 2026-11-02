@@ -37,6 +37,11 @@ const (
 	TrustLowConfidence = "low_confidence"
 )
 
+// Why an adaptive request has no judged weight.
+const (
+	ModeNoAnswer = "no_answer" // no decision, or the decision carries no usable mode answer
+)
+
 // What one ranking tried.
 const (
 	OutcomeCompared       = "compared"        // picked by quality and price
@@ -58,9 +63,27 @@ type Trace struct {
 	Judgment     string        `json:"judgment"`
 	Unroutable   *Unroutable   `json:"unroutable,omitempty"`
 	Trust        *Trust        `json:"trust,omitempty"`
+	Mode         *ModeTrace    `json:"mode,omitempty"`
 	Continuation *Continuation `json:"continuation,omitempty"`
 	Effort       *EffortTrace  `json:"effort,omitempty"`
 	Ladder       []LadderStep  `json:"ladder,omitempty"`
+}
+
+// ModeTrace is how an adaptive request got its cost weight. It is set only for an
+// adaptive request, and the weight matters only to a request that ran a quality and
+// price comparison: one that kept the previous model never used it.
+type ModeTrace struct {
+	// Reason is empty when the weight was judged, ModeNoAnswer when it fell back to
+	// the balanced weight.
+	Reason string `json:"reason,omitempty"`
+	// Shares is each preference's share of the judged probability.
+	Shares map[string]float64 `json:"shares,omitempty"`
+	// Position is the expected position on the capability (0), balanced (1), cost (2) scale.
+	Position float64 `json:"position"`
+	// Weight is the cost weight this request used.
+	Weight float64 `json:"weight"`
+	// Tiers are the platform's weights at the time, which the weight is read from.
+	Tiers TierWeights `json:"tiers"`
 }
 
 // RequestTrace holds what the instruction looked like, never its text.
