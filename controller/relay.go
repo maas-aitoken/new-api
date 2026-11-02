@@ -246,7 +246,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 
 		keyIndex := common.GetContextKeyInt(c, constant.ContextKeyChannelMultiKeyIndex)
 		attemptStart := time.Now()
-		runtimeWindow := service.BeginSchedulerRuntimeWithCapacity(channel.Id, keyIndex, channel.RPM, channel.TPM, channel.MaxConcurrency)
+		runtimeWindow := service.BeginSchedulerRuntime(channel.Id, keyIndex)
 		// <渠道, 上游模型> 的实时用量只统计不拦截。上游名按 model_mapping 链尾算，
 		// 与 setting.model_limits 的键一致。defer 兜底：handler panic 时也会
 		// 结束这次登记；正常路径下面会带着实际用量先结束，defer 就什么也不做。

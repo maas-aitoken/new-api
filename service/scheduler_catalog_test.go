@@ -8,6 +8,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
+	channelcapacity "github.com/QuantumNous/new-api/pkg/channel_capacity"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -15,18 +16,17 @@ import (
 func TestBuildSchedulerCatalogFromChannelsIsCredentialFreeAndExpandsKeys(t *testing.T) {
 	priority := int64(7)
 	weight := uint(3)
+	setting := `{"model_limits":{"deepseek-v4-flash":{"rpm":120,"tpm":90000,"max_concurrency":20}}}`
 	channel := &model.Channel{
-		Id:             42,
-		Type:           constant.ChannelTypeOpenAI,
-		Key:            "secret-one\nsecret-two",
-		Status:         common.ChannelStatusEnabled,
-		Models:         "deepseek-v4-flash,alias-model",
-		Group:          "default,paid",
-		Priority:       &priority,
-		Weight:         &weight,
-		RPM:            120,
-		TPM:            90000,
-		MaxConcurrency: 20,
+		Id:       42,
+		Type:     constant.ChannelTypeOpenAI,
+		Key:      "secret-one\nsecret-two",
+		Status:   common.ChannelStatusEnabled,
+		Models:   "deepseek-v4-flash,alias-model",
+		Group:    "default,paid",
+		Priority: &priority,
+		Weight:   &weight,
+		Setting:  &setting,
 		ChannelInfo: model.ChannelInfo{
 			IsMultiKey:         true,
 			MultiKeyStatusList: map[int]int{1: common.ChannelStatusManuallyDisabled},
@@ -53,9 +53,41 @@ func TestBuildSchedulerCatalogFromChannelsIsCredentialFreeAndExpandsKeys(t *test
 	if catalog.Endpoints[0].Provider != constant.GetChannelTypeName(constant.ChannelTypeOpenAI) || catalog.Endpoints[0].Priority != priority || catalog.Endpoints[0].Weight != int64(weight) {
 		t.Fatalf("channel metadata mismatch: %+v", catalog.Endpoints[0])
 	}
-	if catalog.Endpoints[0].Limits.RPM != 120 || catalog.Endpoints[0].Limits.TPM != 90000 || catalog.Endpoints[0].Limits.MaxConcurrency != 20 {
-		t.Fatalf("channel capacity mismatch: %+v", catalog.Endpoints[0].Limits)
+	// 两个 key 端点带同一份 <渠道, 模型> 额度和同一个计数池：额度是整个渠道合计。
+	for _, endpoint := range catalog.Endpoints {
+		assert.Equal(t, SchedulerLimits{RPM: 120, TPM: 90000, MaxConcurrency: 20}, endpoint.Limits)
+		assert.Equal(t, channelcapacity.PoolID(42, "deepseek-v4-flash"), endpoint.CapacityPoolID)
 	}
+}
+
+func TestBuildSchedulerCatalogPoolsByMappedUpstreamModel(t *testing.T) {
+	mapping := `{"alias":"upstream-x"}`
+	setting := `{"model_limits":{"upstream-x":{"rpm":30}}}`
+	channel := &model.Channel{
+		Id: 5, Type: constant.ChannelTypeOpenAI, Key: "secret", Status: common.ChannelStatusEnabled,
+		Models: "alias,upstream-x,other", ModelMapping: &mapping, Setting: &setting,
+	}
+
+	viaAlias, err := BuildSchedulerCatalogFromChannels("alias", []*model.Channel{channel})
+	require.NoError(t, err)
+	direct, err := BuildSchedulerCatalogFromChannels("upstream-x", []*model.Channel{channel})
+	require.NoError(t, err)
+	other, err := BuildSchedulerCatalogFromChannels("other", []*model.Channel{channel})
+	require.NoError(t, err)
+
+	// 别名与上游名打到同一个上游模型，共用一个池和一份额度；别的模型各算各的、不限。
+	assert.Equal(t, viaAlias.Endpoints[0].CapacityPoolID, direct.Endpoints[0].CapacityPoolID)
+	assert.Equal(t, SchedulerLimits{RPM: 30}, viaAlias.Endpoints[0].Limits)
+	assert.Equal(t, SchedulerLimits{RPM: 30}, direct.Endpoints[0].Limits)
+	assert.NotEqual(t, viaAlias.Endpoints[0].CapacityPoolID, other.Endpoints[0].CapacityPoolID)
+	assert.Equal(t, SchedulerLimits{}, other.Endpoints[0].Limits)
+
+	// 额度变化要换 Catalog 版本，调度器才会重新加载。
+	changed := `{"model_limits":{"upstream-x":{"rpm":31}}}`
+	channel.Setting = &changed
+	reloaded, err := BuildSchedulerCatalogFromChannels("alias", []*model.Channel{channel})
+	require.NoError(t, err)
+	assert.NotEqual(t, viaAlias.Version, reloaded.Version)
 }
 
 func TestBuildSchedulerCatalogIncludesModelMappingSourceAlias(t *testing.T) {

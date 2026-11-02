@@ -33,7 +33,9 @@ func TestObserveSchedulerRuntimePublishesChannelKeyWindow(t *testing.T) {
 	require.Equal(t, "250", values["latency_sum_ms"])
 }
 
-func TestBeginSchedulerRuntimeWithCapacityPublishesLimits(t *testing.T) {
+// 额度改由 Catalog 的 <渠道, 上游模型> Limits 提供，按 key 的运行时 hash 不再
+// 带 capacity_* 字段，免得调度器拿到过时的渠道级额度当回退值。
+func TestBeginSchedulerRuntimeDoesNotPublishCapacity(t *testing.T) {
 	server := miniredis.RunT(t)
 	client := redis.NewClient(&redis.Options{Addr: server.Addr()})
 	previousEnabled, previousRDB := common.RedisEnabled, common.RDB
@@ -43,10 +45,11 @@ func TestBeginSchedulerRuntimeWithCapacityPublishesLimits(t *testing.T) {
 		_ = client.Close()
 	})
 
-	BeginSchedulerRuntimeWithCapacity(8, 1, 120, 90000, 20)
+	BeginSchedulerRuntime(8, 1)
 	values, err := SchedulerRuntimeSnapshot(t.Context(), 8, 1)
 	require.NoError(t, err)
-	require.Equal(t, "120", values["capacity_rpm"])
-	require.Equal(t, "90000", values["capacity_tpm"])
-	require.Equal(t, "20", values["max_concurrency"])
+	require.Equal(t, "1", values["requests_started"])
+	require.NotContains(t, values, "capacity_rpm")
+	require.NotContains(t, values, "capacity_tpm")
+	require.NotContains(t, values, "max_concurrency")
 }

@@ -11,6 +11,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
+	channelcapacity "github.com/QuantumNous/new-api/pkg/channel_capacity"
 )
 
 // SchedulerCatalog is the credential-free Catalog contract consumed by the
@@ -34,7 +35,12 @@ type SchedulerEndpoint struct {
 	Priority     int64                 `json:"priority"`
 	Weight       int64                 `json:"weight"`
 	Capabilities SchedulerCapabilities `json:"capabilities"`
-	Limits       SchedulerLimits       `json:"limits"`
+	// Limits 是 <渠道, 上游模型> 的额度（setting.model_limits），同一个
+	// CapacityPoolID 下的每个 key 端点带同一份，调度器按池而不是按 key 计数。
+	Limits SchedulerLimits `json:"limits"`
+	// CapacityPoolID 是 <渠道, 上游模型> 计数池，与 channel_capacity.PoolID 相同；
+	// 调度器按它做准入，并按它读 new-api 写的实时用量。
+	CapacityPoolID string `json:"capacity_pool_id,omitempty"`
 }
 
 type SchedulerCapabilities struct {
@@ -92,6 +98,13 @@ func BuildSchedulerCatalogFromChannels(modelName string, channels []*model.Chann
 			// configured Channel while never attempting a missing credential.
 			keys = []string{""}
 		}
+		// 额度与计数池按 <渠道, 上游模型> 算，所有 key 端点共用：额度是整个渠道合计。
+		settingRaw := ""
+		if channel.Setting != nil {
+			settingRaw = *channel.Setting
+		}
+		limit, upstreamModel := model.ChannelModelLimitOf(settingRaw, channel.GetModelMapping(), modelName)
+		poolID := channelcapacity.PoolID(channel.Id, upstreamModel)
 		for keyIndex := range keys {
 			enabled := channel.Status == common.ChannelStatusEnabled
 			if channel.ChannelInfo.IsMultiKey {
@@ -121,8 +134,9 @@ func BuildSchedulerCatalogFromChannels(modelName string, channels []*model.Chann
 				// new-api's relay accepts. Leaving them at the Go zero value would
 				// incorrectly turn "unknown" into an explicit Scheduler denial and
 				// reject every tools/JSON-mode request before it reaches the relay.
-				Capabilities: SchedulerCapabilities{Stream: true, Tools: true, JSONMode: true},
-				Limits:       SchedulerLimits{RPM: channel.RPM, TPM: channel.TPM, MaxConcurrency: channel.MaxConcurrency},
+				Capabilities:   SchedulerCapabilities{Stream: true, Tools: true, JSONMode: true},
+				Limits:         SchedulerLimits{RPM: limit.RPM, TPM: limit.TPM, MaxConcurrency: limit.MaxConcurrency},
+				CapacityPoolID: poolID,
 			})
 		}
 	}
