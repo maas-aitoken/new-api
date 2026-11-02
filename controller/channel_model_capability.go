@@ -9,6 +9,7 @@ import (
 	"github.com/QuantumNous/new-api/model"
 	channelcapacity "github.com/QuantumNous/new-api/pkg/channel_capacity"
 	"github.com/QuantumNous/new-api/relaykit/dto"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/service/capability"
 
 	"github.com/gin-gonic/gin"
@@ -143,8 +144,13 @@ type remainingCapacity struct {
 	Concurrency *int64 `json:"concurrency"`
 }
 
-func remainingOf(limit dto.ModelLimit, usage channelcapacity.Usage) remainingCapacity {
+// remainingOf 算剩余量。exhausted 表示容量池没有可用账号，三项剩余都是 0。
+func remainingOf(limit dto.ModelLimit, exhausted bool, usage channelcapacity.Usage) remainingCapacity {
 	var remaining remainingCapacity
+	if exhausted {
+		zero := int64(0)
+		return remainingCapacity{RPM: &zero, TPM: &zero, Concurrency: &zero}
+	}
 	if limit.RPM > 0 {
 		value := max(int64(limit.RPM)-usage.RPM, 0)
 		remaining.RPM = &value
@@ -160,6 +166,20 @@ func remainingOf(limit dto.ModelLimit, usage channelcapacity.Usage) remainingCap
 	return remaining
 }
 
+// channelModelCapacityPool 是绑了容量池的 <渠道, 模型> 的池信息。Limit/用量/剩余
+// 在外层，是整个容量池的数；这里的 Member* 是这个成员自己用了多少。
+type channelModelCapacityPool struct {
+	Id             int                         `json:"id"`
+	Name           string                      `json:"name"`
+	Source         string                      `json:"source"`
+	Exhausted      bool                        `json:"exhausted"`
+	ComputedAt     int64                       `json:"computed_at"`
+	Status         *channelcapacity.PollStatus `json:"status,omitempty"`
+	MemberRPMUsed  int64                       `json:"member_rpm_used"`
+	MemberTPMUsed  int64                       `json:"member_tpm_used"`
+	MemberInFlight int64                       `json:"member_in_flight"`
+}
+
 type channelModelCapacityItem struct {
 	ChannelId     int               `json:"channel_id"`
 	Model         string            `json:"model"`
@@ -170,11 +190,17 @@ type channelModelCapacityItem struct {
 	TPMUsed       int64             `json:"tpm_used"`
 	InFlight      int64             `json:"in_flight"`
 	Remaining     remainingCapacity `json:"remaining"`
+	// CapacityPool 不为空表示绑在容量池上：PoolId、Limit、用量和剩余都是整个池的。
+	CapacityPool *channelModelCapacityPool `json:"capacity_pool,omitempty"`
+	// memberPoolId 是成员自己的 <渠道, 上游模型> 池，只在绑了容量池时用来读成员用量。
+	memberPoolId string
+	exhausted    bool
 }
 
 // GetChannelModelCapacity 返回一个模型在若干渠道上的实时用量、额度和剩余量：
 // GET /api/channel-model-capabilities/capacity?model=<公开名>&channel_ids=1,2
 // tpm_used 中在途请求只含输入估算。shared=false 表示没配 Redis，只反映本节点。
+// 绑了容量池的渠道返回整个池的额度（动态额度或保底额度）与用量，另附它自己的用量。
 func GetChannelModelCapacity(c *gin.Context) {
 	modelName := strings.TrimSpace(c.Query("model"))
 	if modelName == "" {
@@ -185,6 +211,21 @@ func GetChannelModelCapacity(c *gin.Context) {
 	if len(parts) > channelModelCapacityMaxIds {
 		common.ApiErrorMsg(c, "too many channel_ids")
 		return
+	}
+	// 容量池只有几个，一次读全再按 id 查。
+	pools, err := model.GetCapacityPools("")
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	views, err := service.ResolveCapacityPoolLimits(pools)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	poolNames := make(map[int]string, len(pools))
+	for _, pool := range pools {
+		poolNames[pool.Id] = pool.Name
 	}
 	items := make([]channelModelCapacityItem, 0, len(parts))
 	poolIDs := make([]string, 0, len(parts))
@@ -205,9 +246,19 @@ func GetChannelModelCapacity(c *gin.Context) {
 		}
 		capacity := model.ChannelModelCapacityOf(settingRaw, channel.GetModelMapping(), modelName)
 		poolID := channelcapacity.PoolID(channelID, capacity.UpstreamModel)
-		items = append(items, channelModelCapacityItem{
+		item := channelModelCapacityItem{
 			ChannelId: channelID, Model: modelName, UpstreamModel: capacity.UpstreamModel, PoolId: poolID, Limit: capacity.Limit,
-		})
+		}
+		// 绑定指向已删除的池时按没绑定处理，与中继、Catalog 一致。
+		if view, bound := views[capacity.CapacityPoolId]; bound {
+			item.memberPoolId, item.PoolId, item.Limit, item.exhausted = poolID, view.PoolID, view.Limit, view.Exhausted
+			item.CapacityPool = &channelModelCapacityPool{
+				Id: capacity.CapacityPoolId, Name: poolNames[capacity.CapacityPoolId], Source: view.Source,
+				Exhausted: view.Exhausted, ComputedAt: view.ComputedAt, Status: view.Status,
+			}
+			poolIDs = append(poolIDs, view.PoolID)
+		}
+		items = append(items, item)
 		poolIDs = append(poolIDs, poolID)
 	}
 	usages, err := channelcapacity.Snapshot(poolIDs)
@@ -218,7 +269,13 @@ func GetChannelModelCapacity(c *gin.Context) {
 	for i := range items {
 		usage := usages[items[i].PoolId]
 		items[i].RPMUsed, items[i].TPMUsed, items[i].InFlight = usage.RPM, usage.TPM, usage.InFlight
-		items[i].Remaining = remainingOf(items[i].Limit, usage)
+		items[i].Remaining = remainingOf(items[i].Limit, items[i].exhausted, usage)
+		if items[i].CapacityPool != nil {
+			member := usages[items[i].memberPoolId]
+			items[i].CapacityPool.MemberRPMUsed = member.RPM
+			items[i].CapacityPool.MemberTPMUsed = member.TPM
+			items[i].CapacityPool.MemberInFlight = member.InFlight
+		}
 	}
 	common.ApiSuccess(c, gin.H{
 		"items":          items,
