@@ -18,6 +18,7 @@ import (
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/observability"
 	"github.com/QuantumNous/new-api/pkg/attemptlog"
+	channelcapacity "github.com/QuantumNous/new-api/pkg/channel_capacity"
 	channelmetrics "github.com/QuantumNous/new-api/pkg/channel_metrics"
 	pluginruntime "github.com/QuantumNous/new-api/pkg/jsplugin"
 	perfmetrics "github.com/QuantumNous/new-api/pkg/perf_metrics"
@@ -246,6 +247,12 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		keyIndex := common.GetContextKeyInt(c, constant.ContextKeyChannelMultiKeyIndex)
 		attemptStart := time.Now()
 		runtimeWindow := service.BeginSchedulerRuntimeWithCapacity(channel.Id, keyIndex, channel.RPM, channel.TPM, channel.MaxConcurrency)
+		// <渠道, 上游模型> 的实时用量只统计不拦截。上游名按 model_mapping 链尾算，
+		// 与 setting.model_limits 的键一致。defer 兜底：handler panic 时也会
+		// 结束这次登记；正常路径下面会带着实际用量先结束，defer 就什么也不做。
+		capacityUpstream, _, _ := model.ResolveMappedModel(c.GetString("model_mapping"), relayInfo.OriginModelName)
+		capacityLease := channelcapacity.Begin(channel.Id, capacityUpstream, relayInfo.GetEstimatePromptTokens())
+		defer channelcapacity.Finish(capacityLease, false, 0, 0)
 		priceData := relayInfo.PriceData
 		attempt := attemptScope.BeginAttempt(c, retryParam.GetRetry(), attemptlog.ChannelTarget{
 			ChannelId:         channel.Id,
@@ -323,6 +330,11 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			logger.LogDebug(c, "scheduler attempt report skipped: %v", err)
 		}
 		service.FinishSchedulerRuntime(channel.Id, keyIndex, runtimeWindow, attemptStatus, inputTokens, outputTokens, time.Since(attemptStart))
+		// 这里只用上游实际报的用量：没报输入时保留开始时的估算，
+		// 失败且没有任何用量时撤回估算（见 channel_capacity.Finish）。
+		channelcapacity.Finish(capacityLease, newAPIError == nil,
+			common.GetContextKeyInt(c, constant.ContextKeySchedulerInputTokens),
+			common.GetContextKeyInt(c, constant.ContextKeySchedulerOutputTokens))
 
 		attempt.Finish(c, finishInputFor(c, relayInfo, newAPIError))
 
