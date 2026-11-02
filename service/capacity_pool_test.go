@@ -296,6 +296,10 @@ func TestRefreshCapacityPoolPublishesDynamicLimitAndKeepsItOnFailure(t *testing.
 	assert.Equal(t, "floor", view.Source)
 	assert.Equal(t, dto.ModelLimit{RPM: 50}, view.Limit)
 
+	// 过期后再拉到：调度器已回到保底额度，直接用新值，不再从过期的 250 往上爬。
+	refreshCapacityPool(pool, usage, nil, now.Add(5*time.Minute))
+	assert.Equal(t, dto.ModelLimit{RPM: 400, MaxConcurrency: 16}, resolve().Limit)
+
 	// 拉取成功但账号都停用了：耗尽。恢复时直接用新值，不受 25% 限制。
 	disabled := &ResourcePoolResult{Accounts: []*model.ResourcePoolAccount{account(inScope, "1", "ultra", false)}}
 	refreshCapacityPool(pool, disabled, nil, now.Add(10*time.Minute))
