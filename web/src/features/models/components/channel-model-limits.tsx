@@ -200,12 +200,19 @@ export function ChannelModelLimitInputs(props: {
   )
 }
 
+/** 一份额度此刻的用量与剩余：<渠道, 模型> 的，或资源池页容量池的。 */
+export type CapacityUsage = Pick<
+  ChannelModelCapacity,
+  'limit' | 'rpm_used' | 'tpm_used' | 'in_flight' | 'remaining'
+>
+
 /**
- * 一个 <渠道, 模型> 的实时用量。设了额度的维度显示"已用 / 额度 · 剩余"，
- * 剩余为 0 时标红；没设额度的只显示已用。
+ * 实时用量。设了额度的维度显示"已用 / 额度 · 剩余"，剩余为 0 时标红；
+ * 没设额度的只显示已用。label 是整行的可访问名称，默认按渠道号生成。
  */
 export function ChannelModelCapacityLine(props: {
-  capacity?: ChannelModelCapacity
+  capacity?: CapacityUsage & { channel_id?: number }
+  label?: string
 }) {
   const { t, i18n } = useTranslation()
   if (!props.capacity) {
@@ -244,9 +251,10 @@ export function ChannelModelCapacityLine(props: {
   return (
     <div
       className='text-muted-foreground flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs tabular-nums'
-      aria-label={t('Live usage for channel #{{id}}', {
-        id: capacity.channel_id,
-      })}
+      aria-label={
+        props.label ??
+        t('Live usage for channel #{{id}}', { id: capacity.channel_id })
+      }
     >
       {dimensions.map((dimension) => (
         <span key={dimension.key} title={dimension.title}>
