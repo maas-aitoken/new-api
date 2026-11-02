@@ -103,8 +103,9 @@ func BuildSchedulerCatalogFromChannels(modelName string, channels []*model.Chann
 		if channel.Setting != nil {
 			settingRaw = *channel.Setting
 		}
-		limit, upstreamModel := model.ChannelModelLimitOf(settingRaw, channel.GetModelMapping(), modelName)
-		poolID := channelcapacity.PoolID(channel.Id, upstreamModel)
+		capacity := model.ChannelModelCapacityOf(settingRaw, channel.GetModelMapping(), modelName)
+		limit := capacity.Limit
+		poolID := channelcapacity.PoolID(channel.Id, capacity.UpstreamModel)
 		for keyIndex := range keys {
 			enabled := channel.Status == common.ChannelStatusEnabled
 			if channel.ChannelInfo.IsMultiKey {

@@ -20,7 +20,7 @@ func setupCapabilityModelTest(t *testing.T) *gorm.DB {
 	dsn := fmt.Sprintf("file:%s?mode=memory&cache=shared", strings.ReplaceAll(t.Name(), "/", "_"))
 	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{})
 	require.NoError(t, err)
-	require.NoError(t, db.AutoMigrate(&Model{}, &Channel{}, &Ability{}, &ChannelModelStatus{}, &ChannelModelCapability{}))
+	require.NoError(t, db.AutoMigrate(&Model{}, &Channel{}, &Ability{}, &ChannelModelStatus{}, &ChannelModelCapability{}, &ResourcePoolSource{}, &CapacityPool{}))
 	DB = db
 	t.Cleanup(func() {
 		DB = previousDB
@@ -362,9 +362,10 @@ func TestSetChannelModelLimitKeysByMappedUpstream(t *testing.T) {
 	assert.Equal(t, map[string]dto.ModelLimit{"upstream-x": limit}, stored.ModelLimits)
 	assert.Equal(t, map[string]float64{"upstream-x": 1.5}, stored.CostMultiplierMap, "写额度不能冲掉同一 setting 里的其它字段")
 
-	gotLimit, upstream := ChannelModelLimitOf(*channel.Setting, mapping, "alias-b")
-	assert.Equal(t, "upstream-x", upstream)
-	assert.Equal(t, limit, gotLimit, "alias-b 指向同一上游，读到同一份额度")
+	capacity := ChannelModelCapacityOf(*channel.Setting, mapping, "alias-b")
+	assert.Equal(t, "upstream-x", capacity.UpstreamModel)
+	assert.Equal(t, limit, capacity.Limit, "alias-b 指向同一上游，读到同一份额度")
+	assert.Zero(t, capacity.CapacityPoolId)
 
 	targets, _, err := GetCapabilityTargets(CapabilityTargetQuery{})
 	require.NoError(t, err)
@@ -390,6 +391,95 @@ func TestSetChannelModelLimitKeysByMappedUpstream(t *testing.T) {
 	assert.Contains(t, err.Error(), "rpm must be between")
 
 	// setting 不是合法 JSON 时按未配置处理，不报错也不改库。
-	gotLimit, _ = ChannelModelLimitOf("{broken", mapping, "alias-a")
-	assert.Equal(t, dto.ModelLimit{}, gotLimit)
+	assert.Equal(t, ChannelModelCapacity{UpstreamModel: "upstream-x"}, ChannelModelCapacityOf("{broken", mapping, "alias-a"))
+}
+
+func TestCapacityPoolMembersBindByUpstreamAndClearOnDelete(t *testing.T) {
+	db := setupCapabilityModelTest(t)
+	require.NoError(t, db.Create(&ResourcePoolSource{Id: 1, Provider: ResourcePoolClaude, Name: "kiro-a", Endpoint: "https://a.example.com"}).Error)
+	require.NoError(t, db.Create(&ResourcePoolSource{Id: 2, Provider: ResourcePoolClaude, Name: "kiro-b", Endpoint: "https://b.example.com"}).Error)
+	require.NoError(t, db.Create(&ResourcePoolSource{Id: 3, Provider: ResourcePoolGPT, Name: "codex", Endpoint: "https://c.example.com"}).Error)
+
+	// 保存时的校验：来源必须属于 provider，同 provider 的池账号范围不能重叠。
+	require.ErrorContains(t, SaveCapacityPool(&CapacityPool{Name: " ", Provider: ResourcePoolClaude}, CapacityPoolConfig{SourceIds: []int64{1}}), "name is required")
+	require.ErrorContains(t, SaveCapacityPool(&CapacityPool{Name: "x", Provider: ResourcePoolClaude}, CapacityPoolConfig{SourceIds: []int64{3}}), "does not belong")
+	require.ErrorContains(t, SaveCapacityPool(&CapacityPool{Name: "x", Provider: ResourcePoolClaude}, CapacityPoolConfig{SourceIds: []int64{1}, ThresholdPercent: 120}), "threshold_percent")
+	poolA := &CapacityPool{Name: "aws1", Provider: ResourcePoolClaude}
+	require.NoError(t, SaveCapacityPool(poolA, CapacityPoolConfig{SourceIds: []int64{1}, Groups: []string{" aws1 ", "aws1"}}))
+	require.ErrorContains(t, SaveCapacityPool(&CapacityPool{Name: "dup", Provider: ResourcePoolClaude}, CapacityPoolConfig{SourceIds: []int64{1}}), "overlap")
+	require.NoError(t, SaveCapacityPool(&CapacityPool{Name: "aws2", Provider: ResourcePoolClaude}, CapacityPoolConfig{SourceIds: []int64{1}, Groups: []string{"aws2"}}), "同一来源的不同分组不算重叠")
+	floor := dto.ModelLimit{RPM: 30}
+	poolB := &CapacityPool{Name: "kiro-b", Provider: ResourcePoolClaude}
+	require.NoError(t, SaveCapacityPool(poolB, CapacityPoolConfig{SourceIds: []int64{2}, Floor: floor}))
+	storedA, err := GetCapacityPoolById(poolA.Id)
+	require.NoError(t, err)
+	configA, err := storedA.ParseConfig()
+	require.NoError(t, err)
+	assert.Equal(t, []string{"aws1"}, configA.Groups)
+	assert.Equal(t, float64(95), configA.ThresholdPercent, "没填的参数补默认值")
+	assert.Equal(t, 600, configA.GraceSeconds)
+	poolA.Provider = ResourcePoolGPT
+	require.ErrorContains(t, SaveCapacityPool(poolA, CapacityPoolConfig{SourceIds: []int64{3}}), "cannot be changed")
+
+	mapping := `{"alias-a":"mid","mid":"upstream-x","alias-b":"upstream-x"}`
+	setting := `{"model_limits":{"upstream-x":{"rpm":60}}}`
+	require.NoError(t, db.Create(&Channel{
+		Id: 7, Name: "kiro", Group: "default", Models: "alias-a,alias-b,direct",
+		ModelMapping: &mapping, Setting: &setting, Status: common.ChannelStatusEnabled,
+	}).Error)
+	for _, name := range []string{"alias-a", "alias-b", "direct"} {
+		require.NoError(t, db.Create(&Ability{Group: "default", Model: name, ChannelId: 7, Enabled: true}).Error)
+	}
+	require.NoError(t, InitCapabilityCache())
+
+	added, err := AddCapacityPoolMembers(poolA.Id, 7, []string{"alias-a"})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"upstream-x"}, added, "按映射链尾的上游名绑定")
+	added, err = AddCapacityPoolMembers(poolA.Id, 7, nil)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"direct"}, added, "空表示全部模型；指向已绑上游的别名跳过")
+	_, err = AddCapacityPoolMembers(poolB.Id, 7, []string{"alias-b"})
+	require.ErrorContains(t, err, "already in capacity pool")
+	_, err = AddCapacityPoolMembers(poolA.Id, 7, []string{"not-served"})
+	require.ErrorContains(t, err, "does not serve model")
+
+	var channel Channel
+	require.NoError(t, db.First(&channel, "id = ?", 7).Error)
+	assert.Equal(t, map[string]int{"upstream-x": poolA.Id, "direct": poolA.Id}, channel.GetSetting().CapacityPools)
+	assert.Equal(t, map[string]dto.ModelLimit{"upstream-x": {RPM: 60}}, channel.GetSetting().ModelLimits, "绑定不动成员自己的额度")
+	assert.Equal(t, poolA.Id, ChannelModelCapacityOf(*channel.Setting, mapping, "alias-b").CapacityPoolId)
+	require.ErrorIs(t, SetChannelModelLimit(7, "alias-b", dto.ModelLimit{RPM: 5}), ErrModelLimitManagedByCapacityPool)
+
+	members, err := GetCapacityPoolMembers()
+	require.NoError(t, err)
+	assert.Equal(t, []CapacityPoolMember{
+		{ChannelId: 7, ChannelName: "kiro", UpstreamModel: "direct", Models: []string{"direct"}},
+		{ChannelId: 7, ChannelName: "kiro", UpstreamModel: "upstream-x", Models: []string{"alias-a", "alias-b"}},
+	}, members[poolA.Id])
+	targets, _, err := GetCapabilityTargets(CapabilityTargetQuery{Keyword: "alias-a"})
+	require.NoError(t, err)
+	require.Len(t, targets, 1)
+	assert.Equal(t, poolA.Id, targets[0].Channels[0].CapacityPoolId)
+	assert.Equal(t, "aws1", targets[0].Channels[0].CapacityPoolName)
+
+	// 改了模型列表后没有公开名再指向的绑定标为失效。
+	require.NoError(t, db.Model(&Channel{}).Where("id = ?", 7).Update("models", "alias-a,alias-b").Error)
+	members, err = GetCapacityPoolMembers()
+	require.NoError(t, err)
+	assert.True(t, members[poolA.Id][0].Stale)
+	require.NoError(t, RemoveCapacityPoolMember(poolA.Id, 7, "direct"))
+	require.ErrorContains(t, RemoveCapacityPoolMember(poolA.Id, 7, "direct"), "is not in capacity pool")
+
+	floors, err := GetCapacityPoolFloors()
+	require.NoError(t, err)
+	assert.Equal(t, floor, floors[poolB.Id])
+
+	// 删池时一并清掉绑定，成员回到自己的 model_limits。
+	require.NoError(t, DeleteCapacityPool(poolA.Id))
+	require.ErrorIs(t, DeleteCapacityPool(poolA.Id), ErrCapacityPoolNotFound)
+	require.NoError(t, db.First(&channel, "id = ?", 7).Error)
+	assert.Empty(t, channel.GetSetting().CapacityPools)
+	assert.NotContains(t, *channel.Setting, "capacity_pools")
+	assert.Equal(t, map[string]dto.ModelLimit{"upstream-x": {RPM: 60}}, channel.GetSetting().ModelLimits)
+	require.NoError(t, SetChannelModelLimit(7, "alias-b", dto.ModelLimit{RPM: 5}), "解绑后又能改自己的额度")
 }

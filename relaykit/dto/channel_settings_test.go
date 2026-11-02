@@ -851,6 +851,25 @@ func TestChannelSettingsModelLimits(t *testing.T) {
 	}
 }
 
+func TestChannelSettingsCapacityPools(t *testing.T) {
+	var setting ChannelSettings
+	require.NoError(t, json.Unmarshal([]byte(`{"capacity_pools":{"claude-sonnet-4":3}}`), &setting))
+	assert.Equal(t, 3, setting.CapacityPoolFor("claude-sonnet-4"))
+	assert.Equal(t, 0, setting.CapacityPoolFor("other"), "没绑定的上游模型返回 0")
+	require.NoError(t, setting.ValidateCapacityPools())
+
+	encoded, err := json.Marshal(ChannelSettings{})
+	require.NoError(t, err)
+	assert.NotContains(t, string(encoded), "capacity_pools", "没有绑定时不输出这个键")
+
+	err = (&ChannelSettings{CapacityPools: map[string]int{" ": 1}}).ValidateCapacityPools()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "blank model name")
+	err = (&ChannelSettings{CapacityPools: map[string]int{"m": 0}}).ValidateCapacityPools()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "positive pool id")
+}
+
 func TestChannelOtherSettingsValidateToolLossPolicy(t *testing.T) {
 	require.NoError(t, (*ChannelOtherSettings)(nil).ValidateToolLossPolicy())
 	require.NoError(t, (&ChannelOtherSettings{}).ValidateToolLossPolicy())

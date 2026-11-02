@@ -203,10 +203,10 @@ func GetChannelModelCapacity(c *gin.Context) {
 		if channel.Setting != nil {
 			settingRaw = *channel.Setting
 		}
-		limit, upstream := model.ChannelModelLimitOf(settingRaw, channel.GetModelMapping(), modelName)
-		poolID := channelcapacity.PoolID(channelID, upstream)
+		capacity := model.ChannelModelCapacityOf(settingRaw, channel.GetModelMapping(), modelName)
+		poolID := channelcapacity.PoolID(channelID, capacity.UpstreamModel)
 		items = append(items, channelModelCapacityItem{
-			ChannelId: channelID, Model: modelName, UpstreamModel: upstream, PoolId: poolID, Limit: limit,
+			ChannelId: channelID, Model: modelName, UpstreamModel: capacity.UpstreamModel, PoolId: poolID, Limit: capacity.Limit,
 		})
 		poolIDs = append(poolIDs, poolID)
 	}

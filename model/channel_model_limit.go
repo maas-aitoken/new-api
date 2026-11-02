@@ -103,6 +103,9 @@ func SetChannelModelLimit(channelID int, publicModel string, limit dto.ModelLimi
 		if err != nil {
 			return fmt.Errorf("channel #%d model_mapping: %w", channelID, err)
 		}
+		if setting.CapacityPoolFor(upstream) != 0 {
+			return ErrModelLimitManagedByCapacityPool
+		}
 		if limit.IsZero() {
 			delete(setting.ModelLimits, upstream)
 			if len(setting.ModelLimits) == 0 {
@@ -127,17 +130,30 @@ func SetChannelModelLimit(channelID int, publicModel string, limit dto.ModelLimi
 	return nil
 }
 
-// ChannelModelLimitOf 返回渠道对一个公开模型生效的额度和对应的上游模型名。
+// ChannelModelCapacity 是渠道对一个公开模型的容量配置。
+type ChannelModelCapacity struct {
+	// UpstreamModel 是 model_mapping 链尾的上游模型名，额度和计数都按它。
+	UpstreamModel string
+	// Limit 是渠道自己配的额度（setting.model_limits）；绑了容量池时不生效。
+	Limit dto.ModelLimit
+	// CapacityPoolId 是绑定的容量池，0 表示没绑。
+	CapacityPoolId int
+}
+
+// ChannelModelCapacityOf 返回渠道对一个公开模型的容量配置。
 // 入参是渠道的 setting 与 model_mapping 原文：不走 Channel.GetSetting，因为它在
-// JSON 解析失败时会把渠道写回数据库。setting 解析失败时按未配置（全不限）处理；
+// JSON 解析失败时会把渠道写回数据库。setting 解析失败时按未配置（全不限、没绑池）处理；
 // model_mapping 有环时按公开名查，与中继报错前的状态一致，额度不会命中。
-func ChannelModelLimitOf(settingRaw, modelMappingRaw, publicModel string) (dto.ModelLimit, string) {
+func ChannelModelCapacityOf(settingRaw, modelMappingRaw, publicModel string) ChannelModelCapacity {
 	upstream, _, _ := ResolveMappedModel(modelMappingRaw, publicModel)
+	capacity := ChannelModelCapacity{UpstreamModel: upstream}
 	setting := dto.ChannelSettings{}
 	if strings.TrimSpace(settingRaw) != "" {
 		if err := common.UnmarshalJsonStr(settingRaw, &setting); err != nil {
-			return dto.ModelLimit{}, upstream
+			return capacity
 		}
 	}
-	return setting.ModelLimitFor(upstream), upstream
+	capacity.Limit = setting.ModelLimitFor(upstream)
+	capacity.CapacityPoolId = setting.CapacityPoolFor(upstream)
+	return capacity
 }
