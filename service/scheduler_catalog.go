@@ -12,6 +12,7 @@ import (
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
 	channelcapacity "github.com/QuantumNous/new-api/pkg/channel_capacity"
+	"github.com/QuantumNous/new-api/relaykit/dto"
 )
 
 // SchedulerCatalog is the credential-free Catalog contract consumed by the
@@ -72,13 +73,18 @@ func BuildSchedulerCatalog(modelName string) (SchedulerCatalog, error) {
 	if err != nil {
 		return SchedulerCatalog{}, err
 	}
-	return BuildSchedulerCatalogFromChannels(modelName, channels)
+	floors, err := model.GetCapacityPoolFloors()
+	if err != nil {
+		return SchedulerCatalog{}, err
+	}
+	return BuildSchedulerCatalogFromChannels(modelName, channels, floors)
 }
 
 // BuildSchedulerCatalogFromChannels is separated from the database query so
 // the sensitive-field and multi-key expansion rules can be tested without a
-// running new-api database.
-func BuildSchedulerCatalogFromChannels(modelName string, channels []*model.Channel) (SchedulerCatalog, error) {
+// running new-api database. capacityPoolFloors 是每个容量池的保底额度，
+// 绑到池上的成员用它填 Limits；不在表里的池 id（池已被删）按没绑定处理。
+func BuildSchedulerCatalogFromChannels(modelName string, channels []*model.Channel, capacityPoolFloors map[int]dto.ModelLimit) (SchedulerCatalog, error) {
 	modelName = strings.TrimSpace(modelName)
 	if modelName == "" {
 		return SchedulerCatalog{}, fmt.Errorf("model is required")
@@ -99,6 +105,8 @@ func BuildSchedulerCatalogFromChannels(modelName string, channels []*model.Chann
 			keys = []string{""}
 		}
 		// 额度与计数池按 <渠道, 上游模型> 算，所有 key 端点共用：额度是整个渠道合计。
+		// 绑了容量池的成员改用容量池计数，Limits 填池的保底额度（同一池的成员都一样）；
+		// 动态额度不进 Catalog，调度器从 Redis 读，免得 Catalog 版本每分钟都变。
 		settingRaw := ""
 		if channel.Setting != nil {
 			settingRaw = *channel.Setting
@@ -106,6 +114,10 @@ func BuildSchedulerCatalogFromChannels(modelName string, channels []*model.Chann
 		capacity := model.ChannelModelCapacityOf(settingRaw, channel.GetModelMapping(), modelName)
 		limit := capacity.Limit
 		poolID := channelcapacity.PoolID(channel.Id, capacity.UpstreamModel)
+		if floor, bound := capacityPoolFloors[capacity.CapacityPoolId]; bound && capacity.CapacityPoolId != 0 {
+			limit = floor
+			poolID = channelcapacity.CapacityPoolID(capacity.CapacityPoolId)
+		}
 		for keyIndex := range keys {
 			enabled := channel.Status == common.ChannelStatusEnabled
 			if channel.ChannelInfo.IsMultiKey {
