@@ -24,6 +24,7 @@ import { Main } from '@/components/layout'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Input } from '@/components/ui/input'
 
 import { getSchedulerMonitor, type SchedulerMonitor } from '../api'
 
@@ -135,34 +136,28 @@ export function SchedulerMonitorPage() {
             <CardTitle>{t('Endpoint details')}</CardTitle>
           </CardHeader>
           <CardContent>
-            <details className='mb-4 text-sm'>
-              <summary className='cursor-pointer font-medium'>
-                {t('健康状态说明')}
-              </summary>
-              <dl className='mt-3 grid gap-x-4 gap-y-2 sm:grid-cols-[auto_1fr]'>
-                <dt className='font-mono'>AVAILABLE</dt>
-                <dd>{t('可用：健康门禁允许调度，但仍需满足启用状态、权限、容量和评分等条件；不代表评分高或已有样本。')}</dd>
-                <dt className='font-mono'>DEGRADED</dt>
-                <dd>{t('降级：发生计入健康的失败。自动退避首次为 10 秒，第二次为 1 分钟；冷却期间暂停调度。')}</dd>
-                <dt className='font-mono'>ERROR</dt>
-                <dd>{t('异常：连续至少 3 次计入健康的失败，自动冷却 5 分钟，期间暂停调度。')}</dd>
-                <dt className='font-mono'>RECOVERING</dt>
-                <dd>{t('恢复中：降级或异常的冷却结束，在下次调度准入检查时允许重试；成功后恢复可用，失败则重新退避。')}</dd>
-                <dt className='font-mono'>EXHAUSTED</dt>
-                <dd>{t('耗尽：被标记为资源或额度耗尽，暂停调度；不会仅因冷却到期而自动恢复。')}</dd>
-                <dt className='font-mono'>DISABLED_AUTO</dt>
-                <dd>{t('自动禁用：被标记为自动停用，暂停调度；不会仅因冷却到期而自动恢复。')}</dd>
-                <dt className='font-mono'>DISABLED_MANUAL</dt>
-                <dd>{t('手动禁用：由管理员停用，暂停调度；成功请求也不会自动解除，需要显式更新状态。')}</dd>
-              </dl>
-              <p className='text-muted-foreground mt-3'>
-                {t('健康状态按渠道和 Key 共享，适用于该端点下的各模型。429 会计入健康失败，其他 4xx 请求错误不计入。暂无运行时样本表示负载数据未知，不等于渠道故障。')}
-              </p>
-            </details>
             <div className='mb-4 flex flex-wrap gap-2'>
-              <input className='rounded-md border px-3 py-2 text-sm' placeholder={t('Model')} value={model} onChange={(e) => setModel(e.target.value)} />
-              <input className='rounded-md border px-3 py-2 text-sm' placeholder={t('Channel ID')} value={channel} onChange={(e) => setChannel(e.target.value)} />
-              <input className='rounded-md border px-3 py-2 text-sm' placeholder={t('Endpoint')} value={endpoint} onChange={(e) => setEndpoint(e.target.value)} />
+              <Input
+                className='w-48'
+                aria-label={t('Model')}
+                placeholder={t('Model')}
+                value={model}
+                onChange={(e) => setModel(e.target.value)}
+              />
+              <Input
+                className='w-48'
+                aria-label={t('Channel ID')}
+                placeholder={t('Channel ID')}
+                value={channel}
+                onChange={(e) => setChannel(e.target.value)}
+              />
+              <Input
+                className='w-48'
+                aria-label={t('Endpoint')}
+                placeholder={t('Endpoint')}
+                value={endpoint}
+                onChange={(e) => setEndpoint(e.target.value)}
+              />
             </div>
             {endpoints.length === 0 ? (
               <p className='text-muted-foreground text-sm'>
@@ -175,7 +170,6 @@ export function SchedulerMonitorPage() {
                     <tr className='text-muted-foreground border-b text-left'>
                       <th className='px-2 py-2'>{t('Endpoint')}</th>
                       <th className='px-2 py-2'>{t('Model')}</th>
-                      <th className='px-2 py-2'>{t('Health')}</th>
                       <th className='px-2 py-2'>{t('Load')}</th>
                       <th className='px-2 py-2'>{t('RPM')}</th>
                       <th className='px-2 py-2'>{t('TPM')}</th>
@@ -197,8 +191,7 @@ export function SchedulerMonitorPage() {
                             {endpoint.endpoint_id}
                           </div>
                           <div className='text-muted-foreground text-xs'>
-                            channel {endpoint.channel_id} / key{' '}
-                            {endpoint.key_index}
+                            channel {endpoint.channel_id}
                           </div>
                           {endpoint.capacity_pool_id && (
                             <div className='text-muted-foreground font-mono text-xs'>
@@ -226,14 +219,6 @@ export function SchedulerMonitorPage() {
                           </div>
                         </td>
                         <td className='px-2 py-3'>
-                          {endpoint.health ?? '-'}
-                          {!endpoint.runtime_known && (
-                            <div className='text-muted-foreground text-xs'>
-                              {t('Idle / no runtime sample')}
-                            </div>
-                          )}
-                        </td>
-                        <td className='px-2 py-3'>
                           {formatLoad(endpoint.load_ratio)}
                           {endpoint.capacity_pool_id && (
                             <div className='text-muted-foreground text-xs'>
@@ -247,53 +232,17 @@ export function SchedulerMonitorPage() {
                           )}
                         </td>
                         <td className='px-2 py-3'>
-                          {/* 属于计数池时额度是整个池的，主数字显示池用量，下面是这个 key 自己的。 */}
+                          {/* 额度和用量都是整个计数池的（渠道所有 key 合计）。 */}
                           {formatCapacity(
-                            endpoint.capacity_pool_id
-                              ? endpoint.pool_rpm_used
-                              : endpoint.rpm_used,
+                            endpoint.pool_rpm_used,
                             endpoint.rpm_capacity
                           )}
-                          {endpoint.capacity_pool_id && (
-                            <div className='text-muted-foreground text-xs'>
-                              {t('This key {{n}}', {
-                                n: endpoint.rpm_used ?? 0,
-                              })}
-                            </div>
-                          )}
-                          {endpoint.error_rate !== undefined &&
-                            endpoint.error_rate > 0 &&
-                            endpoint.rpm_attempts !== undefined && (
-                              <div className='text-muted-foreground text-xs'>
-                                {t('请求 {{n}}', {
-                                  n: endpoint.rpm_attempts,
-                                })}
-                              </div>
-                            )}
                         </td>
                         <td className='px-2 py-3'>
                           {formatCapacity(
-                            endpoint.capacity_pool_id
-                              ? endpoint.pool_tpm_used
-                              : endpoint.tpm_used,
+                            endpoint.pool_tpm_used,
                             endpoint.tpm_capacity
                           )}
-                          {endpoint.capacity_pool_id && (
-                            <div className='text-muted-foreground text-xs'>
-                              {t('This key {{n}}', {
-                                n: endpoint.tpm_used ?? 0,
-                              })}
-                            </div>
-                          )}
-                          {endpoint.error_rate !== undefined &&
-                            endpoint.error_rate > 0 &&
-                            endpoint.tpm_attempts !== undefined && (
-                              <div className='text-muted-foreground text-xs'>
-                                {t('请求 {{n}}', {
-                                  n: endpoint.tpm_attempts,
-                                })}
-                              </div>
-                            )}
                         </td>
                         {profileNames.map((profile) => {
                           const score = endpoint.profiles?.[profile]
