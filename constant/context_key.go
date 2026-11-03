@@ -64,16 +64,12 @@ const (
 	// the upstream model, extracted where the response is already being parsed.
 	ContextKeyFinishReason ContextKey = "finish_reason"
 
-	// ContextKeySchedulerKeyIndex is an optional per-attempt hint supplied by
-	// the Scheduler. When present, new-api must consume exactly this enabled
-	// multi-key slot instead of applying its local random/polling policy.
-	ContextKeySchedulerKeyIndex          ContextKey = "scheduler_key_index"
+	// 调度器的决策结果：candidates 是排好序的渠道，其余是审计用的版本号。
 	ContextKeySchedulerCandidates        ContextKey = "scheduler_candidates"
 	ContextKeySchedulerDecisionID        ContextKey = "scheduler_decision_id"
 	ContextKeySchedulerScoreVersion      ContextKey = "scheduler_score_version"
 	ContextKeySchedulerPreferenceVersion ContextKey = "scheduler_preference_version"
 	ContextKeySchedulerShadowMatch       ContextKey = "scheduler_shadow_match"
-	ContextKeySchedulerUpstreamModel     ContextKey = "scheduler_upstream_model"
 	// 这次尝试上游报的输入/输出 token，计数池结束租约时按它记 TPM。
 	ContextKeySchedulerInputTokens   ContextKey = "scheduler_input_tokens"
 	ContextKeySchedulerOutputTokens  ContextKey = "scheduler_output_tokens"

@@ -91,7 +91,7 @@ func TestRunSchedulerShadowStoresOnlyMetadata(t *testing.T) {
 	if !common.GetContextKeyBool(c, constant.ContextKeySchedulerShadowMatch) {
 		t.Fatal("shadow match not recorded")
 	}
-	if candidates, ok := common.GetContextKeyType[[]SchedulerCandidate](c, constant.ContextKeySchedulerCandidates); !ok || len(candidates) != 1 || candidates[0].KeyIndex != 2 {
+	if candidates, ok := common.GetContextKeyType[[]SchedulerCandidate](c, constant.ContextKeySchedulerCandidates); !ok || len(candidates) != 1 || candidates[0].ChannelID != 7 {
 		t.Fatalf("candidates=%+v ok=%v", candidates, ok)
 	}
 }
@@ -555,30 +555,13 @@ func TestRunSchedulerShadowRecordsDecisionSpan(t *testing.T) {
 	})
 }
 
-func TestSchedulerCandidateForRetryIsEnforcedOnly(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	c, _ := gin.CreateTestContext(httptest.NewRecorder())
-	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
-	candidates := []SchedulerCandidate{{EndpointID: "ep1", ChannelID: 1, KeyIndex: 0, Model: "m"}, {EndpointID: "ep2", ChannelID: 2, KeyIndex: 3, Model: "m", UpstreamModel: "m-upstream"}}
-	common.SetContextKey(c, constant.ContextKeySchedulerCandidates, candidates)
-	ConfigureSchedulerClientForTest(SchedulerClientConfig{Enabled: true, Mode: "shadow"})
-	if _, ok := SchedulerCandidateForRetry(c, 0); ok {
-		t.Fatal("shadow mode selected enforced candidate")
-	}
-	ConfigureSchedulerClientForTest(SchedulerClientConfig{Enabled: true, Mode: "enforced"})
-	got, ok := SchedulerCandidateForRetry(c, 1)
-	if !ok || got.ChannelID != 2 || common.GetContextKeyInt(c, constant.ContextKeySchedulerKeyIndex) != 3 || common.GetContextKeyString(c, constant.ContextKeySchedulerUpstreamModel) != "m-upstream" {
-		t.Fatalf("candidate=%+v ok=%v", got, ok)
-	}
-}
-
 func TestSchedulerCandidateForInitialUsesFirstCandidateOnlyWhenEnforced(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 	common.SetContextKey(c, constant.ContextKeySchedulerCandidates, []SchedulerCandidate{
-		{EndpointID: "first", ChannelID: 7, KeyIndex: 2, Model: "m", UpstreamModel: "upstream-m"},
-		{EndpointID: "second", ChannelID: 8, KeyIndex: 1, Model: "m"},
+		{EndpointID: "first", ChannelID: 7, Model: "m"},
+		{EndpointID: "second", ChannelID: 8, Model: "m"},
 	})
 	ConfigureSchedulerClientForTest(SchedulerClientConfig{Enabled: true, Mode: "shadow"})
 	if _, ok := SchedulerCandidateForInitial(c); ok {
@@ -586,9 +569,7 @@ func TestSchedulerCandidateForInitialUsesFirstCandidateOnlyWhenEnforced(t *testi
 	}
 	ConfigureSchedulerClientForTest(SchedulerClientConfig{Enabled: true, Mode: "enforced"})
 	got, ok := SchedulerCandidateForInitial(c)
-	if !ok || got.EndpointID != "first" || got.ChannelID != 7 ||
-		common.GetContextKeyInt(c, constant.ContextKeySchedulerKeyIndex) != 2 ||
-		common.GetContextKeyString(c, constant.ContextKeySchedulerUpstreamModel) != "upstream-m" {
+	if !ok || got.EndpointID != "first" || got.ChannelID != 7 {
 		t.Fatalf("candidate=%+v ok=%v", got, ok)
 	}
 }

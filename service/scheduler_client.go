@@ -77,13 +77,13 @@ func (c SchedulerClientConfig) URLs() []string {
 	return schedulerResolvedURLs(c)
 }
 
+// SchedulerCandidate 只排到渠道；渠道内用哪个 key 由 new-api 自己轮询。旧版调度器
+// 回的 key_index、upstream_model 直接忽略。
 type SchedulerCandidate struct {
-	EndpointID    string   `json:"endpoint_id"`
-	ChannelID     int      `json:"channel_id"`
-	KeyIndex      int      `json:"key_index"`
-	Model         string   `json:"model"`
-	UpstreamModel string   `json:"upstream_model,omitempty"`
-	Reason        []string `json:"reason"`
+	EndpointID string   `json:"endpoint_id"`
+	ChannelID  int      `json:"channel_id"`
+	Model      string   `json:"model"`
+	Reason     []string `json:"reason"`
 }
 type schedulerRequest struct {
 	RequestID            string         `json:"request_id"`
@@ -830,16 +830,10 @@ func ResetSchedulerAttemptMetrics(c *gin.Context) {
 	common.SetContextKey(c, constant.ContextKeySchedulerStreamStarted, false)
 }
 
-func applySchedulerCandidateContext(c *gin.Context, candidate SchedulerCandidate) {
-	common.SetContextKey(c, constant.ContextKeySchedulerKeyIndex, candidate.KeyIndex)
-	if candidate.UpstreamModel != "" {
-		common.SetContextKey(c, constant.ContextKeySchedulerUpstreamModel, candidate.UpstreamModel)
-	}
-}
-
 // SchedulerCandidateForInitial returns the first Scheduler candidate for the
 // initial attempt. It is intentionally inert unless Enforced (including a
 // selected Canary request) is active; Shadow keeps native routing authoritative.
+// 重试不再回到调度器，由 new-api 原生选路接手。
 func SchedulerCandidateForInitial(c *gin.Context) (SchedulerCandidate, bool) {
 	if !SchedulerEnforcedForRequest(c) {
 		return SchedulerCandidate{}, false
@@ -848,25 +842,7 @@ func SchedulerCandidateForInitial(c *gin.Context) (SchedulerCandidate, bool) {
 	if !ok || len(candidates) == 0 {
 		return SchedulerCandidate{}, false
 	}
-	candidate := candidates[0]
-	applySchedulerCandidateContext(c, candidate)
-	return candidate, true
-}
-
-// SchedulerCandidateForRetry is intentionally inert unless Enforced is
-// explicitly selected. It only selects metadata already obtained by Shadow;
-// Reservation re-acquisition per retry is a separate gate.
-func SchedulerCandidateForRetry(c *gin.Context, retry int) (SchedulerCandidate, bool) {
-	if !SchedulerEnforcedForRequest(c) || retry < 0 {
-		return SchedulerCandidate{}, false
-	}
-	candidates, ok := common.GetContextKeyType[[]SchedulerCandidate](c, constant.ContextKeySchedulerCandidates)
-	if !ok || retry >= len(candidates) {
-		return SchedulerCandidate{}, false
-	}
-	candidate := candidates[retry]
-	applySchedulerCandidateContext(c, candidate)
-	return candidate, true
+	return candidates[0], true
 }
 
 // schedulerEffectivePolicy builds the Scheduler policy for the current request
@@ -971,7 +947,7 @@ func RunSchedulerShadow(c *gin.Context, modelName, group string) (err error) {
 	}
 	seen := make(map[string]struct{}, len(scheduled.Candidates))
 	for _, candidate := range scheduled.Candidates {
-		if candidate.EndpointID == "" || candidate.ChannelID < 0 || candidate.KeyIndex < 0 || candidate.Model == "" || len(candidate.Reason) == 0 {
+		if candidate.EndpointID == "" || candidate.ChannelID < 0 || candidate.Model == "" || len(candidate.Reason) == 0 {
 			return fmt.Errorf("scheduler returned invalid candidate")
 		}
 		if _, exists := seen[candidate.EndpointID]; exists {

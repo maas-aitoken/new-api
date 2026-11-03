@@ -955,17 +955,7 @@ func SetupContextForSelectedChannel(c *gin.Context, channel *model.Channel, mode
 	common.SetContextKey(c, constant.ContextKeyChannelModelMapping, channel.GetModelMapping())
 	common.SetContextKey(c, constant.ContextKeyChannelStatusCodeMapping, channel.GetStatusCodeMapping())
 
-	var key string
-	var index int
-	var newAPIError *types.NewAPIError
-	if schedulerIndex, ok := common.GetContextKeyType[int](c, constant.ContextKeySchedulerKeyIndex); ok {
-		key, index, newAPIError = channel.GetEnabledKeyAt(schedulerIndex)
-		// The hint is per attempt. Consume it so a later native retry does not
-		// accidentally reuse a stale Scheduler selection.
-		c.Set(string(constant.ContextKeySchedulerKeyIndex), nil)
-	} else {
-		key, index, newAPIError = channel.GetNextEnabledKey()
-	}
+	key, index, newAPIError := channel.GetNextEnabledKey()
 	if newAPIError != nil {
 		return newAPIError
 	}
