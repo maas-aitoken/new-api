@@ -163,11 +163,49 @@ func (token *Token) GetIpLimits() []string {
 	return ipLimits
 }
 
-func GetAllUserTokens(userId int, startIdx int, num int) ([]*Token, error) {
-	var tokens []*Token
-	var err error
-	err = DB.Where("user_id = ?", userId).Order("id desc").Limit(num).Offset(startIdx).Find(&tokens).Error
-	return tokens, err
+// TokenFilter 描述令牌列表的过滤条件
+type TokenFilter struct {
+	UserId      int
+	Scene       common.TokenScene
+	RoutingMode common.TokenRoutingMode
+	Status      int
+}
+
+func (f TokenFilter) apply(query *gorm.DB) *gorm.DB {
+	if f.UserId != 0 {
+		query = query.Where("user_id = ?", f.UserId)
+	}
+	switch f.Scene {
+	case common.TokenSceneBusiness:
+		query = query.Where("scene = ?", string(common.TokenSceneBusiness))
+	case common.TokenSceneOffice:
+		query = query.Where("(scene IS NULL OR scene <> ?)", string(common.TokenSceneBusiness))
+	}
+	switch f.RoutingMode {
+	case common.TokenRoutingModeFixed:
+		query = query.Where("routing_mode = ?", string(common.TokenRoutingModeFixed))
+	case common.TokenRoutingModeSmart:
+		query = query.Where("(routing_mode IS NULL OR routing_mode <> ?)", string(common.TokenRoutingModeFixed))
+	}
+	if f.Status != 0 {
+		query = query.Where("status = ?", f.Status)
+	}
+	return query
+}
+
+func ListUserTokens(filter TokenFilter, offset int, limit int) (tokens []*Token, total int64, err error) {
+	baseQuery := filter.apply(DB.Model(&Token{}))
+
+	if err = baseQuery.Count(&total).Error; err != nil {
+		common.SysError(common.LogText("failed to count tokens: %s", err.Error()))
+		return nil, 0, common.NewMessage("Failed to get the token count")
+	}
+
+	if err = baseQuery.Order("id desc").Offset(offset).Limit(limit).Find(&tokens).Error; err != nil {
+		common.SysError(common.LogText("failed to list tokens: %s", err.Error()))
+		return nil, 0, common.NewMessage("Failed to get the token list")
+	}
+	return tokens, total, nil
 }
 
 // sanitizeLikePattern 校验并清洗用户输入的 LIKE 搜索模式。
@@ -216,7 +254,7 @@ func validateLikePattern(input string) error {
 
 const searchHardLimit = 100
 
-func SearchUserTokens(userId int, keyword string, token string, offset int, limit int) (tokens []*Token, total int64, err error) {
+func SearchUserTokens(filter TokenFilter, keyword string, token string, offset int, limit int) (tokens []*Token, total int64, err error) {
 	// model 层强制截断
 	if limit <= 0 || limit > searchHardLimit {
 		limit = searchHardLimit
@@ -233,7 +271,7 @@ func SearchUserTokens(userId int, keyword string, token string, offset int, limi
 	maxTokens := operation_setting.GetMaxUserTokens()
 	hasFuzzy := strings.Contains(keyword, "%") || strings.Contains(token, "%")
 	if hasFuzzy {
-		count, err := CountUserTokens(userId)
+		count, err := CountUserTokens(filter.UserId)
 		if err != nil {
 			common.SysLog(common.LogText("failed to count user tokens: %s", err.Error()))
 			return nil, 0, common.NewMessage("Failed to get the token count")
@@ -243,7 +281,7 @@ func SearchUserTokens(userId int, keyword string, token string, offset int, limi
 		}
 	}
 
-	baseQuery := DB.Model(&Token{}).Where("user_id = ?", userId)
+	baseQuery := filter.apply(DB.Model(&Token{}))
 
 	// 非空才加 LIKE 条件，空则跳过（不过滤该字段）
 	if keyword != "" {
