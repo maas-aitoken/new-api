@@ -145,9 +145,7 @@ func setTokenAutoGroups(c *gin.Context, token *model.Token, groups []string) boo
 	return true
 }
 
-// parseTokenFilter 读取列表与搜索共用的筛选参数。非法取值直接报错，
-// 否则前端传错参数会静默退化成“不过滤”，看起来像筛选失效。
-// 返回的 filter 已绑定当前登录用户；管理员跨用户查询在此之上改 UserId 即可。
+// parseTokenFilter 读取列表与搜索共用的筛选参数
 func parseTokenFilter(c *gin.Context) (model.TokenFilter, bool) {
 	filter := model.TokenFilter{UserId: c.GetInt("id")}
 
@@ -192,7 +190,7 @@ func GetAllTokens(c *gin.Context) {
 		return
 	}
 	pageInfo := common.GetPageQuery(c)
-	tokens, total, err := model.ListUserTokens(filter, pageInfo.GetStartIdx(), pageInfo.GetPageSize())
+	tokens, total, err := model.ListTokens(filter, pageInfo.GetStartIdx(), pageInfo.GetPageSize())
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -704,13 +702,17 @@ func ListUserTokens(c *gin.Context) {
 		common.ApiErrorT(c, "No permission to access users of same or higher level")
 		return
 	}
+	filter, ok := parseTokenFilter(c)
+	if !ok {
+		return
+	}
+	filter.UserId = userId
 	pageInfo := common.GetPageQuery(c)
-	tokens, err := model.GetAllUserTokens(userId, pageInfo.GetStartIdx(), pageInfo.GetPageSize())
+	tokens, total, err := model.ListTokens(filter, pageInfo.GetStartIdx(), pageInfo.GetPageSize())
 	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
-	total, _ := model.CountUserTokens(userId)
 	pageInfo.SetTotal(int(total))
 	pageInfo.SetItems(buildMaskedTokenResponses(tokens))
 	common.ApiSuccess(c, pageInfo)

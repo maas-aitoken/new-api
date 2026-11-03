@@ -171,10 +171,12 @@ type TokenFilter struct {
 	Status      int
 }
 
+// apply 把过滤条件叠加到查询上
 func (f TokenFilter) apply(query *gorm.DB) *gorm.DB {
-	if f.UserId != 0 {
-		query = query.Where("user_id = ?", f.UserId)
+	if f.UserId <= 0 {
+		return query.Where("1 = 0")
 	}
+	query = query.Where("user_id = ?", f.UserId)
 	switch f.Scene {
 	case common.TokenSceneBusiness:
 		query = query.Where("scene = ?", string(common.TokenSceneBusiness))
@@ -193,7 +195,8 @@ func (f TokenFilter) apply(query *gorm.DB) *gorm.DB {
 	return query
 }
 
-func ListUserTokens(filter TokenFilter, offset int, limit int) (tokens []*Token, total int64, err error) {
+// ListTokens 按过滤条件分页取令牌，并返回同一过滤条件下的总数，
+func ListTokens(filter TokenFilter, offset int, limit int) (tokens []*Token, total int64, err error) {
 	baseQuery := filter.apply(DB.Model(&Token{}))
 
 	if err = baseQuery.Count(&total).Error; err != nil {

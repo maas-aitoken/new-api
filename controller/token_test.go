@@ -1191,6 +1191,73 @@ func TestTokenListFiltersBySceneRoutingAndStatus(t *testing.T) {
 	}
 }
 
+// TestAdminListUserTokensFiltersTargetUser 锁住管理员接口 GET /api/user/:id/tokens：
+func TestAdminListUserTokensFiltersTargetUser(t *testing.T) {
+	db := setupTokenControllerTestDB(t)
+
+	// 共用的 fixture 只建 tokens 表，这个接口要查用户来过权限，所以本用例自己补 users。
+	require.NoError(t, db.AutoMigrate(&model.User{}))
+	require.NoError(t, db.Create(&model.User{
+		Id: 7, Username: "target-user", Role: common.RoleCommonUser, Status: common.UserStatusEnabled,
+	}).Error)
+
+	seedAdminToken := func(userID int, name string, scene common.TokenScene) {
+		t.Helper()
+		require.NoError(t, db.Create(&model.Token{
+			UserId: userID, Name: name, Key: name + "-key",
+			Status: common.TokenStatusEnabled, CreatedTime: 1, ExpiredTime: -1,
+			Scene: scene, RoutingMode: common.TokenRoutingModeSmart,
+		}).Error)
+	}
+	seedAdminToken(7, "a-target-office", common.TokenSceneOffice)
+	seedAdminToken(7, "a-target-biz", common.TokenSceneBusiness)
+	seedAdminToken(9, "a-admin-own-biz", common.TokenSceneBusiness)
+
+	newAdminContext := func(target string) (*gin.Context, *httptest.ResponseRecorder) {
+		ctx, recorder := newAuthenticatedContext(t, http.MethodGet, target, nil, 9)
+		ctx.Set("role", common.RoleRootUser)
+		ctx.Params = gin.Params{{Key: "id", Value: "7"}}
+		return ctx, recorder
+	}
+
+	t.Run("scene filter applies to the target user", func(t *testing.T) {
+		ctx, recorder := newAdminContext("/api/user/7/tokens?p=1&size=10&scene=business")
+		ListUserTokens(ctx)
+
+		response := decodeAPIResponse(t, recorder)
+		require.True(t, response.Success, response.Message)
+
+		var page tokenPageResponse
+		require.NoError(t, common.Unmarshal(response.Data, &page))
+
+		require.Len(t, page.Items, 1)
+		assert.Equal(t, "a-target-biz", page.Items[0].Name)
+		assert.Equal(t, 1, page.Total, "total must reflect the filter, not the user's whole list")
+	})
+
+	t.Run("invalid filter is rejected", func(t *testing.T) {
+		ctx, recorder := newAdminContext("/api/user/7/tokens?p=1&size=10&scene=warehouse")
+		ListUserTokens(ctx)
+
+		response := decodeAPIResponse(t, recorder)
+		assert.False(t, response.Success)
+	})
+}
+
+// TestTokenFilterWithoutUserScopeReturnsNothing 锁住 TokenFilter 漏设 UserId 时查不到数据。
+func TestTokenFilterWithoutUserScopeReturnsNothing(t *testing.T) {
+	db := setupTokenControllerTestDB(t)
+	seedToken(t, db, 1, "scope-user-one", "scope1234scope56")
+	seedToken(t, db, 2, "scope-user-two", "scope7890scope12")
+
+	for _, userID := range []int{0, -1} {
+		tokens, total, err := model.ListTokens(model.TokenFilter{UserId: userID}, 0, 10)
+		require.NoError(t, err)
+		assert.Empty(t, tokens, "UserId=%d must not return rows", userID)
+		assert.Zero(t, total, "UserId=%d must not report a total", userID)
+	}
+}
+
 // TestTokenListRejectsInvalidFilterValues 锁住非法筛选值要报错而不是静默返回全量数据。
 func TestTokenListRejectsInvalidFilterValues(t *testing.T) {
 	db := setupTokenControllerTestDB(t)
