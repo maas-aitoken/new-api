@@ -36,6 +36,7 @@ type tokenAPIResponse struct {
 }
 
 type tokenPageResponse struct {
+	Total int                 `json:"total"`
 	Items []tokenResponseItem `json:"items"`
 }
 
@@ -1078,4 +1079,206 @@ func verifyAPITokenAudit(t *testing.T) {
 		require.NoError(t, model.DB.Model(&model.Token{}).Where("name = ?", "audit-down").Count(&count).Error)
 		assert.EqualValues(t, 1, count)
 	})
+}
+
+// TestTokenListFiltersBySceneRoutingAndStatus 锁住场景/路由模式/状态的服务端过滤：
+func TestTokenListFiltersBySceneRoutingAndStatus(t *testing.T) {
+	db := setupTokenControllerTestDB(t)
+
+	seedFilterToken := func(name string, scene common.TokenScene, routingMode common.TokenRoutingMode, status int) {
+		t.Helper()
+		require.NoError(t, db.Create(&model.Token{
+			UserId:      1,
+			Name:        name,
+			Key:         name + "-key",
+			Status:      status,
+			CreatedTime: 1,
+			ExpiredTime: -1,
+			Scene:       scene,
+			RoutingMode: routingMode,
+		}).Error)
+	}
+
+	seedFilterToken("f-office-smart-on", common.TokenSceneOffice, common.TokenRoutingModeSmart, common.TokenStatusEnabled)
+	seedFilterToken("f-office-fixed-off", common.TokenSceneOffice, common.TokenRoutingModeFixed, common.TokenStatusDisabled)
+	seedFilterToken("f-biz-smart-on", common.TokenSceneBusiness, common.TokenRoutingModeSmart, common.TokenStatusEnabled)
+	seedFilterToken("f-biz-fixed-expired", common.TokenSceneBusiness, common.TokenRoutingModeFixed, common.TokenStatusExpired)
+	// 另一个用户的令牌，任何筛选都不该带出来。
+	require.NoError(t, db.Create(&model.Token{
+		UserId: 2, Name: "f-other-user", Key: "f-other-user-key",
+		Status: common.TokenStatusEnabled, CreatedTime: 1, ExpiredTime: -1,
+		Scene: common.TokenSceneBusiness, RoutingMode: common.TokenRoutingModeFixed,
+	}).Error)
+
+	seedFilterToken("f-legacy-empty", common.TokenSceneOffice, common.TokenRoutingModeSmart, common.TokenStatusEnabled)
+	require.NoError(t, db.Model(&model.Token{}).Where("name = ?", "f-legacy-empty").
+		UpdateColumns(map[string]any{"scene": "", "routing_mode": ""}).Error)
+
+	for _, tc := range []struct {
+		name      string
+		query     string
+		wantNames []string
+	}{
+		{
+			name:      "no filter returns every token of the caller",
+			query:     "",
+			wantNames: []string{"f-biz-fixed-expired", "f-biz-smart-on", "f-legacy-empty", "f-office-fixed-off", "f-office-smart-on"},
+		},
+		{
+			// 空 scene 必须归到 office 桶，与 common.NormalizeTokenScene 一致。
+			name:      "scene office includes rows with an empty scene",
+			query:     "&scene=office",
+			wantNames: []string{"f-legacy-empty", "f-office-fixed-off", "f-office-smart-on"},
+		},
+		{
+			name:      "scene business",
+			query:     "&scene=business",
+			wantNames: []string{"f-biz-fixed-expired", "f-biz-smart-on"},
+		},
+		{
+			name:      "routing mode smart includes rows with an empty routing mode",
+			query:     "&routing_mode=smart",
+			wantNames: []string{"f-biz-smart-on", "f-legacy-empty", "f-office-smart-on"},
+		},
+		{
+			name:      "routing mode fixed",
+			query:     "&routing_mode=fixed",
+			wantNames: []string{"f-biz-fixed-expired", "f-office-fixed-off"},
+		},
+		{
+			name:      "status disabled",
+			query:     "&status=2",
+			wantNames: []string{"f-office-fixed-off"},
+		},
+		{
+			name:      "filters combine",
+			query:     "&scene=business&routing_mode=fixed&status=3",
+			wantNames: []string{"f-biz-fixed-expired"},
+		},
+		{
+			name:      "combination with no match",
+			query:     "&scene=office&routing_mode=fixed&status=1",
+			wantNames: nil,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, route := range []struct {
+				label  string
+				target string
+				handle func(*gin.Context)
+			}{
+				{"list", "/api/token/?p=1&size=10" + tc.query, GetAllTokens},
+				{"search", "/api/token/search?p=1&size=10&keyword=%25f-%25" + tc.query, SearchTokens},
+			} {
+				ctx, recorder := newAuthenticatedContext(t, http.MethodGet, route.target, nil, 1)
+				route.handle(ctx)
+
+				response := decodeAPIResponse(t, recorder)
+				require.True(t, response.Success, "%s: %s", route.label, response.Message)
+
+				var page tokenPageResponse
+				require.NoError(t, common.Unmarshal(response.Data, &page))
+
+				var gotNames []string
+				for _, item := range page.Items {
+					gotNames = append(gotNames, item.Name)
+				}
+				slices.Sort(gotNames)
+				assert.Equal(t, tc.wantNames, gotNames, "%s: filtered rows", route.label)
+				assert.Equal(t, len(tc.wantNames), page.Total, "%s: filtered total", route.label)
+			}
+		})
+	}
+}
+
+// TestAdminListUserTokensFiltersTargetUser 锁住管理员接口 GET /api/user/:id/tokens：
+func TestAdminListUserTokensFiltersTargetUser(t *testing.T) {
+	db := setupTokenControllerTestDB(t)
+
+	// 共用的 fixture 只建 tokens 表，这个接口要查用户来过权限，所以本用例自己补 users。
+	require.NoError(t, db.AutoMigrate(&model.User{}))
+	require.NoError(t, db.Create(&model.User{
+		Id: 7, Username: "target-user", Role: common.RoleCommonUser, Status: common.UserStatusEnabled,
+	}).Error)
+
+	seedAdminToken := func(userID int, name string, scene common.TokenScene) {
+		t.Helper()
+		require.NoError(t, db.Create(&model.Token{
+			UserId: userID, Name: name, Key: name + "-key",
+			Status: common.TokenStatusEnabled, CreatedTime: 1, ExpiredTime: -1,
+			Scene: scene, RoutingMode: common.TokenRoutingModeSmart,
+		}).Error)
+	}
+	seedAdminToken(7, "a-target-office", common.TokenSceneOffice)
+	seedAdminToken(7, "a-target-biz", common.TokenSceneBusiness)
+	seedAdminToken(9, "a-admin-own-biz", common.TokenSceneBusiness)
+
+	newAdminContext := func(target string) (*gin.Context, *httptest.ResponseRecorder) {
+		ctx, recorder := newAuthenticatedContext(t, http.MethodGet, target, nil, 9)
+		ctx.Set("role", common.RoleRootUser)
+		ctx.Params = gin.Params{{Key: "id", Value: "7"}}
+		return ctx, recorder
+	}
+
+	t.Run("scene filter applies to the target user", func(t *testing.T) {
+		ctx, recorder := newAdminContext("/api/user/7/tokens?p=1&size=10&scene=business")
+		ListUserTokens(ctx)
+
+		response := decodeAPIResponse(t, recorder)
+		require.True(t, response.Success, response.Message)
+
+		var page tokenPageResponse
+		require.NoError(t, common.Unmarshal(response.Data, &page))
+
+		require.Len(t, page.Items, 1)
+		assert.Equal(t, "a-target-biz", page.Items[0].Name)
+		assert.Equal(t, 1, page.Total, "total must reflect the filter, not the user's whole list")
+	})
+
+	t.Run("invalid filter is rejected", func(t *testing.T) {
+		ctx, recorder := newAdminContext("/api/user/7/tokens?p=1&size=10&scene=warehouse")
+		ListUserTokens(ctx)
+
+		response := decodeAPIResponse(t, recorder)
+		assert.False(t, response.Success)
+	})
+}
+
+// TestTokenFilterWithoutUserScopeReturnsNothing 锁住 TokenFilter 漏设 UserId 时查不到数据。
+func TestTokenFilterWithoutUserScopeReturnsNothing(t *testing.T) {
+	db := setupTokenControllerTestDB(t)
+	seedToken(t, db, 1, "scope-user-one", "scope1234scope56")
+	seedToken(t, db, 2, "scope-user-two", "scope7890scope12")
+
+	for _, userID := range []int{0, -1} {
+		tokens, total, err := model.ListTokens(model.TokenFilter{UserId: userID}, 0, 10)
+		require.NoError(t, err)
+		assert.Empty(t, tokens, "UserId=%d must not return rows", userID)
+		assert.Zero(t, total, "UserId=%d must not report a total", userID)
+	}
+}
+
+// TestTokenListRejectsInvalidFilterValues 锁住非法筛选值要报错而不是静默返回全量数据。
+func TestTokenListRejectsInvalidFilterValues(t *testing.T) {
+	db := setupTokenControllerTestDB(t)
+	seedToken(t, db, 1, "f-invalid-guard", "guard1234guard56")
+
+	for _, tc := range []struct {
+		name  string
+		query string
+	}{
+		{"unknown scene", "&scene=warehouse"},
+		{"unknown routing mode", "&routing_mode=manual"},
+		{"status out of range", "&status=9"},
+		{"status not a number", "&status=enabled"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, recorder := newAuthenticatedContext(t, http.MethodGet, "/api/token/?p=1&size=10"+tc.query, nil, 1)
+			GetAllTokens(ctx)
+
+			response := decodeAPIResponse(t, recorder)
+			assert.False(t, response.Success, "invalid filter must not silently return unfiltered data")
+			assert.Empty(t, response.Data)
+		})
+	}
 }
