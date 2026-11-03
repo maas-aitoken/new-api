@@ -107,6 +107,9 @@ type schedulerResponse struct {
 	PreferenceVersion string `json:"preference_version,omitempty"`
 	CatalogVersion    string `json:"catalog_version"`
 	// 调度器不再占位，旧版调度器回的 reservation 字段直接忽略。
+	// 所以不能单独把调度器回滚到边界调整前的版本：旧版在 schedule 时给首选候选占一个
+	// 30 秒的位，只有 /v1/attempt 上报才释放，本版不再上报，位只能等过期，并发上限为 N
+	// 的池 30 秒内放进 N 个请求后就开始拒绝。要回滚就和 new-api 一起回滚。
 	Candidates []SchedulerCandidate `json:"candidates"`
 }
 
