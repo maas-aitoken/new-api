@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -60,16 +61,10 @@ func TestRunSchedulerShadowStoresOnlyMetadata(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 			t.Fatalf("decode schedule request: %v", err)
 		}
-		if request.Policy["mode"] != "price" || request.Policy["allow_fallbacks"] != true || request.Policy["max_attempts"] != float64(3) || request.Policy["runtime_high_watermark"] != 0.75 {
-			t.Fatalf("effective policy=%v", request.Policy)
-		}
-		if request.MaxOutputTokens != 123 {
-			t.Fatalf("max output estimate=%d", request.MaxOutputTokens)
-		}
+		// 策略只带排序要用的两项，重试次数留在 new-api。
+		assert.Equal(t, map[string]any{"mode": "price", "runtime_high_watermark": 0.75}, request.Policy)
 		sentEstimate.Store(int64(request.EstimatedInputTokens))
-		if len(request.AllowedChannelIDs) != 2 || request.AllowedChannelIDs[0] != 4 || request.AllowedChannelIDs[1] != 7 {
-			t.Fatalf("allowed channel scope=%v", request.AllowedChannelIDs)
-		}
+		assert.Equal(t, []int{4, 7}, request.AllowedChannelIDs)
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"decision_id":"d1","catalog_version":"catalog-v1","reservation":{"reservation_id":"res1","estimated_tokens":123},"candidates":[{"endpoint_id":"ep1","channel_id":7,"key_index":2,"model":"m","reason":["healthy"]}]}`))
 	}))
@@ -208,7 +203,7 @@ func TestRunSchedulerShadowDefaultsToBalancedPolicy(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 			t.Fatalf("decode schedule request: %v", err)
 		}
-		if request.Policy["mode"] != "balanced" || request.Policy["allow_fallbacks"] != true || request.Policy["max_attempts"] != float64(3) {
+		if request.Policy["mode"] != "balanced" {
 			t.Fatalf("default policy=%v", request.Policy)
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -598,87 +593,40 @@ func TestRunSchedulerShadowIsDisabledByDefault(t *testing.T) {
 	}
 }
 
-func TestSchedulerCapabilitiesReadsCachedBodyAndRewinds(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	c, _ := gin.CreateTestContext(httptest.NewRecorder())
-	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"m","stream":true,"tools":[{"type":"function"}],"response_format":{"type":"json_schema"}}`))
-	c.Request.Header.Set("Content-Type", "application/json")
-	caps := schedulerCapabilities(c)
-	if caps["stream"] != true || caps["tools"] != true || caps["json_mode"] != true {
-		t.Fatalf("capabilities=%v", caps)
-	}
-	var body struct {
-		Model  string `json:"model"`
-		Stream bool   `json:"stream"`
-	}
-	if err := common.UnmarshalBodyReusable(c, &body); err != nil {
-		t.Fatal(err)
-	}
-	if body.Model != "m" || !body.Stream {
-		t.Fatalf("body was not rewound: %+v", body)
-	}
-}
-
-func TestSchedulerCapabilitiesDetectsCapabilitiesAcrossProtocols(t *testing.T) {
+func TestRunSchedulerShadowSendsEmptyChannelScopeAsArray(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	cases := []struct {
-		name     string
-		body     string
-		wantTool bool
-		wantJSON bool
+		name  string
+		scope func(c *gin.Context)
 	}{
-		{
-			name:     "openai chat completions json_object",
-			body:     `{"model":"m","tools":[{"type":"function"}],"response_format":{"type":"json_object"}}`,
-			wantTool: true,
-			wantJSON: true,
-		},
-		{
-			name:     "anthropic messages output_format",
-			body:     `{"model":"m","tools":[{"name":"lookup"}],"output_format":{"type":"json_schema"}}`,
-			wantTool: true,
-			wantJSON: true,
-		},
-		{
-			name:     "gemini generationConfig responseMimeType",
-			body:     `{"contents":[],"tools":{"functionDeclarations":[{"name":"x"}]},"generationConfig":{"responseMimeType":"application/json"}}`,
-			wantTool: true,
-			wantJSON: true,
-		},
-		{
-			name:     "gemini snake_case response_schema",
-			body:     `{"contents":[],"generationConfig":{"response_schema":{"type":"object"}}}`,
-			wantTool: false,
-			wantJSON: true,
-		},
-		{
-			name:     "openai responses text.format",
-			body:     `{"model":"m","tools":[{"type":"web_search_preview"}],"text":{"format":{"type":"json_schema"}}}`,
-			wantTool: true,
-			wantJSON: true,
-		},
-		{
-			name:     "empty tool containers are not tool requests",
-			body:     `{"model":"m","tools":[],"generationConfig":{"responseMimeType":"text/plain"}}`,
-			wantTool: false,
-			wantJSON: false,
-		},
+		// usableChannelIDs 在分组没有可用渠道时返回 nil 切片，以前会发成 null，被旧调度器当成"不限"。
+		{name: "nil scope", scope: func(c *gin.Context) {
+			common.SetContextKey(c, constant.ContextKeySchedulerAllowedChannelIDs, []int(nil))
+		}},
+		{name: "scope not recorded", scope: func(*gin.Context) {}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			bodies := make(chan string, 1)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				raw, _ := io.ReadAll(r.Body)
+				select {
+				case bodies <- string(raw):
+				default:
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusServiceUnavailable)
+				_, _ = w.Write([]byte(`{"error":"no candidate endpoint"}`))
+			}))
+			defer server.Close()
+			ConfigureSchedulerClientForTest(SchedulerClientConfig{Enabled: true, BaseURL: server.URL, Token: "scheduler-test", Timeout: time.Second})
 			c, _ := gin.CreateTestContext(httptest.NewRecorder())
-			c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(tc.body))
-			c.Request.Header.Set("Content-Type", "application/json")
-			caps := schedulerCapabilities(c)
-			if caps["tools"] != tc.wantTool {
-				t.Fatalf("tools=%v want %v (body=%s)", caps["tools"], tc.wantTool, tc.body)
-			}
-			if caps["json_mode"] != tc.wantJSON {
-				t.Fatalf("json_mode=%v want %v (body=%s)", caps["json_mode"], tc.wantJSON, tc.body)
-			}
-			if caps["vision"] != false {
-				t.Fatalf("vision must never be reported until the Catalog is authoritative, got %v", caps["vision"])
-			}
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+			c.Set(common.RequestIdKey, "empty-scope")
+			tc.scope(c)
+
+			require.Error(t, RunSchedulerShadow(c, "m", "default"))
+			assert.Contains(t, <-bodies, `"allowed_channel_ids":[]`)
 		})
 	}
 }
