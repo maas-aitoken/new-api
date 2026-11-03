@@ -66,7 +66,7 @@ func TestRunSchedulerShadowStoresOnlyMetadata(t *testing.T) {
 		sentEstimate.Store(int64(request.EstimatedInputTokens))
 		assert.Equal(t, []int{4, 7}, request.AllowedChannelIDs)
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"decision_id":"d1","catalog_version":"catalog-v1","reservation":{"reservation_id":"res1","estimated_tokens":123},"candidates":[{"endpoint_id":"ep1","channel_id":7,"key_index":2,"model":"m","reason":["healthy"]}]}`))
+		_, _ = w.Write([]byte(`{"decision_id":"d1","catalog_version":"catalog-v1","candidates":[{"endpoint_id":"ep1","channel_id":7,"key_index":2,"model":"m","reason":["healthy"]}]}`))
 	}))
 	defer server.Close()
 	ConfigureSchedulerClientForTest(SchedulerClientConfig{Enabled: true, BaseURL: server.URL, Token: "scheduler-test", Timeout: time.Second, RuntimeHighWatermark: 0.75})
@@ -81,28 +81,18 @@ func TestRunSchedulerShadowStoresOnlyMetadata(t *testing.T) {
 	if err := RunSchedulerShadow(c, "m", "default"); err != nil {
 		t.Fatal(err)
 	}
-	// 决策请求带的是选路阶段按这个模型估算的输入长度，不再恒为 0；同一个值留给重试预留和遥测用。
+	// 决策请求带的是选路阶段按这个模型估算的输入长度，调度器拿它判断 TPM 加上这次会不会超额。
 	routingEstimate := RoutingInputTokens(c, "m")
 	require.Greater(t, routingEstimate, int64(100), "消息文本要算进去")
 	assert.Equal(t, routingEstimate, sentEstimate.Load())
-	assert.Equal(t, int(routingEstimate), common.GetContextKeyInt(c, constant.ContextKeyRoutingInputTokens))
 	if got := common.GetContextKeyString(c, constant.ContextKeySchedulerDecisionID); got != "d1" {
 		t.Fatalf("decision=%s", got)
-	}
-	if got := common.GetContextKeyString(c, constant.ContextKeySchedulerReservationID); got != "res1" {
-		t.Fatalf("reservation=%s", got)
-	}
-	if got := common.GetContextKeyInt(c, constant.ContextKeySchedulerEstimatedTokens); got != 123 {
-		t.Fatalf("scheduler estimate=%d", got)
 	}
 	if !common.GetContextKeyBool(c, constant.ContextKeySchedulerShadowMatch) {
 		t.Fatal("shadow match not recorded")
 	}
 	if candidates, ok := common.GetContextKeyType[[]SchedulerCandidate](c, constant.ContextKeySchedulerCandidates); !ok || len(candidates) != 1 || candidates[0].KeyIndex != 2 {
 		t.Fatalf("candidates=%+v ok=%v", candidates, ok)
-	}
-	if got := SchedulerEndpointForChannel(c, 99); got != "ep1" {
-		t.Fatalf("shadow fallback endpoint=%s", got)
 	}
 }
 
@@ -435,152 +425,6 @@ func TestMarkSchedulerEmergencySetsRequestMetadata(t *testing.T) {
 	}
 }
 
-func TestResizeSchedulerReservationUsesReservedCandidate(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/resize" {
-			t.Fatalf("path=%s", r.URL.Path)
-		}
-		if r.Header.Get("Authorization") != "Bearer scheduler-test" {
-			t.Fatalf("missing scheduler auth")
-		}
-		var got schedulerResizeRequest
-		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
-			t.Fatalf("decode resize: %v", err)
-		}
-		if got.RequestID != "resize-request" || got.DecisionID != "resize-decision" || got.EndpointID != "reserved-first" || got.ReservationID != "resize-reservation" || got.EstimatedTokens != 77 {
-			t.Fatalf("resize request=%+v", got)
-		}
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer server.Close()
-	ConfigureSchedulerClientForTest(SchedulerClientConfig{Enabled: true, Mode: "enforced", BaseURL: server.URL, Token: "scheduler-test", Timeout: time.Second})
-	c, _ := gin.CreateTestContext(httptest.NewRecorder())
-	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
-	c.Set(common.RequestIdKey, "resize-request")
-	common.SetContextKey(c, constant.ContextKeySchedulerDecisionID, "resize-decision")
-	common.SetContextKey(c, constant.ContextKeySchedulerReservationID, "resize-reservation")
-	common.SetContextKey(c, constant.ContextKeySchedulerCandidates, []SchedulerCandidate{{EndpointID: "reserved-first", ChannelID: 1, KeyIndex: 0, Model: "m", Reason: []string{"healthy"}}, {EndpointID: "native-second", ChannelID: 2, KeyIndex: 0, Model: "m", Reason: []string{"fallback"}}})
-	common.SetContextKey(c, constant.ContextKeyChannelId, 2)
-	if err := ResizeSchedulerReservation(c, 77); err != nil {
-		t.Fatal(err)
-	}
-	if got := common.GetContextKeyInt(c, constant.ContextKeySchedulerEstimatedTokens); got != 77 {
-		t.Fatalf("estimate=%d", got)
-	}
-}
-
-func TestResizeSchedulerReservationSkipsUnchangedEstimate(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	called := make(chan struct{}, 1)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		called <- struct{}{}
-		w.WriteHeader(http.StatusInternalServerError)
-	}))
-	defer server.Close()
-	ConfigureSchedulerClientForTest(SchedulerClientConfig{Enabled: true, Mode: "enforced", BaseURL: server.URL, Token: "scheduler-test", Timeout: time.Second})
-	c, _ := gin.CreateTestContext(httptest.NewRecorder())
-	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
-	c.Set(common.RequestIdKey, "resize-unchanged-request")
-	common.SetContextKey(c, constant.ContextKeySchedulerEstimatedTokens, 77)
-	if err := ResizeSchedulerReservation(c, 77); err != nil {
-		t.Fatal(err)
-	}
-	select {
-	case <-called:
-		t.Fatal("unchanged estimate triggered resize")
-	default:
-	}
-}
-
-func TestReportSchedulerShadowAttemptReleasesReservation(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/attempt" {
-			t.Fatalf("path=%s", r.URL.Path)
-		}
-		if r.Header.Get("Authorization") != "Bearer scheduler-test" {
-			t.Fatalf("missing scheduler auth")
-		}
-		var got schedulerAttempt
-		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
-			t.Fatalf("decode attempt: %v", err)
-		}
-		if got.DecisionID != "d1" || got.EndpointID != "ep1" || got.AttemptNo != 1 {
-			t.Fatalf("attempt identity=%+v", got)
-		}
-		if got.InputTokens != 13 || got.OutputTokens != 5 || !got.StreamStarted || got.TTFTMS != 42 {
-			t.Fatalf("attempt metrics=%+v", got)
-		}
-		if got.EstimatedTokens != 321 {
-			t.Fatalf("attempt estimate=%d, want the routing estimate", got.EstimatedTokens)
-		}
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer server.Close()
-	ConfigureSchedulerClientForTest(SchedulerClientConfig{Enabled: true, BaseURL: server.URL, Token: "scheduler-test", Timeout: time.Second})
-	c, _ := gin.CreateTestContext(httptest.NewRecorder())
-	requestCtx, cancel := context.WithCancel(context.Background())
-	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil).WithContext(requestCtx)
-	cancel()
-	c.Set(common.RequestIdKey, "req1")
-	// Native Shadow routing intentionally selects a different Channel than the
-	// Scheduler's reserved first candidate; the reported endpoint must remain
-	// the reservation owner (ep1), not the native second candidate.
-	common.SetContextKey(c, constant.ContextKeyChannelId, 8)
-	common.SetContextKey(c, constant.ContextKeySchedulerDecisionID, "d1")
-	common.SetContextKey(c, constant.ContextKeySchedulerReservationID, "res1")
-	common.SetContextKey(c, constant.ContextKeySchedulerCandidates, []SchedulerCandidate{{EndpointID: "ep1", ChannelID: 7, KeyIndex: 0, Model: "m", Reason: []string{"healthy"}}, {EndpointID: "ep2", ChannelID: 8, KeyIndex: 0, Model: "m", Reason: []string{"fallback"}}})
-	common.SetContextKey(c, constant.ContextKeySchedulerInputTokens, 13)
-	common.SetContextKey(c, constant.ContextKeySchedulerOutputTokens, 5)
-	common.SetContextKey(c, constant.ContextKeySchedulerStreamStarted, true)
-	common.SetContextKey(c, constant.ContextKeySchedulerTTFTMS, 42)
-	common.SetContextKey(c, constant.ContextKeyRoutingInputTokens, 321)
-	c.Set(string(constant.ContextKeyRequestStartTime), time.Now().Add(-time.Millisecond))
-	c.Writer.WriteHeader(http.StatusOK)
-	if err := ReportSchedulerShadowAttempt(c); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestReportSchedulerAttemptAsyncDoesNotWaitForScheduler(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	started := make(chan struct{})
-	release := make(chan struct{})
-	done := make(chan struct{})
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		close(started)
-		<-release
-		w.WriteHeader(http.StatusOK)
-		close(done)
-	}))
-	defer server.Close()
-	ConfigureSchedulerClientForTest(SchedulerClientConfig{Enabled: true, BaseURL: server.URL, Token: "scheduler-test", Timeout: time.Second, Mode: "enforced"})
-	c, _ := gin.CreateTestContext(httptest.NewRecorder())
-	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
-	c.Set(common.RequestIdKey, "async-attempt-request")
-	common.SetContextKey(c, constant.ContextKeySchedulerDecisionID, "async-attempt-decision")
-	common.SetContextKey(c, constant.ContextKeySchedulerReservationID, "async-attempt-reservation")
-	startedAt := time.Now()
-	if err := ReportSchedulerAttemptAsync(c, "ep-1", 1, http.StatusOK, true, false, 3, 4); err != nil {
-		t.Fatal(err)
-	}
-	if elapsed := time.Since(startedAt); elapsed > 100*time.Millisecond {
-		t.Fatalf("async attempt blocked for %v", elapsed)
-	}
-	select {
-	case <-started:
-	case <-time.After(time.Second):
-		t.Fatal("async attempt did not reach scheduler")
-	}
-	close(release)
-	select {
-	case <-done:
-	case <-time.After(time.Second):
-		t.Fatal("async attempt did not complete")
-	}
-}
-
 func TestRunSchedulerShadowIsDisabledByDefault(t *testing.T) {
 	ConfigureSchedulerClientForTest(SchedulerClientConfig{})
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
@@ -787,44 +631,6 @@ func TestSchedulerCanaryUsesStableHashAndDisabledConfig(t *testing.T) {
 	}
 }
 
-func TestReserveSchedulerCandidateUsesDecisionAndAttempt(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	var reserved atomic.Int64
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/reserve" {
-			t.Fatalf("path=%s", r.URL.Path)
-		}
-		if r.Header.Get("Authorization") != "Bearer scheduler-test" {
-			t.Fatalf("missing scheduler auth")
-		}
-		var request schedulerReserveRequest
-		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-			t.Fatalf("decode reserve request: %v", err)
-		}
-		reserved.Store(int64(request.EstimatedTokens))
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"reservation_id":"retry-res"}`))
-	}))
-	defer server.Close()
-	ConfigureSchedulerClientForTest(SchedulerClientConfig{Enabled: true, Mode: "enforced", BaseURL: server.URL, Token: "scheduler-test", Timeout: time.Second})
-	c, _ := gin.CreateTestContext(httptest.NewRecorder())
-	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
-	c.Set(common.RequestIdKey, "req1")
-	common.SetContextKey(c, constant.ContextKeySchedulerDecisionID, "d1")
-	common.SetContextKey(c, constant.ContextKeyRoutingInputTokens, 321)
-	if err := ReserveSchedulerCandidate(c, SchedulerCandidate{EndpointID: "ep2"}, 2); err != nil {
-		t.Fatal(err)
-	}
-	if got := common.GetContextKeyString(c, constant.ContextKeySchedulerReservationID); got != "retry-res" {
-		t.Fatalf("reservation=%s", got)
-	}
-	assert.Equal(t, int64(321), reserved.Load(), "调度器还没给出预留估算时，重试预留用选路阶段的估算")
-
-	common.SetContextKey(c, constant.ContextKeySchedulerEstimatedTokens, 77)
-	require.NoError(t, ReserveSchedulerCandidate(c, SchedulerCandidate{EndpointID: "ep3"}, 3))
-	assert.Equal(t, int64(77), reserved.Load(), "调度器给出的预留估算优先")
-}
-
 func TestRecordSchedulerUsageNormalizesOpenAIAndClaudeFields(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
@@ -847,29 +653,10 @@ func TestRecordSchedulerUsageNormalizesOpenAIAndClaudeFields(t *testing.T) {
 	}
 }
 
-func TestRecordSchedulerUsageMarksMissingProviderUsageUnverified(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	c, _ := gin.CreateTestContext(httptest.NewRecorder())
-	RecordSchedulerUsage(c, nil, false)
-	if !common.GetContextKeyBool(c, constant.ContextKeySchedulerUsageUnverified) {
-		t.Fatal("missing usage must be marked unverified")
-	}
-}
-
-func TestRecordSchedulerUsageMarksEstimatedBillingUnverified(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	c, _ := gin.CreateTestContext(httptest.NewRecorder())
-	RecordSchedulerUsage(c, &dto.Usage{PromptTokens: 10, CompletionTokens: 2, BillingUsage: &dto.BillingUsage{Estimated: true}}, false)
-	if !common.GetContextKeyBool(c, constant.ContextKeySchedulerUsageUnverified) {
-		t.Fatal("estimated provider usage must remain unverified")
-	}
-}
-
 func TestResetSchedulerAttemptMetricsClearsPriorRetryState(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
 	RecordSchedulerUsage(c, &dto.Usage{PromptTokens: 10, CompletionTokens: 2}, true)
-	common.SetContextKey(c, constant.ContextKeySchedulerTTFTMS, 42)
 	ResetSchedulerAttemptMetrics(c)
 	if got := common.GetContextKeyInt(c, constant.ContextKeySchedulerInputTokens); got != 0 {
 		t.Fatalf("input=%d", got)
@@ -877,10 +664,7 @@ func TestResetSchedulerAttemptMetricsClearsPriorRetryState(t *testing.T) {
 	if got := common.GetContextKeyInt(c, constant.ContextKeySchedulerOutputTokens); got != 0 {
 		t.Fatalf("output=%d", got)
 	}
-	if common.GetContextKeyBool(c, constant.ContextKeySchedulerUsageUnverified) || common.GetContextKeyBool(c, constant.ContextKeySchedulerStreamStarted) {
+	if common.GetContextKeyBool(c, constant.ContextKeySchedulerStreamStarted) {
 		t.Fatal("retry state was not cleared")
-	}
-	if got := common.GetContextKeyInt(c, constant.ContextKeySchedulerTTFTMS); got != 0 {
-		t.Fatalf("ttft=%d", got)
 	}
 }

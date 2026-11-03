@@ -360,7 +360,7 @@ func Distribute() func(c *gin.Context) {
 		}
 		common.SetContextKey(c, constant.ContextKeyRequestStartTime, time.Now())
 		SetupContextForSelectedChannel(c, channel, modelRequest.Model)
-		if !pinned && channel != nil && !service.SchedulerEnforcedForRequest(c) && !common.GetContextKeyBool(c, constant.ContextKeySchedulerAttemptReported) {
+		if !pinned && channel != nil && !service.SchedulerEnforcedForRequest(c) {
 			if err := service.RunSchedulerShadow(c, modelRequest.Model, common.GetContextKeyString(c, constant.ContextKeyUsingGroup)); err != nil {
 				common.SysLog(fmt.Sprintf("scheduler shadow skipped: %v", err))
 			}
@@ -368,11 +368,6 @@ func Distribute() func(c *gin.Context) {
 		c.Next()
 		if service.SchedulerEmergencyNativeActive(c) {
 			common.SysLog(fmt.Sprintf("scheduler degraded native selected: request_id=%s model=%s group=%s channel_id=%d status=%d", c.GetString(common.RequestIdKey), modelRequest.Model, common.GetContextKeyString(c, constant.ContextKeyUsingGroup), common.GetContextKeyInt(c, constant.ContextKeyChannelId), c.Writer.Status()))
-		}
-		if !pinned && channel != nil && !common.GetContextKeyBool(c, constant.ContextKeySchedulerAttemptReported) {
-			if err := service.ReportSchedulerShadowAttempt(c); err != nil {
-				common.SysLog(fmt.Sprintf("scheduler shadow attempt report skipped: %v", err))
-			}
 		}
 		if channel != nil && c.Writer != nil && c.Writer.Status() < http.StatusBadRequest {
 			service.RecordChannelAffinity(c, channel.Id)

@@ -244,12 +244,9 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		}
 		c.Request.Body = io.NopCloser(bodyStorage)
 
-		keyIndex := common.GetContextKeyInt(c, constant.ContextKeyChannelMultiKeyIndex)
-		attemptStart := time.Now()
 		// 重试共用一个 gin.Context：先清掉上一次尝试记下的用量，否则这次没报用量
 		// （比如连不上上游）时会把上一次的 token 数当成这次的。
 		service.ResetSchedulerAttemptMetrics(c)
-		runtimeWindow := service.BeginSchedulerRuntime(channel.Id, keyIndex)
 		// <渠道, 上游模型> 的实时用量只统计不拦截。上游名按 model_mapping 链尾算，
 		// 与 setting.model_limits 的键一致；绑了容量池的再计进容量池。defer 兜底：
 		// handler panic 时也会结束这次登记；正常路径下面会带着实际用量先结束，defer 就什么也不做。
@@ -308,9 +305,6 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		if !streamStarted {
 			streamStarted = relayInfo.IsStream && relayInfo.HasSendResponse()
 		}
-		if streamStarted && !relayInfo.FirstResponseTime.IsZero() && !relayInfo.StartTime.IsZero() {
-			common.SetContextKey(c, constant.ContextKeySchedulerTTFTMS, int(relayInfo.FirstResponseTime.Sub(relayInfo.StartTime).Milliseconds()))
-		}
 		if otelRuntime != nil {
 			var attemptErr error
 			if newAPIError != nil {
@@ -328,15 +322,6 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 				UpstreamModel: relayInfo.UpstreamModelName,
 			}, attemptStatus, streamStatus, attemptErr)
 		}
-		inputTokens := common.GetContextKeyInt(c, constant.ContextKeySchedulerInputTokens)
-		if inputTokens == 0 {
-			inputTokens = common.GetContextKeyInt(c, constant.ContextKeyPromptTokens)
-		}
-		outputTokens := common.GetContextKeyInt(c, constant.ContextKeySchedulerOutputTokens)
-		if err := service.ReportSchedulerAttemptAsync(c, service.SchedulerEndpointForChannel(c, channel.Id), retryParam.GetRetry()+1, attemptStatus, newAPIError == nil, streamStarted, inputTokens, outputTokens); err != nil {
-			logger.LogDebug(c, "scheduler attempt report skipped: %v", err)
-		}
-		service.FinishSchedulerRuntime(channel.Id, keyIndex, runtimeWindow, attemptStatus, inputTokens, outputTokens, time.Since(attemptStart))
 		// 这里只用上游实际报的用量：没报输入时保留开始时的估算，
 		// 失败且没有任何用量时撤回估算（见 channel_capacity.Finish）。
 		channelcapacity.Finish(capacityLease, newAPIError == nil,
