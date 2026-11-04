@@ -20,7 +20,7 @@ func setupCapabilityModelTest(t *testing.T) *gorm.DB {
 	dsn := fmt.Sprintf("file:%s?mode=memory&cache=shared", strings.ReplaceAll(t.Name(), "/", "_"))
 	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{})
 	require.NoError(t, err)
-	require.NoError(t, db.AutoMigrate(&Model{}, &Channel{}, &Ability{}, &ChannelModelStatus{}, &ChannelModelCapability{}, &ResourcePoolSource{}, &CapacityPool{}))
+	require.NoError(t, db.AutoMigrate(&Model{}, &Channel{}, &Ability{}, &ChannelModelStatus{}, &ChannelModelCapability{}, &ResourcePoolSource{}, &CapacityPool{}, &Option{}))
 	DB = db
 	t.Cleanup(func() {
 		DB = previousDB
@@ -316,6 +316,67 @@ func TestChannelCostMultiplierKeysByRequestModel(t *testing.T) {
 	err = SetChannelModelCostMultiplier(5, "other-model", 2)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "does not serve model")
+}
+
+// 升级时把旧的上游名键换成请求名：每个请求名拿到能力页升级前显示的值，只跑一次。
+func TestMigrateCostMultiplierKeysToRequestModel(t *testing.T) {
+	db := setupCapabilityModelTest(t)
+	strPtr := func(value string) *string { return &value }
+	require.NoError(t, db.Create(&[]Channel{
+		// 两个别名映射到同一上游：都继承原来共用的值；对不上任何请求名的旧键丢弃；其它字段保留。
+		{Id: 1, Name: "aliases", Models: "gpt-4o,gpt-4o-latest,gpt-4o-mini",
+			ModelMapping: strPtr(`{"gpt-4o":"gpt-4o-2024-08-06","gpt-4o-latest":"gpt-4o-2024-08-06"}`),
+			Setting:      strPtr(`{"cost_multiplier":{"gpt-4o-2024-08-06":0.8,"gpt-4o-mini":1.2,"removed-model":3},"model_limits":{"gpt-4o-2024-08-06":{"rpm":100}},"x_unknown":true}`)},
+		// 旧版渠道抽屉按链尾名填的倍率：页面看不到，但记录时一直生效，转换时保留。
+		{Id: 2, Name: "chain", Models: "a", ModelMapping: strPtr(`{"a":"b","b":"c"}`),
+			Setting: strPtr(`{"cost_multiplier":{"c":1.5}}`)},
+		// 一跳名和链尾名都有值时，取能力页显示的一跳名的值。
+		{Id: 5, Name: "chain-shown", Models: "x", ModelMapping: strPtr(`{"x":"y","y":"z"}`),
+			Setting: strPtr(`{"cost_multiplier":{"y":2,"z":9}}`)},
+		// 没有映射时键本来就是请求名，不改写。
+		{Id: 3, Name: "plain", Models: "claude-sonnet-4-5", Setting: strPtr(`{"cost_multiplier":{"claude-sonnet-4-5":0.6}}`)},
+		// 坏数据跳过，不挡住其它渠道。
+		{Id: 4, Name: "broken", Models: "m", Setting: strPtr(`{"cost_multiplier":"not-a-map"}`)},
+	}).Error)
+
+	require.NoError(t, MigrateCostMultiplierKeysToRequestModel())
+
+	settingOf := func(id int) string {
+		var channel Channel
+		require.NoError(t, db.First(&channel, "id = ?", id).Error)
+		return *channel.Setting
+	}
+	var aliases map[string]any
+	require.NoError(t, common.UnmarshalJsonStr(settingOf(1), &aliases))
+	assert.Equal(t, map[string]any{"gpt-4o": 0.8, "gpt-4o-latest": 0.8, "gpt-4o-mini": 1.2}, aliases["cost_multiplier"])
+	assert.Equal(t, map[string]any{"gpt-4o-2024-08-06": map[string]any{"rpm": float64(100)}}, aliases["model_limits"], "limits stay keyed by the upstream name")
+	assert.Equal(t, true, aliases["x_unknown"])
+	assert.JSONEq(t, `{"cost_multiplier":{"a":1.5}}`, settingOf(2))
+	assert.JSONEq(t, `{"cost_multiplier":{"x":2}}`, settingOf(5))
+	assert.Equal(t, `{"cost_multiplier":{"claude-sonnet-4-5":0.6}}`, settingOf(3))
+	assert.Equal(t, `{"cost_multiplier":"not-a-map"}`, settingOf(4))
+
+	// 第二次启动不再转换：转换后的键按旧规则会被当成上游名，重跑会把 gpt-4o-latest 的值弄丢。
+	require.NoError(t, db.Model(&Channel{}).Where("id = ?", 1).Update("setting", `{"cost_multiplier":{"gpt-4o":0.8,"gpt-4o-latest":0.5}}`).Error)
+	require.NoError(t, MigrateCostMultiplierKeysToRequestModel())
+	assert.Equal(t, `{"cost_multiplier":{"gpt-4o":0.8,"gpt-4o-latest":0.5}}`, settingOf(1))
+
+	// 完成标记由服务端管理：选项接口不能写它，也不出现在选项表里。
+	require.ErrorIs(t, UpdateOption(costMultiplierKeyMigratedKey, "1"), errCostMultiplierKeyMigratedReadOnly)
+	common.OptionMapRWMutex.Lock()
+	previousOptions := common.OptionMap
+	common.OptionMap = map[string]string{costMultiplierKeyMigratedKey: "1"}
+	common.OptionMapRWMutex.Unlock()
+	t.Cleanup(func() {
+		common.OptionMapRWMutex.Lock()
+		common.OptionMap = previousOptions
+		common.OptionMapRWMutex.Unlock()
+	})
+	require.NoError(t, updateOptionMap(costMultiplierKeyMigratedKey, "1"))
+	common.OptionMapRWMutex.RLock()
+	_, listed := common.OptionMap[costMultiplierKeyMigratedKey]
+	common.OptionMapRWMutex.RUnlock()
+	assert.False(t, listed)
 }
 
 func TestCostMultiplierModel(t *testing.T) {
