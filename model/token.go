@@ -42,6 +42,9 @@ type Token struct {
 	Scene       common.TokenScene       `json:"scene" gorm:"type:varchar(16);default:'office'"`
 	Description string                  `json:"description" gorm:"type:varchar(255);default:''"`
 	RoutingMode common.TokenRoutingMode `json:"routing_mode" gorm:"type:varchar(16);default:'smart'"`
+	// RPM 为该令牌每分钟允许的请求数：0 继承平台级配置（TokenRequestRateLimitCount），
+	// -1 表示该令牌不限流，正数为该令牌自己的上限
+	RPM int `json:"rpm" gorm:"default:0"`
 }
 
 func (token *Token) GetAutoGroups() ([]string, error) {
@@ -114,6 +117,13 @@ func (token *Token) UpdateRoutingPreference() error {
 		common.SysLog("failed to invalidate token cache before routing preference update: " + cacheErr.Error())
 	}
 	return DB.Model(token).Select("routing_preference").Updates(token).Error
+}
+
+func (token *Token) UpdateRateLimit() error {
+	if cacheErr := invalidateTokenCacheForMutation(token.Key); cacheErr != nil {
+		common.SysLog("failed to invalidate token cache before rate limit update: " + cacheErr.Error())
+	}
+	return DB.Model(token).Select("rpm").Updates(token).Error
 }
 
 func (token *Token) Clean() {

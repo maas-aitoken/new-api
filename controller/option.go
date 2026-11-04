@@ -422,6 +422,16 @@ func UpdateOption(c *gin.Context) {
 			common.ApiError(c, err)
 			return
 		}
+	case "TokenRequestRateLimitCount":
+		count, convErr := strconv.Atoi(fmt.Sprintf("%v", option.Value))
+		if convErr != nil {
+			common.ApiErrorT(c, "Invalid parameters")
+			return
+		}
+		if err = setting.CheckTokenRequestRateLimitCount(count); err != nil {
+			common.ApiError(c, err)
+			return
+		}
 	case "AutomaticDisableStatusCodes":
 		_, err = operation_setting.ParseHTTPStatusCodeRanges(option.Value.(string))
 		if err != nil {
