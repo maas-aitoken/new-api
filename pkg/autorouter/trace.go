@@ -16,6 +16,9 @@ const (
 	ReasonPerCall         = "per_call"         // billed per call, which cannot be compared with per-token prices
 	ReasonClientReasoning = "client_reasoning" // the client's own reasoning settings rule it out
 	ReasonUnavailable     = "unavailable"      // not servable, the reason is not known
+	// the scheduler's preview admits none of its channels right now (pool exhausted,
+	// over its limits, capacity unknown), so the real schedule would fail with 503
+	ReasonSchedulerNoCandidate = "scheduler_no_candidate"
 )
 
 // How the classification of a request was obtained.

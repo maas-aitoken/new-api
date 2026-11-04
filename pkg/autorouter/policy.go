@@ -157,7 +157,7 @@ func SelectRoute(decision *Decision, previous *Route, policy Policy, candidates 
 			trace.Ladder = append(trace.Ladder, LadderStep{Profile: previous.Profile, Outcome: OutcomeInherited, Model: previous.Model})
 			return *previous, true, true, nil
 		}
-		model, picked, found := policy.choose(DefaultProfile, policy.DefaultModels, available, candidates, trace)
+		model, picked, found := policy.choose(DefaultProfile, policy.DefaultModels, available, false, policy.DefaultEffort, candidates, trace)
 		return Route{Model: model, Effort: policy.DefaultEffort}, true, found, picked
 	}
 
@@ -186,11 +186,11 @@ func SelectRoute(decision *Decision, previous *Route, policy Policy, candidates 
 	}
 
 	for _, profile := range profiles {
-		if model, picked, found := policy.choose(profile, policy.TaskModels[profile], overridable, candidates, trace); found {
+		if model, picked, found := policy.choose(profile, policy.TaskModels[profile], overridable, true, effort, candidates, trace); found {
 			return Route{Profile: profile, Model: model, Effort: effort}, false, true, picked
 		}
 	}
-	model, picked, found := policy.choose(DefaultProfile, policy.DefaultModels, overridable, candidates, trace)
+	model, picked, found := policy.choose(DefaultProfile, policy.DefaultModels, overridable, true, effort, candidates, trace)
 	return Route{Model: model, Effort: effort}, false, found, picked
 }
 
@@ -198,13 +198,19 @@ func SelectRoute(decision *Decision, previous *Route, policy Policy, candidates 
 // compares quality and price under the policy's preference; otherwise, or when no
 // scored model is servable, it takes the first available model in list order.
 // picked is set only for the comparison. Every call adds a step to trace.
-func (p Policy) choose(profile string, models []string, available func(string) bool, candidates Candidates, trace *Trace) (string, *Pick, bool) {
+// trusted 表示 available 撇开了客户端的推理字段（可信判断走 overridable），effort 是这一步
+// 的期望档位，两者一起交给 Candidates.Costs，让主机按同一口径找出服务请求的模型名和渠道。
+func (p Policy) choose(profile string, models []string, available func(string) bool, trusted bool, effort string, candidates Candidates, trace *Trace) (string, *Pick, bool) {
 	step := LadderStep{Profile: profile, Models: len(models), Outcome: OutcomeNone}
 	var picked *Pick
 	model, found := "", false
 	if scores := p.TaskScores[profile]; len(scores) > 0 && candidates.Price != nil {
 		servable := func(name string) bool { return ModelAvailable(name, available) }
-		pick, ok := pickByQualityCost(models, scores, p.CostWeight, servable, candidates.Price, candidates.Why)
+		var costs func([]string) map[string]Cost
+		if candidates.Costs != nil {
+			costs = func(names []string) map[string]Cost { return candidates.Costs(names, effort, trusted) }
+		}
+		pick, ok := pickByQualityCost(models, scores, p.CostWeight, servable, candidates.Price, costs, candidates.Why)
 		step.Skipped, step.SkippedMore = pick.skipped, pick.skippedMore
 		if ok {
 			picked, model, found = &pick, pick.Chosen, true

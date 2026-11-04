@@ -145,7 +145,7 @@ func runPick(entries []pickEntry, weight float64) (Pick, bool, []string) {
 	}
 	pick, ok := pickByQualityCost(models, scores, weight,
 		func(name string) bool { probed = append(probed, name); return !byName[name].down },
-		func(name string) (float64, bool) { return byName[name].price, !byName[name].unpriced }, nil)
+		func(name string) (float64, bool) { return byName[name].price, !byName[name].unpriced }, nil, nil)
 	return pick, ok, probed
 }
 
@@ -222,6 +222,62 @@ func TestPickByQualityCostBandAndProbing(t *testing.T) {
 	assert.Equal(t, []string{"a", "b"}, probed)
 }
 
+// 比较的价格是"用户价 × 首次会落到的渠道的费用倍率"（平台成本）：倍率不同能翻转选择，
+// 全都一样时与只比用户价相同；带定下来之后一次取齐，带外的模型不问。
+func TestPickByQualityCostComparesThePlatformCost(t *testing.T) {
+	scores := map[string]float64{"a": 0.95, "b": 0.94, "far": 0.50}
+	models := []string{"a", "b", "far"}
+	prices := map[string]float64{"a": 10, "b": 3, "far": 0.1}
+	all := func(string) bool { return true }
+	price := func(model string) (float64, bool) { return prices[model], true }
+	var asked [][]string
+	pickWith := func(estimates map[string]Cost) Pick {
+		pick, ok := pickByQualityCost(models, scores, 0.07, all, price, func(names []string) map[string]Cost {
+			asked = append(asked, slices.Clone(names))
+			return estimates
+		}, nil)
+		require.True(t, ok)
+		return pick
+	}
+
+	pick, ok := pickByQualityCost(models, scores, 0.07, all, price, nil, nil)
+	require.True(t, ok)
+	assert.Equal(t, "b", pick.Chosen, "by the user price b is cheaper")
+
+	pick = pickWith(map[string]Cost{
+		"a": {Price: 10, Multiplier: 0.2, ChannelID: 7, Channels: 1, Source: CostSourceScheduler},
+		"b": {Price: 3, Multiplier: 1, Channels: 2, Source: CostSourceExpected},
+	})
+	assert.Equal(t, "a", pick.Chosen, "a costs the platform 2, b costs 3")
+	assert.Equal(t, [][]string{{"a", "b"}}, asked, "one call for the band, never the model outside it")
+	assert.Equal(t, Candidate{Model: "a", Score: 0.95, Price: 10, CostMultiplier: 0.2, Cost: 2, ChannelID: 7, Channels: 1,
+		CostSource: CostSourceScheduler, Discount: 0, Utility: 0.95}, pick.Band[0])
+	assert.InDelta(t, 0.07, pick.Band[1].Discount, 1e-9, "the dearest platform cost in the band takes the full discount")
+
+	tied := map[string]float64{"a": 0.95, "b": 0.95}
+	pick, ok = pickByQualityCost([]string{"a", "b"}, tied, 0, all, price, func([]string) map[string]Cost {
+		return map[string]Cost{"a": {Price: 10, Multiplier: 0.2}, "b": {Price: 3, Multiplier: 1}}
+	}, nil)
+	require.True(t, ok)
+	assert.Equal(t, "a", pick.Chosen, "at weight zero a tie goes to the lower platform cost")
+
+	pick = pickWith(map[string]Cost{"a": {Price: 10, Multiplier: 0.5}, "b": {Price: 3, Multiplier: 0.5}})
+	assert.Equal(t, "b", pick.Chosen, "the same multiplier everywhere changes nothing")
+
+	pick = pickWith(map[string]Cost{"a": {Price: 10, Multiplier: 0.2}})
+	assert.Equal(t, "a", pick.Chosen, "a model without an estimate is compared by its user price")
+	assert.Zero(t, pick.Band[1].CostMultiplier)
+
+	pick = pickWith(map[string]Cost{"b": {Excluded: true, Reason: ReasonSchedulerNoCandidate}})
+	assert.Equal(t, "a", pick.Chosen, "an excluded model leaves the band")
+	assert.Equal(t, []Skipped{{Model: "b", Score: 0.94, Reason: ReasonSchedulerNoCandidate}}, pick.skipped)
+
+	_, ok = pickByQualityCost(models, scores, 0.07, all, price, func([]string) map[string]Cost {
+		return map[string]Cost{"a": {Excluded: true}, "b": {Excluded: true}}
+	}, nil)
+	assert.False(t, ok, "nothing left to compare")
+}
+
 // 可信的判断在同一任务类型的候选里一次比较质量和价格；沿用上一轮模型、
 // 兜底和没有价格时都不做这个比较。
 func TestSelectRoutePicksByQualityAndPrice(t *testing.T) {
@@ -278,6 +334,25 @@ func TestSelectRoutePicksByQualityAndPrice(t *testing.T) {
 		assert.Equal(t, Route{Profile: "code", Model: "mid", Effort: "medium"}, route)
 		require.NotNil(t, pick)
 		assert.Equal(t, "mid", pick.Chosen)
+	})
+	t.Run("costs are asked with the step's effort and trust", func(t *testing.T) {
+		type ask struct {
+			effort  string
+			trusted bool
+		}
+		var asked []ask
+		withCosts := priced
+		withCosts.Costs = func(_ []string, effort string, ignoreClientReasoning bool) map[string]Cost {
+			asked = append(asked, ask{effort, ignoreClientReasoning})
+			return nil
+		}
+		hard := decide("code.build", 1)
+		hard.Difficulty = 4
+		_, _, ok, _ := SelectRoute(hard, nil, policy, withCosts, nil)
+		require.True(t, ok)
+		_, _, ok, _ = SelectRoute(nil, nil, policy, withCosts, nil)
+		require.True(t, ok)
+		assert.Equal(t, []ask{{"xhigh", true}, {"medium", false}}, asked, "a trusted ranking, then an untrusted fallback")
 	})
 	t.Run("without prices the first available model in list order wins", func(t *testing.T) {
 		route, _, ok, pick := SelectRoute(decide("code.build", 1), nil, policy, Candidates{Available: all, Overridable: all}, nil)
@@ -683,7 +758,7 @@ func TestPickByQualityCostCapsRecordedSkips(t *testing.T) {
 	scores["last"] = 0.97
 	pick, ok := pickByQualityCost(models, scores, 0.07,
 		func(name string) bool { return name == "last" },
-		func(string) (float64, bool) { return 1, true },
+		func(string) (float64, bool) { return 1, true }, nil,
 		func(string) string { return ReasonNoChannel })
 	require.True(t, ok)
 	assert.Equal(t, "last", pick.Chosen)
