@@ -321,8 +321,8 @@ func ResolveAutoModel(c *gin.Context, candidates AutoCandidates) (*autorouter.Re
 		if result.EffortOverride {
 			serves = overridable
 		}
-		if spec, declared := model.ResolveModelCapability(capabilityBaseModel(result.Model)); declared && spec.Reasoning.Declared() && serves(result.Model) {
-			result.ResolvedModel, result.EffortInBody = result.Model, true
+		result.ResolvedModel, result.EffortInBody, ok = AutoServingModel(result.Model, result.Effort, serves)
+		if result.EffortInBody {
 			// 只有可信的判断才改客户端的推理字段；兜底路径保持原样。
 			result.EffortAction = autorouter.EffortKeep
 			if result.EffortOverride {
@@ -331,8 +331,6 @@ func ResolveAutoModel(c *gin.Context, candidates AutoCandidates) (*autorouter.Re
 				result.AppliedEffort, result.EffortAction = support.Clamp(result.Effort)
 				gate.OverrideReasoning(result.EffortAction, result.AppliedEffort)
 			}
-		} else {
-			result.ResolvedModel, ok = autorouter.ResolveVariant(result.Model, result.Effort, serves)
 		}
 	}
 	if !ok {
@@ -368,6 +366,18 @@ func ResolveAutoModel(c *gin.Context, candidates AutoCandidates) (*autorouter.Re
 		common.SetContextKey(c, constant.ContextKeySchedulerWorkload, result.Decision.TaskType)
 	}
 	return result, nil
+}
+
+// AutoServingModel 返回 auto 选中一个模型后真正用来服务请求的模型名：模型声明了推理维度
+// 且裸名可用时用裸名，档位写进请求体（effortInBody 为 true）；否则取最接近期望档位的可用
+// 变体，档位拼在名字后缀上。选路的最终解析和比价时估算候选落到哪个渠道共用这一条规则，
+// 两边按同一个名字找渠道。serves 判定一个名字能不能服务这个请求。
+func AutoServingModel(name, effort string, serves func(string) bool) (resolved string, effortInBody bool, ok bool) {
+	if spec, declared := model.ResolveModelCapability(capabilityBaseModel(name)); declared && spec.Reasoning.Declared() && serves(name) {
+		return name, true, true
+	}
+	resolved, ok = autorouter.ResolveVariant(name, effort, serves)
+	return resolved, false, ok
 }
 
 // GetAutoRouterResult returns the routing outcome stored by ResolveAutoModel.
