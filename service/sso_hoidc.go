@@ -93,7 +93,17 @@ func VerifySsoToken(token string) (*SsoUserInfo, error) {
 	return &result.Data, nil
 }
 
-func ProvisionSsoUser(hoidcId, email, name, avatar, departmentTreePathStr string, allowSignup bool) (*model.User, error) {
+// ProvisionSsoUser creates or refreshes the local account of an SSO user.
+// Like the org fields, the reporting-line and org-id values only overwrite an
+// existing user when they are non-empty and changed, so callers without them
+// (the login path) pass zero values to leave the stored columns untouched.
+func ProvisionSsoUser(
+	hoidcId, email, name, avatar, departmentTreePathStr string,
+	straightLineManagerEmail, straightLineManagerName string,
+	straightLineManagerUid, mentorUid, dottedLineManagerUid, organizationOid, departmentOid int64,
+	isCharge int,
+	allowSignup bool,
+) (*model.User, error) {
 	email = strings.TrimSpace(strings.ToLower(email))
 	if email == "" {
 		return nil, errors.New("email is empty")
@@ -139,6 +149,30 @@ func ProvisionSsoUser(hoidcId, email, name, avatar, departmentTreePathStr string
 		if departmentTreePathStr != "" && departmentTreePathStr != user.OrgStr {
 			updates["org_str"] = departmentTreePathStr
 		}
+		if straightLineManagerEmail != "" && straightLineManagerEmail != user.StraightLineManagerEmail {
+			updates["straight_line_manager_email"] = straightLineManagerEmail
+		}
+		if straightLineManagerName != "" && straightLineManagerName != user.StraightLineManagerName {
+			updates["straight_line_manager_name"] = straightLineManagerName
+		}
+		if straightLineManagerUid != 0 && straightLineManagerUid != user.StraightLineManagerUid {
+			updates["straight_line_manager_uid"] = straightLineManagerUid
+		}
+		if mentorUid != 0 && mentorUid != user.MentorUid {
+			updates["mentor_uid"] = mentorUid
+		}
+		if dottedLineManagerUid != 0 && dottedLineManagerUid != user.DottedLineManagerUid {
+			updates["dotted_line_manager_uid"] = dottedLineManagerUid
+		}
+		if organizationOid != 0 && organizationOid != user.OrganizationOid {
+			updates["organization_oid"] = organizationOid
+		}
+		if departmentOid != 0 && departmentOid != user.DepartmentOid {
+			updates["department_oid"] = departmentOid
+		}
+		if isCharge != 0 && isCharge != user.IsCharge {
+			updates["is_charge"] = isCharge
+		}
 		if len(updates) > 0 {
 			model.DB.Model(&user).Updates(updates)
 		}
@@ -167,6 +201,15 @@ func ProvisionSsoUser(hoidcId, email, name, avatar, departmentTreePathStr string
 		TertiaryOrganization:  tertiary,
 		Team:                  team,
 		OrgStr:                departmentTreePathStr,
+
+		StraightLineManagerEmail: straightLineManagerEmail,
+		StraightLineManagerName:  straightLineManagerName,
+		StraightLineManagerUid:   straightLineManagerUid,
+		MentorUid:                mentorUid,
+		DottedLineManagerUid:     dottedLineManagerUid,
+		OrganizationOid:          organizationOid,
+		DepartmentOid:            departmentOid,
+		IsCharge:                 isCharge,
 	}
 	if err := newUser.Insert(0); err != nil {
 		return nil, fmt.Errorf("failed to create SSO user: %w", err)

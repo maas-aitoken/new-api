@@ -77,7 +77,12 @@ func SsoHoidcCallback(c *gin.Context) {
 		return
 	}
 
-	user, err := service.ProvisionSsoUser(strconv.Itoa(userInfo.Uid), userInfo.Email, userInfo.Name, userInfo.Avatar, userInfo.DepartmentTreePathStr, common.HoidcAllowSignup)
+	// Reporting line and org ids are left to the SSO user sync task.
+	user, err := service.ProvisionSsoUser(
+		strconv.Itoa(userInfo.Uid), userInfo.Email, userInfo.Name, userInfo.Avatar, userInfo.DepartmentTreePathStr,
+		"", "", 0, 0, 0, 0, 0, 0,
+		common.HoidcAllowSignup,
+	)
 	if err != nil {
 		common.SysError("SSO user provision failed: " + err.Error())
 		common.ApiErrorT(c, "SSO login failed: "+err.Error())
