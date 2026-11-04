@@ -16,7 +16,8 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { render, screen, within } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { createInstance } from 'i18next'
 import { I18nextProvider, initReactI18next } from 'react-i18next'
 import { afterEach, expect, test, vi } from 'vitest'
@@ -35,15 +36,11 @@ const monitor: SchedulerMonitor = {
     status: 'healthy',
     endpoints: [
       {
-        endpoint_id: 'new-api-ch-1-k0',
+        endpoint_id: 'new-api-ch-1',
         channel_id: 1,
-        key_index: 0,
         model: 'gpt-5',
-        runtime_known: true,
         capacity_pool_id: 'c1-aaaaaaaaaaaa',
-        rpm_used: 12,
         rpm_capacity: 100,
-        tpm_used: 300,
         tpm_capacity: 9000,
         max_concurrency: 4,
         pool_rpm_used: 40,
@@ -52,14 +49,11 @@ const monitor: SchedulerMonitor = {
         load_ratio: 0.4,
       },
       {
-        endpoint_id: 'new-api-ch-2-k0',
+        endpoint_id: 'new-api-ch-2',
         channel_id: 2,
-        key_index: 0,
         model: 'gpt-5',
-        runtime_known: true,
-        rpm_used: 7,
-        rpm_capacity: 50,
-        load_ratio: 0.14,
+        capacity_pool_id: 'c2-bbbbbbbbbbbb',
+        pool_rpm_used: 7,
       },
     ],
   },
@@ -73,16 +67,7 @@ afterEach(() => {
   apiClient.get = originalGet
 })
 
-function cellsOf(endpointId: string) {
-  const row = screen.getByText(endpointId).closest('tr')
-  expect(row).not.toBeNull()
-  return within(row as HTMLElement).getAllByRole('cell')
-}
-
-test('a pooled endpoint shows the shared pool usage against the pool quota and its own share below', async () => {
-  apiClient.get = vi.fn(async () => ({
-    data: { success: true, data: monitor },
-  }))
+async function renderMonitor() {
   // 与生产配置（src/i18n/config.ts）一致不转义插值，否则 "2 / 4" 会显示成 "&#x2F;"。
   const i18n = createInstance()
   await i18n.use(initReactI18next).init({
@@ -95,18 +80,48 @@ test('a pooled endpoint shows the shared pool usage against the pool quota and i
       <SchedulerMonitorPage />
     </I18nextProvider>
   )
-  await screen.findByText('new-api-ch-1-k0')
+  await screen.findByText('new-api-ch-1')
+}
 
-  // 列顺序：Endpoint、Model、Health、Load、RPM、TPM。
-  const pooled = cellsOf('new-api-ch-1-k0')
-  expect(pooled[0]).toHaveTextContent('Pool c1-aaaaaaaaaaaa')
-  expect(pooled[3]).toHaveTextContent('40.0%In flight 2 / 4')
-  expect(pooled[4]).toHaveTextContent('40 / 100This key 12')
-  expect(pooled[5]).toHaveTextContent('1500 / 9000This key 300')
+function cellsOf(endpointId: string) {
+  const row = screen.getByText(endpointId).closest('tr')
+  expect(row).not.toBeNull()
+  return within(row as HTMLElement).getAllByRole('cell')
+}
 
-  // 没有计数池的端点（旧版 new-api 的目录）仍按 key 显示，不出现池的说明。
-  const legacy = cellsOf('new-api-ch-2-k0')
-  expect(legacy[4]).toHaveTextContent('7 / 50')
-  expect(legacy[4]).not.toHaveTextContent('This key')
-  expect(legacy[0]).not.toHaveTextContent('Pool')
+test('each channel row shows its counting pool usage against the pool quota without health or per-key columns', async () => {
+  apiClient.get = vi.fn<ApiGet>(async () => ({
+    data: { success: true, data: monitor },
+  }))
+  await renderMonitor()
+
+  // 列顺序：Endpoint、Model、Load、RPM、TPM。调度器不再维护健康状态，也不按 key 拆端点。
+  expect(screen.queryByRole('columnheader', { name: 'Health' })).toBeNull()
+  const limited = cellsOf('new-api-ch-1')
+  expect(limited[0]).toHaveTextContent('channel 1')
+  expect(limited[0]).not.toHaveTextContent('key')
+  expect(limited[0]).toHaveTextContent('Pool c1-aaaaaaaaaaaa')
+  expect(limited[2].textContent).toBe('40.0%In flight 2 / 4')
+  expect(limited[3].textContent).toBe('40 / 100')
+  expect(limited[4].textContent).toBe('1500 / 9000')
+
+  // 不限额的池：负载未知，用量对着 ∞。
+  const unlimited = cellsOf('new-api-ch-2')
+  expect(unlimited[2].textContent).toBe('-In flight 0 / ∞')
+  expect(unlimited[3].textContent).toBe('7 / ∞')
+})
+
+test('typing a channel id in the filter reloads the monitor scoped to that channel', async () => {
+  const get = vi.fn<ApiGet>(async () => ({
+    data: { success: true, data: monitor },
+  }))
+  apiClient.get = get
+  const user = userEvent.setup()
+  await renderMonitor()
+
+  await user.type(screen.getByRole('textbox', { name: 'Channel ID' }), '2')
+
+  await waitFor(() =>
+    expect(get).toHaveBeenLastCalledWith('/api/scheduler/monitor?channel_id=2')
+  )
 })

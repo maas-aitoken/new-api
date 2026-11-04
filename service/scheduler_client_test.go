@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -60,18 +61,12 @@ func TestRunSchedulerShadowStoresOnlyMetadata(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 			t.Fatalf("decode schedule request: %v", err)
 		}
-		if request.Policy["mode"] != "price" || request.Policy["allow_fallbacks"] != true || request.Policy["max_attempts"] != float64(3) || request.Policy["runtime_high_watermark"] != 0.75 {
-			t.Fatalf("effective policy=%v", request.Policy)
-		}
-		if request.MaxOutputTokens != 123 {
-			t.Fatalf("max output estimate=%d", request.MaxOutputTokens)
-		}
+		// 策略只带排序要用的两项，重试次数留在 new-api。
+		assert.Equal(t, map[string]any{"mode": "price", "runtime_high_watermark": 0.75}, request.Policy)
 		sentEstimate.Store(int64(request.EstimatedInputTokens))
-		if len(request.AllowedChannelIDs) != 2 || request.AllowedChannelIDs[0] != 4 || request.AllowedChannelIDs[1] != 7 {
-			t.Fatalf("allowed channel scope=%v", request.AllowedChannelIDs)
-		}
+		assert.Equal(t, []int{4, 7}, request.AllowedChannelIDs)
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"decision_id":"d1","catalog_version":"catalog-v1","reservation":{"reservation_id":"res1","estimated_tokens":123},"candidates":[{"endpoint_id":"ep1","channel_id":7,"key_index":2,"model":"m","reason":["healthy"]}]}`))
+		_, _ = w.Write([]byte(`{"decision_id":"d1","catalog_version":"catalog-v1","candidates":[{"endpoint_id":"ep1","channel_id":7,"key_index":2,"model":"m","reason":["healthy"]}]}`))
 	}))
 	defer server.Close()
 	ConfigureSchedulerClientForTest(SchedulerClientConfig{Enabled: true, BaseURL: server.URL, Token: "scheduler-test", Timeout: time.Second, RuntimeHighWatermark: 0.75})
@@ -86,28 +81,18 @@ func TestRunSchedulerShadowStoresOnlyMetadata(t *testing.T) {
 	if err := RunSchedulerShadow(c, "m", "default"); err != nil {
 		t.Fatal(err)
 	}
-	// 决策请求带的是选路阶段按这个模型估算的输入长度，不再恒为 0；同一个值留给重试预留和遥测用。
+	// 决策请求带的是选路阶段按这个模型估算的输入长度，调度器拿它判断 TPM 加上这次会不会超额。
 	routingEstimate := RoutingInputTokens(c, "m")
 	require.Greater(t, routingEstimate, int64(100), "消息文本要算进去")
 	assert.Equal(t, routingEstimate, sentEstimate.Load())
-	assert.Equal(t, int(routingEstimate), common.GetContextKeyInt(c, constant.ContextKeyRoutingInputTokens))
 	if got := common.GetContextKeyString(c, constant.ContextKeySchedulerDecisionID); got != "d1" {
 		t.Fatalf("decision=%s", got)
-	}
-	if got := common.GetContextKeyString(c, constant.ContextKeySchedulerReservationID); got != "res1" {
-		t.Fatalf("reservation=%s", got)
-	}
-	if got := common.GetContextKeyInt(c, constant.ContextKeySchedulerEstimatedTokens); got != 123 {
-		t.Fatalf("scheduler estimate=%d", got)
 	}
 	if !common.GetContextKeyBool(c, constant.ContextKeySchedulerShadowMatch) {
 		t.Fatal("shadow match not recorded")
 	}
-	if candidates, ok := common.GetContextKeyType[[]SchedulerCandidate](c, constant.ContextKeySchedulerCandidates); !ok || len(candidates) != 1 || candidates[0].KeyIndex != 2 {
+	if candidates, ok := common.GetContextKeyType[[]SchedulerCandidate](c, constant.ContextKeySchedulerCandidates); !ok || len(candidates) != 1 || candidates[0].ChannelID != 7 {
 		t.Fatalf("candidates=%+v ok=%v", candidates, ok)
-	}
-	if got := SchedulerEndpointForChannel(c, 99); got != "ep1" {
-		t.Fatalf("shadow fallback endpoint=%s", got)
 	}
 }
 
@@ -208,7 +193,7 @@ func TestRunSchedulerShadowDefaultsToBalancedPolicy(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 			t.Fatalf("decode schedule request: %v", err)
 		}
-		if request.Policy["mode"] != "balanced" || request.Policy["allow_fallbacks"] != true || request.Policy["max_attempts"] != float64(3) {
+		if request.Policy["mode"] != "balanced" {
 			t.Fatalf("default policy=%v", request.Policy)
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -440,152 +425,6 @@ func TestMarkSchedulerEmergencySetsRequestMetadata(t *testing.T) {
 	}
 }
 
-func TestResizeSchedulerReservationUsesReservedCandidate(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/resize" {
-			t.Fatalf("path=%s", r.URL.Path)
-		}
-		if r.Header.Get("Authorization") != "Bearer scheduler-test" {
-			t.Fatalf("missing scheduler auth")
-		}
-		var got schedulerResizeRequest
-		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
-			t.Fatalf("decode resize: %v", err)
-		}
-		if got.RequestID != "resize-request" || got.DecisionID != "resize-decision" || got.EndpointID != "reserved-first" || got.ReservationID != "resize-reservation" || got.EstimatedTokens != 77 {
-			t.Fatalf("resize request=%+v", got)
-		}
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer server.Close()
-	ConfigureSchedulerClientForTest(SchedulerClientConfig{Enabled: true, Mode: "enforced", BaseURL: server.URL, Token: "scheduler-test", Timeout: time.Second})
-	c, _ := gin.CreateTestContext(httptest.NewRecorder())
-	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
-	c.Set(common.RequestIdKey, "resize-request")
-	common.SetContextKey(c, constant.ContextKeySchedulerDecisionID, "resize-decision")
-	common.SetContextKey(c, constant.ContextKeySchedulerReservationID, "resize-reservation")
-	common.SetContextKey(c, constant.ContextKeySchedulerCandidates, []SchedulerCandidate{{EndpointID: "reserved-first", ChannelID: 1, KeyIndex: 0, Model: "m", Reason: []string{"healthy"}}, {EndpointID: "native-second", ChannelID: 2, KeyIndex: 0, Model: "m", Reason: []string{"fallback"}}})
-	common.SetContextKey(c, constant.ContextKeyChannelId, 2)
-	if err := ResizeSchedulerReservation(c, 77); err != nil {
-		t.Fatal(err)
-	}
-	if got := common.GetContextKeyInt(c, constant.ContextKeySchedulerEstimatedTokens); got != 77 {
-		t.Fatalf("estimate=%d", got)
-	}
-}
-
-func TestResizeSchedulerReservationSkipsUnchangedEstimate(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	called := make(chan struct{}, 1)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		called <- struct{}{}
-		w.WriteHeader(http.StatusInternalServerError)
-	}))
-	defer server.Close()
-	ConfigureSchedulerClientForTest(SchedulerClientConfig{Enabled: true, Mode: "enforced", BaseURL: server.URL, Token: "scheduler-test", Timeout: time.Second})
-	c, _ := gin.CreateTestContext(httptest.NewRecorder())
-	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
-	c.Set(common.RequestIdKey, "resize-unchanged-request")
-	common.SetContextKey(c, constant.ContextKeySchedulerEstimatedTokens, 77)
-	if err := ResizeSchedulerReservation(c, 77); err != nil {
-		t.Fatal(err)
-	}
-	select {
-	case <-called:
-		t.Fatal("unchanged estimate triggered resize")
-	default:
-	}
-}
-
-func TestReportSchedulerShadowAttemptReleasesReservation(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/attempt" {
-			t.Fatalf("path=%s", r.URL.Path)
-		}
-		if r.Header.Get("Authorization") != "Bearer scheduler-test" {
-			t.Fatalf("missing scheduler auth")
-		}
-		var got schedulerAttempt
-		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
-			t.Fatalf("decode attempt: %v", err)
-		}
-		if got.DecisionID != "d1" || got.EndpointID != "ep1" || got.AttemptNo != 1 {
-			t.Fatalf("attempt identity=%+v", got)
-		}
-		if got.InputTokens != 13 || got.OutputTokens != 5 || !got.StreamStarted || got.TTFTMS != 42 {
-			t.Fatalf("attempt metrics=%+v", got)
-		}
-		if got.EstimatedTokens != 321 {
-			t.Fatalf("attempt estimate=%d, want the routing estimate", got.EstimatedTokens)
-		}
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer server.Close()
-	ConfigureSchedulerClientForTest(SchedulerClientConfig{Enabled: true, BaseURL: server.URL, Token: "scheduler-test", Timeout: time.Second})
-	c, _ := gin.CreateTestContext(httptest.NewRecorder())
-	requestCtx, cancel := context.WithCancel(context.Background())
-	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil).WithContext(requestCtx)
-	cancel()
-	c.Set(common.RequestIdKey, "req1")
-	// Native Shadow routing intentionally selects a different Channel than the
-	// Scheduler's reserved first candidate; the reported endpoint must remain
-	// the reservation owner (ep1), not the native second candidate.
-	common.SetContextKey(c, constant.ContextKeyChannelId, 8)
-	common.SetContextKey(c, constant.ContextKeySchedulerDecisionID, "d1")
-	common.SetContextKey(c, constant.ContextKeySchedulerReservationID, "res1")
-	common.SetContextKey(c, constant.ContextKeySchedulerCandidates, []SchedulerCandidate{{EndpointID: "ep1", ChannelID: 7, KeyIndex: 0, Model: "m", Reason: []string{"healthy"}}, {EndpointID: "ep2", ChannelID: 8, KeyIndex: 0, Model: "m", Reason: []string{"fallback"}}})
-	common.SetContextKey(c, constant.ContextKeySchedulerInputTokens, 13)
-	common.SetContextKey(c, constant.ContextKeySchedulerOutputTokens, 5)
-	common.SetContextKey(c, constant.ContextKeySchedulerStreamStarted, true)
-	common.SetContextKey(c, constant.ContextKeySchedulerTTFTMS, 42)
-	common.SetContextKey(c, constant.ContextKeyRoutingInputTokens, 321)
-	c.Set(string(constant.ContextKeyRequestStartTime), time.Now().Add(-time.Millisecond))
-	c.Writer.WriteHeader(http.StatusOK)
-	if err := ReportSchedulerShadowAttempt(c); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestReportSchedulerAttemptAsyncDoesNotWaitForScheduler(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	started := make(chan struct{})
-	release := make(chan struct{})
-	done := make(chan struct{})
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		close(started)
-		<-release
-		w.WriteHeader(http.StatusOK)
-		close(done)
-	}))
-	defer server.Close()
-	ConfigureSchedulerClientForTest(SchedulerClientConfig{Enabled: true, BaseURL: server.URL, Token: "scheduler-test", Timeout: time.Second, Mode: "enforced"})
-	c, _ := gin.CreateTestContext(httptest.NewRecorder())
-	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
-	c.Set(common.RequestIdKey, "async-attempt-request")
-	common.SetContextKey(c, constant.ContextKeySchedulerDecisionID, "async-attempt-decision")
-	common.SetContextKey(c, constant.ContextKeySchedulerReservationID, "async-attempt-reservation")
-	startedAt := time.Now()
-	if err := ReportSchedulerAttemptAsync(c, "ep-1", 1, http.StatusOK, true, false, 3, 4); err != nil {
-		t.Fatal(err)
-	}
-	if elapsed := time.Since(startedAt); elapsed > 100*time.Millisecond {
-		t.Fatalf("async attempt blocked for %v", elapsed)
-	}
-	select {
-	case <-started:
-	case <-time.After(time.Second):
-		t.Fatal("async attempt did not reach scheduler")
-	}
-	close(release)
-	select {
-	case <-done:
-	case <-time.After(time.Second):
-		t.Fatal("async attempt did not complete")
-	}
-}
-
 func TestRunSchedulerShadowIsDisabledByDefault(t *testing.T) {
 	ConfigureSchedulerClientForTest(SchedulerClientConfig{})
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
@@ -598,87 +437,40 @@ func TestRunSchedulerShadowIsDisabledByDefault(t *testing.T) {
 	}
 }
 
-func TestSchedulerCapabilitiesReadsCachedBodyAndRewinds(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	c, _ := gin.CreateTestContext(httptest.NewRecorder())
-	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"m","stream":true,"tools":[{"type":"function"}],"response_format":{"type":"json_schema"}}`))
-	c.Request.Header.Set("Content-Type", "application/json")
-	caps := schedulerCapabilities(c)
-	if caps["stream"] != true || caps["tools"] != true || caps["json_mode"] != true {
-		t.Fatalf("capabilities=%v", caps)
-	}
-	var body struct {
-		Model  string `json:"model"`
-		Stream bool   `json:"stream"`
-	}
-	if err := common.UnmarshalBodyReusable(c, &body); err != nil {
-		t.Fatal(err)
-	}
-	if body.Model != "m" || !body.Stream {
-		t.Fatalf("body was not rewound: %+v", body)
-	}
-}
-
-func TestSchedulerCapabilitiesDetectsCapabilitiesAcrossProtocols(t *testing.T) {
+func TestRunSchedulerShadowSendsEmptyChannelScopeAsArray(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	cases := []struct {
-		name     string
-		body     string
-		wantTool bool
-		wantJSON bool
+		name  string
+		scope func(c *gin.Context)
 	}{
-		{
-			name:     "openai chat completions json_object",
-			body:     `{"model":"m","tools":[{"type":"function"}],"response_format":{"type":"json_object"}}`,
-			wantTool: true,
-			wantJSON: true,
-		},
-		{
-			name:     "anthropic messages output_format",
-			body:     `{"model":"m","tools":[{"name":"lookup"}],"output_format":{"type":"json_schema"}}`,
-			wantTool: true,
-			wantJSON: true,
-		},
-		{
-			name:     "gemini generationConfig responseMimeType",
-			body:     `{"contents":[],"tools":{"functionDeclarations":[{"name":"x"}]},"generationConfig":{"responseMimeType":"application/json"}}`,
-			wantTool: true,
-			wantJSON: true,
-		},
-		{
-			name:     "gemini snake_case response_schema",
-			body:     `{"contents":[],"generationConfig":{"response_schema":{"type":"object"}}}`,
-			wantTool: false,
-			wantJSON: true,
-		},
-		{
-			name:     "openai responses text.format",
-			body:     `{"model":"m","tools":[{"type":"web_search_preview"}],"text":{"format":{"type":"json_schema"}}}`,
-			wantTool: true,
-			wantJSON: true,
-		},
-		{
-			name:     "empty tool containers are not tool requests",
-			body:     `{"model":"m","tools":[],"generationConfig":{"responseMimeType":"text/plain"}}`,
-			wantTool: false,
-			wantJSON: false,
-		},
+		// usableChannelIDs 在分组没有可用渠道时返回 nil 切片，以前会发成 null，被旧调度器当成"不限"。
+		{name: "nil scope", scope: func(c *gin.Context) {
+			common.SetContextKey(c, constant.ContextKeySchedulerAllowedChannelIDs, []int(nil))
+		}},
+		{name: "scope not recorded", scope: func(*gin.Context) {}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			bodies := make(chan string, 1)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				raw, _ := io.ReadAll(r.Body)
+				select {
+				case bodies <- string(raw):
+				default:
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusServiceUnavailable)
+				_, _ = w.Write([]byte(`{"error":"no candidate endpoint"}`))
+			}))
+			defer server.Close()
+			ConfigureSchedulerClientForTest(SchedulerClientConfig{Enabled: true, BaseURL: server.URL, Token: "scheduler-test", Timeout: time.Second})
 			c, _ := gin.CreateTestContext(httptest.NewRecorder())
-			c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(tc.body))
-			c.Request.Header.Set("Content-Type", "application/json")
-			caps := schedulerCapabilities(c)
-			if caps["tools"] != tc.wantTool {
-				t.Fatalf("tools=%v want %v (body=%s)", caps["tools"], tc.wantTool, tc.body)
-			}
-			if caps["json_mode"] != tc.wantJSON {
-				t.Fatalf("json_mode=%v want %v (body=%s)", caps["json_mode"], tc.wantJSON, tc.body)
-			}
-			if caps["vision"] != false {
-				t.Fatalf("vision must never be reported until the Catalog is authoritative, got %v", caps["vision"])
-			}
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+			c.Set(common.RequestIdKey, "empty-scope")
+			tc.scope(c)
+
+			require.Error(t, RunSchedulerShadow(c, "m", "default"))
+			assert.Contains(t, <-bodies, `"allowed_channel_ids":[]`)
 		})
 	}
 }
@@ -763,30 +555,13 @@ func TestRunSchedulerShadowRecordsDecisionSpan(t *testing.T) {
 	})
 }
 
-func TestSchedulerCandidateForRetryIsEnforcedOnly(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	c, _ := gin.CreateTestContext(httptest.NewRecorder())
-	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
-	candidates := []SchedulerCandidate{{EndpointID: "ep1", ChannelID: 1, KeyIndex: 0, Model: "m"}, {EndpointID: "ep2", ChannelID: 2, KeyIndex: 3, Model: "m", UpstreamModel: "m-upstream"}}
-	common.SetContextKey(c, constant.ContextKeySchedulerCandidates, candidates)
-	ConfigureSchedulerClientForTest(SchedulerClientConfig{Enabled: true, Mode: "shadow"})
-	if _, ok := SchedulerCandidateForRetry(c, 0); ok {
-		t.Fatal("shadow mode selected enforced candidate")
-	}
-	ConfigureSchedulerClientForTest(SchedulerClientConfig{Enabled: true, Mode: "enforced"})
-	got, ok := SchedulerCandidateForRetry(c, 1)
-	if !ok || got.ChannelID != 2 || common.GetContextKeyInt(c, constant.ContextKeySchedulerKeyIndex) != 3 || common.GetContextKeyString(c, constant.ContextKeySchedulerUpstreamModel) != "m-upstream" {
-		t.Fatalf("candidate=%+v ok=%v", got, ok)
-	}
-}
-
 func TestSchedulerCandidateForInitialUsesFirstCandidateOnlyWhenEnforced(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 	common.SetContextKey(c, constant.ContextKeySchedulerCandidates, []SchedulerCandidate{
-		{EndpointID: "first", ChannelID: 7, KeyIndex: 2, Model: "m", UpstreamModel: "upstream-m"},
-		{EndpointID: "second", ChannelID: 8, KeyIndex: 1, Model: "m"},
+		{EndpointID: "first", ChannelID: 7, Model: "m"},
+		{EndpointID: "second", ChannelID: 8, Model: "m"},
 	})
 	ConfigureSchedulerClientForTest(SchedulerClientConfig{Enabled: true, Mode: "shadow"})
 	if _, ok := SchedulerCandidateForInitial(c); ok {
@@ -794,9 +569,7 @@ func TestSchedulerCandidateForInitialUsesFirstCandidateOnlyWhenEnforced(t *testi
 	}
 	ConfigureSchedulerClientForTest(SchedulerClientConfig{Enabled: true, Mode: "enforced"})
 	got, ok := SchedulerCandidateForInitial(c)
-	if !ok || got.EndpointID != "first" || got.ChannelID != 7 ||
-		common.GetContextKeyInt(c, constant.ContextKeySchedulerKeyIndex) != 2 ||
-		common.GetContextKeyString(c, constant.ContextKeySchedulerUpstreamModel) != "upstream-m" {
+	if !ok || got.EndpointID != "first" || got.ChannelID != 7 {
 		t.Fatalf("candidate=%+v ok=%v", got, ok)
 	}
 }
@@ -839,44 +612,6 @@ func TestSchedulerCanaryUsesStableHashAndDisabledConfig(t *testing.T) {
 	}
 }
 
-func TestReserveSchedulerCandidateUsesDecisionAndAttempt(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	var reserved atomic.Int64
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/reserve" {
-			t.Fatalf("path=%s", r.URL.Path)
-		}
-		if r.Header.Get("Authorization") != "Bearer scheduler-test" {
-			t.Fatalf("missing scheduler auth")
-		}
-		var request schedulerReserveRequest
-		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-			t.Fatalf("decode reserve request: %v", err)
-		}
-		reserved.Store(int64(request.EstimatedTokens))
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"reservation_id":"retry-res"}`))
-	}))
-	defer server.Close()
-	ConfigureSchedulerClientForTest(SchedulerClientConfig{Enabled: true, Mode: "enforced", BaseURL: server.URL, Token: "scheduler-test", Timeout: time.Second})
-	c, _ := gin.CreateTestContext(httptest.NewRecorder())
-	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
-	c.Set(common.RequestIdKey, "req1")
-	common.SetContextKey(c, constant.ContextKeySchedulerDecisionID, "d1")
-	common.SetContextKey(c, constant.ContextKeyRoutingInputTokens, 321)
-	if err := ReserveSchedulerCandidate(c, SchedulerCandidate{EndpointID: "ep2"}, 2); err != nil {
-		t.Fatal(err)
-	}
-	if got := common.GetContextKeyString(c, constant.ContextKeySchedulerReservationID); got != "retry-res" {
-		t.Fatalf("reservation=%s", got)
-	}
-	assert.Equal(t, int64(321), reserved.Load(), "调度器还没给出预留估算时，重试预留用选路阶段的估算")
-
-	common.SetContextKey(c, constant.ContextKeySchedulerEstimatedTokens, 77)
-	require.NoError(t, ReserveSchedulerCandidate(c, SchedulerCandidate{EndpointID: "ep3"}, 3))
-	assert.Equal(t, int64(77), reserved.Load(), "调度器给出的预留估算优先")
-}
-
 func TestRecordSchedulerUsageNormalizesOpenAIAndClaudeFields(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
@@ -899,29 +634,10 @@ func TestRecordSchedulerUsageNormalizesOpenAIAndClaudeFields(t *testing.T) {
 	}
 }
 
-func TestRecordSchedulerUsageMarksMissingProviderUsageUnverified(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	c, _ := gin.CreateTestContext(httptest.NewRecorder())
-	RecordSchedulerUsage(c, nil, false)
-	if !common.GetContextKeyBool(c, constant.ContextKeySchedulerUsageUnverified) {
-		t.Fatal("missing usage must be marked unverified")
-	}
-}
-
-func TestRecordSchedulerUsageMarksEstimatedBillingUnverified(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	c, _ := gin.CreateTestContext(httptest.NewRecorder())
-	RecordSchedulerUsage(c, &dto.Usage{PromptTokens: 10, CompletionTokens: 2, BillingUsage: &dto.BillingUsage{Estimated: true}}, false)
-	if !common.GetContextKeyBool(c, constant.ContextKeySchedulerUsageUnverified) {
-		t.Fatal("estimated provider usage must remain unverified")
-	}
-}
-
 func TestResetSchedulerAttemptMetricsClearsPriorRetryState(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
 	RecordSchedulerUsage(c, &dto.Usage{PromptTokens: 10, CompletionTokens: 2}, true)
-	common.SetContextKey(c, constant.ContextKeySchedulerTTFTMS, 42)
 	ResetSchedulerAttemptMetrics(c)
 	if got := common.GetContextKeyInt(c, constant.ContextKeySchedulerInputTokens); got != 0 {
 		t.Fatalf("input=%d", got)
@@ -929,10 +645,7 @@ func TestResetSchedulerAttemptMetricsClearsPriorRetryState(t *testing.T) {
 	if got := common.GetContextKeyInt(c, constant.ContextKeySchedulerOutputTokens); got != 0 {
 		t.Fatalf("output=%d", got)
 	}
-	if common.GetContextKeyBool(c, constant.ContextKeySchedulerUsageUnverified) || common.GetContextKeyBool(c, constant.ContextKeySchedulerStreamStarted) {
+	if common.GetContextKeyBool(c, constant.ContextKeySchedulerStreamStarted) {
 		t.Fatal("retry state was not cleared")
-	}
-	if got := common.GetContextKeyInt(c, constant.ContextKeySchedulerTTFTMS); got != 0 {
-		t.Fatalf("ttft=%d", got)
 	}
 }

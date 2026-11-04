@@ -13,9 +13,6 @@ const (
 
 	// 选路阶段共用的输入 token 估算器，见 service.RoutingInputTokens。
 	ContextKeyRoutingInputEstimator ContextKey = "routing_input_estimator"
-	// 选路阶段估算的输入 token 数，调度器的 decide、reserve 和 attempt 读它；
-	// 不复用 ContextKeyEstimatedTokens，那个会被 GenRelayInfo 当作计费用的初值。
-	ContextKeyRoutingInputTokens ContextKey = "routing_input_tokens"
 
 	/* token related keys */
 	ContextKeyTokenUnlimited         ContextKey = "token_unlimited_quota"
@@ -67,25 +64,17 @@ const (
 	// the upstream model, extracted where the response is already being parsed.
 	ContextKeyFinishReason ContextKey = "finish_reason"
 
-	// ContextKeySchedulerKeyIndex is an optional per-attempt hint supplied by
-	// the Scheduler. When present, new-api must consume exactly this enabled
-	// multi-key slot instead of applying its local random/polling policy.
-	ContextKeySchedulerKeyIndex          ContextKey = "scheduler_key_index"
+	// 调度器的决策结果：candidates 是排好序的渠道，其余是审计用的版本号。
 	ContextKeySchedulerCandidates        ContextKey = "scheduler_candidates"
 	ContextKeySchedulerDecisionID        ContextKey = "scheduler_decision_id"
 	ContextKeySchedulerScoreVersion      ContextKey = "scheduler_score_version"
 	ContextKeySchedulerPreferenceVersion ContextKey = "scheduler_preference_version"
-	ContextKeySchedulerReservationID     ContextKey = "scheduler_reservation_id"
 	ContextKeySchedulerShadowMatch       ContextKey = "scheduler_shadow_match"
-	ContextKeySchedulerUpstreamModel     ContextKey = "scheduler_upstream_model"
-	ContextKeySchedulerAttemptReported   ContextKey = "scheduler_attempt_reported"
-	ContextKeySchedulerInputTokens       ContextKey = "scheduler_input_tokens"
-	ContextKeySchedulerOutputTokens      ContextKey = "scheduler_output_tokens"
-	ContextKeySchedulerUsageUnverified   ContextKey = "scheduler_usage_unverified"
-	ContextKeySchedulerEstimatedTokens   ContextKey = "scheduler_estimated_tokens"
-	ContextKeySchedulerStreamStarted     ContextKey = "scheduler_stream_started"
-	ContextKeySchedulerTTFTMS            ContextKey = "scheduler_ttft_ms"
-	ContextKeySchedulerWorkload          ContextKey = "scheduler_workload"
+	// 这次尝试上游报的输入/输出 token，计数池结束租约时按它记 TPM。
+	ContextKeySchedulerInputTokens   ContextKey = "scheduler_input_tokens"
+	ContextKeySchedulerOutputTokens  ContextKey = "scheduler_output_tokens"
+	ContextKeySchedulerStreamStarted ContextKey = "scheduler_stream_started"
+	ContextKeySchedulerWorkload      ContextKey = "scheduler_workload"
 	// ContextKeySchedulerAllowedChannelIDs carries the effective group/model
 	// channel scope into the Scheduler request. An empty-but-present slice
 	// means the group has no usable channel and must not fall back globally.

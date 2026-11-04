@@ -35,14 +35,15 @@ const (
 	// totalsKeyTTL 是容量池累计数的过期时间。配速只回看最近 6 小时，
 	// 两天没有流量的池重新开始计数也不影响学到的比例。
 	totalsKeyTTL = 48 * time.Hour
-	// redisTimeout 与调度器运行时计数一致，Redis 慢了不拖累请求。
+	// redisTimeout 很短：Redis 慢了不拖累请求。
 	redisTimeout = 50 * time.Millisecond
 	// snapshotTimeout 给管理页的批量读取用，一次可能读上百个池。
 	snapshotTimeout = 2 * time.Second
-	// defaultRuntimePrefix 与 maas-scheduler 的 SCHEDULER_RUNTIME_PREFIX 默认值一致，
-	// 调度器按同一个前缀读计数池。
-	defaultRuntimePrefix = "new-api:scheduler:runtime"
 )
+
+// DefaultRuntimePrefix 与 maas-scheduler 的 SCHEDULER_RUNTIME_PREFIX 默认值一致，
+// 调度器按同一个前缀读计数池。实际前缀以环境变量 SCHEDULER_RUNTIME_PREFIX 为准。
+const DefaultRuntimePrefix = "new-api:scheduler:runtime"
 
 // now 便于测试替换时钟。
 var now = time.Now
@@ -218,11 +219,11 @@ func Snapshot(poolIDs []string) (map[string]Usage, error) {
 	return redisSnapshot(poolIDs)
 }
 
-// runtimePrefix 与 service.schedulerRuntimeNamespace 读同一个环境变量。
+// runtimePrefix 读 SCHEDULER_RUNTIME_PREFIX，调度器用同一个环境变量读这些键。
 func runtimePrefix() string {
-	prefix := strings.TrimSpace(common.GetEnvOrDefaultString("SCHEDULER_RUNTIME_PREFIX", defaultRuntimePrefix))
+	prefix := strings.TrimSpace(common.GetEnvOrDefaultString("SCHEDULER_RUNTIME_PREFIX", DefaultRuntimePrefix))
 	if prefix == "" {
-		return defaultRuntimePrefix
+		return DefaultRuntimePrefix
 	}
 	return prefix
 }
