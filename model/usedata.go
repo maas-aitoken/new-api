@@ -2,6 +2,7 @@ package model
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -208,15 +209,28 @@ func increaseQuotaData(quotaData *QuotaData) {
 	}
 }
 
-func GetQuotaDataByUserId(userId int, startTime int64, endTime int64) (quotaData []*QuotaData, err error) {
-	var quotaDatas []*QuotaData
-	// 从quota_data表中查询数据
-	err = DB.Table("quota_data").
-		Select("user_id, username, model_name, created_at, sum(count) as count, sum(quota) as quota, sum(token_used) as token_used, sum(cache_read_tokens) as cache_read_tokens, sum(cache_creation_tokens) as cache_creation_tokens").
-		Where("user_id = ? and created_at >= ? and created_at <= ? and count > 0", userId, startTime, endTime).
-		Group("user_id, username, model_name, created_at").
-		Find(&quotaDatas).Error
-	return quotaDatas, err
+func (row attributedUsageRow) chartQuotaData() *QuotaData {
+	return &QuotaData{
+		UserID: row.UserID, Username: row.Username, ModelName: row.ModelName, CreatedAt: row.Hour,
+		Count: int(row.RequestCount), Quota: int(row.Quota), TokenUsed: int(row.TokenUsed),
+		CacheReadTokens: row.CacheReadTokens, CacheCreationTokens: row.CacheCreationTokens,
+	}
+}
+
+func GetQuotaDataByUserId(userId int, startTime int64, endTime int64) ([]*QuotaData, error) {
+	rows, err := loadAttributedUsage(attributedUsageQuery{
+		Start: startTime, End: endTime, Scope: usageScope{UserID: userId}, ByModel: true, ByHour: true,
+	})
+	if err != nil {
+		return nil, err
+	}
+	quotaDatas := make([]*QuotaData, 0, len(rows))
+	for _, row := range rows {
+		if row.RequestCount > 0 {
+			quotaDatas = append(quotaDatas, row.chartQuotaData())
+		}
+	}
+	return quotaDatas, nil
 }
 
 // Columns are qualified because organization filters join users.
@@ -239,43 +253,109 @@ type UserQuotaTrendRow struct {
 
 // GetUserQuotaTrend returns hourly consumption per username or per organization path.
 func GetUserQuotaTrend(startTime, endTime int64, dimension string, org UsageOrgFilter) ([]UserQuotaTrendRow, error) {
-	keySelect, keyGroup, orgDimension := usageOrgGrouping(dimension)
-	if !orgDimension {
-		if dimension != UsageAnalyticsGroupUser {
-			return nil, fmt.Errorf("unsupported dimension: %s", dimension)
+	depth := usageOrgDepth(dimension)
+	if depth == 0 && dimension != UsageAnalyticsGroupUser {
+		return nil, fmt.Errorf("unsupported dimension: %s", dimension)
+	}
+	rows, err := loadAttributedUsage(attributedUsageQuery{
+		Start: startTime, End: endTime, Scope: usageScope{Org: org}, ByHour: true,
+	})
+	if err != nil {
+		return nil, err
+	}
+	type trendKey struct {
+		username, businessUnit, department, team string
+		hour                                     int64
+	}
+	trend := make([]UserQuotaTrendRow, 0)
+	index := make(map[trendKey]int)
+	for _, row := range rows {
+		if row.RequestCount == 0 {
+			continue
 		}
-		keySelect, keyGroup = "quota_data.username AS username", "quota_data.username"
+		key := trendKey{hour: row.Hour}
+		if depth == 0 {
+			key.username = row.Username
+		}
+		if depth >= 1 {
+			key.businessUnit = row.BusinessUnit
+		}
+		if depth >= 2 {
+			key.department = row.Department
+		}
+		if depth >= 3 {
+			key.team = row.Team
+		}
+		i, ok := index[key]
+		if !ok {
+			point := UserQuotaTrendRow{Username: key.username, CreatedAt: row.Hour}
+			if depth >= 1 {
+				point.BusinessUnit = &row.BusinessUnit
+			}
+			if depth >= 2 {
+				point.Department = &row.Department
+			}
+			if depth >= 3 {
+				point.Team = &row.Team
+			}
+			trend = append(trend, point)
+			i = len(trend) - 1
+			index[key] = i
+		}
+		trend[i].Count += row.RequestCount
+		trend[i].Quota += row.Quota
+		trend[i].TokenUsed += row.TokenUsed
+		trend[i].CacheReadTokens += row.CacheReadTokens
+		trend[i].CacheCreationTokens += row.CacheCreationTokens
 	}
-	query := DB.Table("quota_data").
-		Where("quota_data.created_at >= ? AND quota_data.created_at <= ? AND quota_data.count > 0", startTime, endTime)
-	if orgDimension || !org.IsZero() {
-		query = org.apply(query.Joins(usageUsersJoin))
-	}
-	rows := make([]UserQuotaTrendRow, 0)
-	err := query.
-		Select(keySelect + ", quota_data.created_at AS created_at, " + quotaChartSumsSelect).
-		Group(keyGroup + ", quota_data.created_at").
-		Scan(&rows).Error
-	return rows, err
+	return trend, nil
 }
 
-func GetAllQuotaDates(startTime int64, endTime int64, username string, org UsageOrgFilter) (quotaData []*QuotaData, err error) {
-	query := DB.Table("quota_data").
-		Where("quota_data.created_at >= ? AND quota_data.created_at <= ? AND quota_data.count > 0", startTime, endTime)
-	if !org.IsZero() {
-		query = org.apply(query.Joins(usageUsersJoin))
+func GetAllQuotaDates(startTime int64, endTime int64, username string, org UsageOrgFilter) ([]*QuotaData, error) {
+	scope := usageScope{Username: strings.TrimSpace(username), Org: org}
+	if scope.IsZero() {
+		// iSelf moves do not change the totals over all accounts.
+		var quotaDatas []*QuotaData
+		err := DB.Table("quota_data").
+			Select("quota_data.model_name AS model_name, quota_data.created_at AS created_at, "+quotaChartSumsSelect).
+			Where("quota_data.created_at >= ? AND quota_data.created_at <= ? AND quota_data.count > 0", startTime, endTime).
+			Group("quota_data.model_name, quota_data.created_at").
+			Find(&quotaDatas).Error
+		return quotaDatas, err
 	}
-	if username != "" {
-		query = query.Where("quota_data.username = ?", username).
-			Select("quota_data.user_id AS user_id, quota_data.username AS username, quota_data.model_name AS model_name, " +
-				"quota_data.created_at AS created_at, " + quotaChartSumsSelect).
-			Group("quota_data.user_id, quota_data.username, quota_data.model_name, quota_data.created_at")
-	} else {
-		query = query.
-			Select("quota_data.model_name AS model_name, quota_data.created_at AS created_at, " + quotaChartSumsSelect).
-			Group("quota_data.model_name, quota_data.created_at")
+	rows, err := loadAttributedUsage(attributedUsageQuery{
+		Start: startTime, End: endTime, Scope: scope, ByModel: true, ByHour: true,
+	})
+	if err != nil {
+		return nil, err
 	}
-	var quotaDatas []*QuotaData
-	err = query.Find(&quotaDatas).Error
-	return quotaDatas, err
+	type chartKey struct {
+		model string
+		hour  int64
+	}
+	quotaDatas := make([]*QuotaData, 0)
+	index := make(map[chartKey]*QuotaData)
+	for _, row := range rows {
+		if row.RequestCount == 0 {
+			continue
+		}
+		point := row.chartQuotaData()
+		if scope.Username != "" {
+			quotaDatas = append(quotaDatas, point)
+			continue
+		}
+		key := chartKey{row.ModelName, row.Hour}
+		if total, ok := index[key]; ok {
+			total.Count += point.Count
+			total.Quota += point.Quota
+			total.TokenUsed += point.TokenUsed
+			total.CacheReadTokens += point.CacheReadTokens
+			total.CacheCreationTokens += point.CacheCreationTokens
+			continue
+		}
+		point.UserID, point.Username = 0, ""
+		index[key] = point
+		quotaDatas = append(quotaDatas, point)
+	}
+	return quotaDatas, nil
 }

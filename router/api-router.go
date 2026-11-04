@@ -383,6 +383,7 @@ func SetApiRouter(router *gin.Engine) {
 		dataRoute.GET("/iself", middleware.AdminAuth(), controller.GetAdminIselfUsageAnalytics)
 		dataRoute.GET("/iself/self", middleware.UserAuth(), controller.GetSelfIselfUsageAnalytics)
 		dataRoute.GET("/peak-tpm", middleware.AdminAuth(), controller.GetPeakTPM)
+		dataRoute.GET("/peak-tpm/self", middleware.UserAuth(), controller.GetSelfPeakTPM)
 		dataRoute.GET("/users", middleware.AdminAuth(), controller.GetQuotaDatesByUser)
 		dataRoute.GET("/self", middleware.UserAuth(), controller.GetUserQuotaDates)
 		dataRoute.GET("/flow", middleware.AdminAuth(), controller.GetAllFlowQuotaDates)

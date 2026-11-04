@@ -81,6 +81,7 @@ func runUsageAnalyticsDialectSuite(t *testing.T, dbType common.DatabaseType, mai
 		"availability":               testModelAvailabilityOnLogDB,
 		"iself usage":                TestGetIselfUsageAnalytics,
 		"iself cache tokens":         TestGetIselfUsageAnalyticsCacheTokens,
+		"iself attribution":          TestIselfUsageIsAttributedToTheEmailAccount,
 	} {
 		t.Run(name, run)
 	}
@@ -151,6 +152,7 @@ func TestUsageAnalyticsClickHouseLogDB(t *testing.T) {
 		"iself usage":        TestGetIselfUsageAnalytics,
 		"iself cache tokens": TestGetIselfUsageAnalyticsCacheTokens,
 		"relay log email":    TestRecordRelayLogsPreservesIselfEmail,
+		"iself attribution":  TestIselfUsageIsAttributedToTheEmailAccount,
 	} {
 		t.Run(name, func(t *testing.T) {
 			clearDialectTestLogs(t)

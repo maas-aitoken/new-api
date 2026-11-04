@@ -119,6 +119,31 @@ func GetPeakTPM(c *gin.Context) {
 		End:       end,
 		Username:  c.Query("username"),
 		ModelName: c.Query("model"),
+		Org:       usageOrgFilterFromQuery(c),
+	})
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, points)
+}
+
+// GetSelfPeakTPM ignores client identity filters.
+func GetSelfPeakTPM(c *gin.Context) {
+	userID := c.GetInt("id")
+	if userID <= 0 {
+		common.ApiErrorMsg(c, "invalid user")
+		return
+	}
+	start, end, ok := parseUsageAnalyticsRange(c, selfUsageAnalyticsMaxDays)
+	if !ok {
+		return
+	}
+	points, err := model.GetPeakTPM(model.PeakTPMParams{
+		Start:     start,
+		End:       end,
+		ModelName: c.Query("model"),
+		UserID:    userID,
 	})
 	if err != nil {
 		common.ApiError(c, err)
