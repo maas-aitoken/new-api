@@ -307,6 +307,8 @@ func TestChannelCostMultiplierKeysByRequestModel(t *testing.T) {
 	assert.Equal(t, 0.8, byModel["gpt-4o"].CostMultiplier)
 	assert.Equal(t, 0.5, byModel["gpt-4o-latest"].CostMultiplier)
 	assert.Equal(t, 100, byModel["gpt-4o-latest"].ModelLimit.RPM, "aliases of one upstream share its limits")
+	assert.Equal(t, []string{"gpt-4o-latest"}, byModel["gpt-4o"].SharedModels)
+	assert.Equal(t, []string{"gpt-4o"}, byModel["gpt-4o-latest"].SharedModels)
 
 	// 0 表示清除倍率，只清这一行，另一个别名不受影响。
 	require.NoError(t, SetChannelModelCostMultiplier(5, "gpt-4o", 0))

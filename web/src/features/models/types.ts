@@ -96,11 +96,16 @@ export interface CapabilityTargetChannel {
   name: string
   type: number
   configured: boolean
-  /** 渠道对该模型的费用倍率；0 表示未配置（按 1 处理）。 */
+  /**
+   * 渠道对这一行模型名（用户请求的名字，映射之前）的费用倍率；0 表示未配置（按 1 处理）。
+   * 映射到同一上游的别名各配各的，不共用。
+   */
   cost_multiplier: number
   /** 走完 model_mapping 链后真正发给上游的模型名，额度按它存放。 */
   upstream_model: string
   model_limit: ChannelModelLimit
+  /** 这个渠道里映射到同一上游模型的其它模型名：和这一行共用额度，倍率不共用。 */
+  shared_models?: string[]
   /**
    * 不为 0 表示这个上游模型绑在资源池页的容量池上：额度由池动态算出，
    * model_limit 在绑定期间不生效，只能在资源池页移除。池已被删时名字为空。

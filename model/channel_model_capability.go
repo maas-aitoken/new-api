@@ -376,6 +376,9 @@ type CapabilityTargetChannel struct {
 	// ModelLimit 按它存放：指向同一上游的别名共用一份额度。
 	UpstreamModel string         `json:"upstream_model"`
 	ModelLimit    dto.ModelLimit `json:"model_limit"`
+	// SharedModels 是这个渠道里映射到同一个上游模型的其它模型名：它们和这一行共用额度，
+	// 倍率却各配各的。为空表示这一行的额度不和别的模型共用。
+	SharedModels []string `json:"shared_models,omitempty"`
 	// CapacityPoolId 不为 0 表示这个上游模型绑在容量池上，额度由池动态算出，
 	// ModelLimit 在绑定期间不生效；CapacityPoolName 是池名，池已被删时为空。
 	CapacityPoolId   int    `json:"capacity_pool_id"`
@@ -511,11 +514,12 @@ func GetCapabilityTargets(query CapabilityTargetQuery) ([]CapabilityTarget, int,
 		ID           int
 		Name         string
 		Type         int
+		Models       string
 		ModelMapping *string
 		Setting      *string
 	}
 	err := DB.Table("abilities").
-		Select("abilities.model as model, channels.id as id, channels.name as name, channels.type as type, channels.model_mapping as model_mapping, channels.setting as setting").
+		Select("abilities.model as model, channels.id as id, channels.name as name, channels.type as type, channels.models as models, channels.model_mapping as model_mapping, channels.setting as setting").
 		Joins("JOIN channels ON channels.id = abilities.channel_id").
 		Where("abilities.enabled = ? AND channels.status = ?", true, common.ChannelStatusEnabled).
 		Distinct().
@@ -537,6 +541,8 @@ func GetCapabilityTargets(query CapabilityTargetQuery) ([]CapabilityTarget, int,
 	for _, name := range exactNames {
 		names[name] = struct{}{}
 	}
+	// 每个渠道只解析一次映射：上游名 → 映射到它的模型名，用来列出共用额度的别名。
+	modelsByUpstream := make(map[int]map[string][]string)
 	for _, row := range rows {
 		names[row.Model] = struct{}{}
 		modelMapping := ""
@@ -547,7 +553,25 @@ func GetCapabilityTargets(query CapabilityTargetQuery) ([]CapabilityTarget, int,
 		if row.Setting != nil {
 			setting = *row.Setting
 		}
+		grouped, seen := modelsByUpstream[row.ID]
+		if !seen {
+			grouped = make(map[string][]string)
+			for _, name := range strings.Split(row.Models, ",") {
+				if name == "" {
+					continue
+				}
+				upstream, _, _ := ResolveMappedModel(modelMapping, name)
+				grouped[upstream] = append(grouped[upstream], name)
+			}
+			modelsByUpstream[row.ID] = grouped
+		}
 		capacity := ChannelModelCapacityOf(setting, modelMapping, row.Model)
+		var shared []string
+		for _, name := range grouped[capacity.UpstreamModel] {
+			if name != row.Model {
+				shared = append(shared, name)
+			}
+		}
 		channelsByModel[row.Model] = append(channelsByModel[row.Model], CapabilityTargetChannel{
 			ID:               row.ID,
 			Name:             row.Name,
@@ -555,6 +579,7 @@ func GetCapabilityTargets(query CapabilityTargetQuery) ([]CapabilityTarget, int,
 			CostMultiplier:   ChannelCostMultiplier(setting, row.Model),
 			UpstreamModel:    capacity.UpstreamModel,
 			ModelLimit:       capacity.Limit,
+			SharedModels:     shared,
 			CapacityPoolId:   capacity.CapacityPoolId,
 			CapacityPoolName: poolNames[capacity.CapacityPoolId],
 		})

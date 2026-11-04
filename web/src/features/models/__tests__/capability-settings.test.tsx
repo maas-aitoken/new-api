@@ -222,6 +222,38 @@ it('saves a per-channel cost multiplier on blur', async () => {
   )
 })
 
+it('marks the multiplier as row-only and names the models sharing the limits when aliases share an upstream', async () => {
+  await renderTargets([
+    {
+      ...targets[0],
+      channels: [
+        { ...targets[0].channels[0], shared_models: ['sonnet-5-latest'] },
+        targets[0].channels[1],
+      ],
+    },
+    targets[1],
+  ])
+  const user = userEvent.setup()
+  await user.click(screen.getByRole('button', { name: 'Expand' }))
+
+  const shared = screen.getByText('#12 · main').closest('li') as HTMLElement
+  expect(within(shared).getByText('Only for sonnet-5')).toBeVisible()
+  expect(
+    within(shared).getByText(
+      'Upstream sonnet-5; limits shared with sonnet-5-latest'
+    )
+  ).toBeVisible()
+
+  // 没有共用额度的渠道不加倍率说明，只在映射到别的上游名时保留原来的上游提示。
+  const alone = screen.getByText('#19 · backup').closest('li') as HTMLElement
+  expect(within(alone).queryByText(/^Only for /)).not.toBeInTheDocument()
+  expect(
+    within(alone).getByText(
+      'Upstream claude-sonnet-5-20261001; aliases of the same upstream share these limits'
+    )
+  ).toBeVisible()
+})
+
 it('saves the RPM, TPM and concurrency limits together once focus leaves the group', async () => {
   const { put } = await renderTargets()
   const user = userEvent.setup()
