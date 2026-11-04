@@ -66,7 +66,7 @@ if redis.call('EXISTS', KEYS[2]) == 1 then
   return 0
 end
 if redis.call('EXISTS', KEYS[1]) == 1 then
-  redis.call('EXPIRE', KEYS[1], ARGV[21])
+  redis.call('EXPIRE', KEYS[1], ARGV[22])
   return 2
 end
 redis.call('HSET', KEYS[1],

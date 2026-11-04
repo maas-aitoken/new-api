@@ -106,6 +106,14 @@ func TestTokenRPMRoundTripsThroughRedisHashCache(t *testing.T) {
 			require.NoError(t, err)
 			assert.Equal(t, tc.rpm, cached.RPM)
 			assert.Positive(t, server.TTL(getTokenCacheKey(token.Key)), "新字段占了 ARGV 位置，过期时间的下标要跟着后移")
+
+			refreshed, err := cacheInitToken(token)
+			require.NoError(t, err)
+			require.Equal(t, 2, refreshed)
+			assert.Positive(t, server.TTL(getTokenCacheKey(token.Key)), "刷新分支不得把 TTL 设成 RPM")
+			cached, err = cacheGetTokenByKey(token.Key)
+			require.NoError(t, err, "刷新 TTL 不得删除哈希")
+			assert.Equal(t, tc.rpm, cached.RPM)
 		})
 	}
 }
