@@ -86,12 +86,20 @@ export interface SchedulerMonitorEndpoint {
   tpm_used?: number
   rpm_attempts?: number
   tpm_attempts?: number
+  // 端点属于 <渠道, 上游模型> 计数池时，三项额度是整个池（该渠道所有 key 合计）的。
   rpm_capacity?: number
   tpm_capacity?: number
+  max_concurrency?: number
   inflight?: number
   success_rate?: number
   error_rate?: number
+  // 属于计数池时按池的尝试用量对池额度算，否则按这个 key 的成功口径计数算。
   load_ratio?: number
+  // new-api 统计的计数池最近 60 秒用量（按尝试计），同一池的每个 key 显示同一组数。
+  capacity_pool_id?: string
+  pool_rpm_used?: number
+  pool_tpm_used?: number
+  pool_inflight?: number
   updated_at?: string
   profiles?: Record<string, { score?: number; gate_tier: number }>
 }

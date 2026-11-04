@@ -30,17 +30,11 @@ func schedulerRuntimeNamespace() string {
 // BeginSchedulerRuntime starts one Channel/Key attempt and returns the UTC
 // minute bucket that owns its inflight reservation. The bucket must be reused
 // by FinishSchedulerRuntime when a request crosses a minute boundary.
+// 额度不再写进这个 hash：调度器从 Catalog 的 Limits 拿 <渠道, 上游模型> 额度，
+// 按 capacity_pool_id 读 channel_capacity 的实时用量；这里只留成功率、延迟等。
 func BeginSchedulerRuntime(channelID, keyIndex int) time.Time {
 	window := time.Now().UTC()
-	observeSchedulerRuntimeAt(channelID, keyIndex, window, true, 0, 0, 0, 0, 0, 0, 0)
-	return window
-}
-
-// BeginSchedulerRuntimeWithCapacity starts an attempt and publishes the
-// operator-configured Channel capacity. Zero values mean unlimited.
-func BeginSchedulerRuntimeWithCapacity(channelID, keyIndex, rpm, tpm, maxConcurrency int) time.Time {
-	window := time.Now().UTC()
-	observeSchedulerRuntimeAt(channelID, keyIndex, window, true, 0, 0, 0, 0, rpm, tpm, maxConcurrency)
+	observeSchedulerRuntimeAt(channelID, keyIndex, window, true, 0, 0, 0, 0)
 	return window
 }
 
@@ -51,17 +45,17 @@ func FinishSchedulerRuntime(channelID, keyIndex int, window time.Time, statusCod
 	if window.IsZero() {
 		window = time.Now().UTC()
 	}
-	observeSchedulerRuntimeAt(channelID, keyIndex, window, false, statusCode, inputTokens, outputTokens, latency, 0, 0, 0)
+	observeSchedulerRuntimeAt(channelID, keyIndex, window, false, statusCode, inputTokens, outputTokens, latency)
 }
 
 // ObserveSchedulerRuntime is a convenience for callers that already have a
 // single-window observation. Relay uses Begin/Finish so cross-minute requests
 // do not leave inflight capacity stranded in the old bucket.
 func ObserveSchedulerRuntime(channelID, keyIndex int, started bool, statusCode, inputTokens, outputTokens int, latency time.Duration) {
-	observeSchedulerRuntimeAt(channelID, keyIndex, time.Now().UTC(), started, statusCode, inputTokens, outputTokens, latency, 0, 0, 0)
+	observeSchedulerRuntimeAt(channelID, keyIndex, time.Now().UTC(), started, statusCode, inputTokens, outputTokens, latency)
 }
 
-func observeSchedulerRuntimeAt(channelID, keyIndex int, window time.Time, started bool, statusCode, inputTokens, outputTokens int, latency time.Duration, rpm, tpm, maxConcurrency int) {
+func observeSchedulerRuntimeAt(channelID, keyIndex int, window time.Time, started bool, statusCode, inputTokens, outputTokens int, latency time.Duration) {
 	if !common.RedisEnabled || common.RDB == nil || channelID < 0 || keyIndex < 0 {
 		return
 	}
@@ -110,9 +104,6 @@ func observeSchedulerRuntimeAt(channelID, keyIndex int, window time.Time, starte
 		}
 	}
 	pipe.HSet(ctx, key, "endpoint_id", endpointID, "channel_id", channelID, "key_index", keyIndex, "updated_at", now.Unix())
-	if started {
-		pipe.HSet(ctx, key, "capacity_rpm", rpm, "capacity_tpm", tpm, "max_concurrency", maxConcurrency)
-	}
 	pipe.Expire(ctx, key, schedulerRuntimeTTL)
 	_, _ = pipe.Exec(ctx)
 }

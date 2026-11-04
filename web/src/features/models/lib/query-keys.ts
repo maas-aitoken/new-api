@@ -51,6 +51,13 @@ export const channelModelCapabilityQueryKeys = {
   all: ['channel-model-capabilities'] as const,
   detail: (channelId: number, model: string) =>
     [...channelModelCapabilityQueryKeys.all, channelId, model] as const,
+  capacity: (model: string, channelIds: number[]) =>
+    [
+      ...channelModelCapabilityQueryKeys.all,
+      'capacity',
+      model,
+      channelIds,
+    ] as const,
 }
 
 /**

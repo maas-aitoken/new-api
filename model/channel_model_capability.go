@@ -370,6 +370,10 @@ type CapabilityTargetChannel struct {
 	Configured bool   `json:"configured"`
 	// CostMultiplier 是渠道对该模型的费用倍率，0 表示未配置（按 1 处理）。
 	CostMultiplier float64 `json:"cost_multiplier"`
+	// UpstreamModel 是该模型走完 model_mapping 链后真正发给上游的名字，
+	// ModelLimit 按它存放：指向同一上游的别名共用一份额度。
+	UpstreamModel string         `json:"upstream_model"`
+	ModelLimit    dto.ModelLimit `json:"model_limit"`
 }
 
 // CapabilityTarget 是"模型 → 服务渠道"清单的一行。
@@ -531,11 +535,14 @@ func GetCapabilityTargets(query CapabilityTargetQuery) ([]CapabilityTarget, int,
 		if row.Setting != nil {
 			setting = *row.Setting
 		}
+		limit, upstream := ChannelModelLimitOf(setting, modelMapping, row.Model)
 		channelsByModel[row.Model] = append(channelsByModel[row.Model], CapabilityTargetChannel{
 			ID:             row.ID,
 			Name:           row.Name,
 			Type:           row.Type,
 			CostMultiplier: ChannelCostMultiplier(setting, modelMapping, row.Model),
+			UpstreamModel:  upstream,
+			ModelLimit:     limit,
 		})
 	}
 

@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/service/capability"
 	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
@@ -301,4 +302,94 @@ func TestChannelCostMultiplierFollowsModelMapping(t *testing.T) {
 	err = SetChannelModelCostMultiplier(5, "other-model", 2)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "does not serve model")
+}
+
+func TestResolveMappedModel(t *testing.T) {
+	tests := []struct {
+		name       string
+		mapping    string
+		origin     string
+		upstream   string
+		mapped     bool
+		wantErrMsg string
+	}{
+		{name: "no mapping", mapping: "", origin: "a", upstream: "a"},
+		{name: "empty object", mapping: "{}", origin: "a", upstream: "a"},
+		{name: "not matched", mapping: `{"x":"y"}`, origin: "a", upstream: "a"},
+		{name: "single hop", mapping: `{"a":"b"}`, origin: "a", upstream: "b", mapped: true},
+		{name: "chain goes to the tail", mapping: `{"a":"b","b":"c"}`, origin: "a", upstream: "c", mapped: true},
+		{name: "self mapping at origin is not a redirect", mapping: `{"a":"a"}`, origin: "a", upstream: "a"},
+		{name: "self mapping at the tail stops there", mapping: `{"a":"b","b":"b"}`, origin: "a", upstream: "b", mapped: true},
+		{name: "empty target is ignored", mapping: `{"a":""}`, origin: "a", upstream: "a"},
+		{name: "modifier suffix falls back to base name", mapping: `{"m":"up"}`, origin: "m@thinking:on", upstream: "up", mapped: true},
+		{name: "cycle", mapping: `{"a":"b","b":"a"}`, origin: "a", upstream: "a", wantErrMsg: "model_mapping_contains_cycle"},
+		{name: "invalid json", mapping: `not-json`, origin: "a", upstream: "a", wantErrMsg: "unmarshal_model_mapping_failed"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			upstream, mapped, err := ResolveMappedModel(tt.mapping, tt.origin)
+			if tt.wantErrMsg != "" {
+				require.Error(t, err)
+				assert.Equal(t, tt.wantErrMsg, err.Error())
+			} else {
+				require.NoError(t, err)
+			}
+			assert.Equal(t, tt.upstream, upstream)
+			assert.Equal(t, tt.mapped, mapped)
+		})
+	}
+}
+
+func TestSetChannelModelLimitKeysByMappedUpstream(t *testing.T) {
+	db := setupCapabilityModelTest(t)
+	// 两个公开名经映射链指向同一个上游，应当共用一份额度。
+	mapping := `{"alias-a":"mid","mid":"upstream-x","alias-b":"upstream-x"}`
+	setting := `{"cost_multiplier":{"upstream-x":1.5}}`
+	require.NoError(t, db.Create(&Channel{
+		Id: 7, Name: "pooled", Group: "default", Models: "alias-a,alias-b",
+		ModelMapping: &mapping, Setting: &setting, Status: common.ChannelStatusEnabled,
+	}).Error)
+	require.NoError(t, db.Create(&Ability{Group: "default", Model: "alias-a", ChannelId: 7, Enabled: true}).Error)
+	require.NoError(t, db.Create(&Ability{Group: "default", Model: "alias-b", ChannelId: 7, Enabled: true}).Error)
+	require.NoError(t, InitCapabilityCache())
+
+	limit := dto.ModelLimit{RPM: 60, TPM: 90000, MaxConcurrency: 4}
+	require.NoError(t, SetChannelModelLimit(7, "alias-a", limit))
+
+	var channel Channel
+	require.NoError(t, db.First(&channel, "id = ?", 7).Error)
+	stored := channel.GetSetting()
+	assert.Equal(t, map[string]dto.ModelLimit{"upstream-x": limit}, stored.ModelLimits)
+	assert.Equal(t, map[string]float64{"upstream-x": 1.5}, stored.CostMultiplierMap, "写额度不能冲掉同一 setting 里的其它字段")
+
+	gotLimit, upstream := ChannelModelLimitOf(*channel.Setting, mapping, "alias-b")
+	assert.Equal(t, "upstream-x", upstream)
+	assert.Equal(t, limit, gotLimit, "alias-b 指向同一上游，读到同一份额度")
+
+	targets, _, err := GetCapabilityTargets(CapabilityTargetQuery{})
+	require.NoError(t, err)
+	require.Len(t, targets, 2)
+	for _, target := range targets {
+		require.Len(t, target.Channels, 1)
+		assert.Equal(t, "upstream-x", target.Channels[0].UpstreamModel)
+		assert.Equal(t, limit, target.Channels[0].ModelLimit)
+	}
+
+	// 三项全 0 表示清除。
+	require.NoError(t, SetChannelModelLimit(7, "alias-b", dto.ModelLimit{}))
+	require.NoError(t, db.First(&channel, "id = ?", 7).Error)
+	assert.Empty(t, channel.GetSetting().ModelLimits)
+	assert.NotContains(t, *channel.Setting, "model_limits")
+
+	err = SetChannelModelLimit(7, "not-served", limit)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "does not serve model")
+
+	err = SetChannelModelLimit(7, "alias-a", dto.ModelLimit{RPM: -1})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "rpm must be between")
+
+	// setting 不是合法 JSON 时按未配置处理，不报错也不改库。
+	gotLimit, _ = ChannelModelLimitOf("{broken", mapping, "alias-a")
+	assert.Equal(t, dto.ModelLimit{}, gotLimit)
 }

@@ -1049,9 +1049,10 @@ func ResizeSchedulerReservation(c *gin.Context, estimatedTokens int) error {
 	return nil
 }
 
-// SchedulerReservationResizeRequired reports whether the selected channel has
-// a finite TPM gate. With unlimited TPM there is nothing for resize to change,
-// so Enforced requests avoid a second Scheduler round trip entirely.
+// SchedulerReservationResizeRequired reports whether the selected <channel,
+// upstream model> pool has a finite TPM gate. With unlimited TPM there is
+// nothing for resize to change, so Enforced requests avoid a second Scheduler
+// round trip entirely.
 func SchedulerReservationResizeRequired(c *gin.Context) bool {
 	if c == nil || !SchedulerEnforcedForRequest(c) {
 		return false
@@ -1064,7 +1065,12 @@ func SchedulerReservationResizeRequired(c *gin.Context) bool {
 	if err != nil || channel == nil {
 		return true
 	}
-	return channel.TPM > 0
+	settingRaw := ""
+	if channel.Setting != nil {
+		settingRaw = *channel.Setting
+	}
+	limit, _ := model.ChannelModelLimitOf(settingRaw, channel.GetModelMapping(), common.GetContextKeyString(c, constant.ContextKeyOriginalModel))
+	return limit.TPM > 0
 }
 
 // schedulerEffectivePolicy builds the Scheduler policy for the current request

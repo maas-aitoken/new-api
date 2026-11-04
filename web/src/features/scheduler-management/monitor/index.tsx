@@ -199,6 +199,13 @@ export function SchedulerMonitorPage() {
                             channel {endpoint.channel_id} / key{' '}
                             {endpoint.key_index}
                           </div>
+                          {endpoint.capacity_pool_id && (
+                            <div className='text-muted-foreground font-mono text-xs'>
+                              {t('Pool {{id}}', {
+                                id: endpoint.capacity_pool_id,
+                              })}
+                            </div>
+                          )}
                         </td>
                         <td className='px-2 py-3'>
                           <div>{endpoint.model ?? '-'}</div>
@@ -216,11 +223,31 @@ export function SchedulerMonitorPage() {
                         </td>
                         <td className='px-2 py-3'>
                           {formatLoad(endpoint.load_ratio)}
+                          {endpoint.capacity_pool_id && (
+                            <div className='text-muted-foreground text-xs'>
+                              {t('In flight {{value}}', {
+                                value: formatCapacity(
+                                  endpoint.pool_inflight ?? 0,
+                                  endpoint.max_concurrency
+                                ),
+                              })}
+                            </div>
+                          )}
                         </td>
                         <td className='px-2 py-3'>
+                          {/* 属于计数池时额度是整个池的，主数字显示池用量，下面是这个 key 自己的。 */}
                           {formatCapacity(
-                            endpoint.rpm_used,
+                            endpoint.capacity_pool_id
+                              ? endpoint.pool_rpm_used
+                              : endpoint.rpm_used,
                             endpoint.rpm_capacity
+                          )}
+                          {endpoint.capacity_pool_id && (
+                            <div className='text-muted-foreground text-xs'>
+                              {t('This key {{n}}', {
+                                n: endpoint.rpm_used ?? 0,
+                              })}
+                            </div>
                           )}
                           {endpoint.error_rate !== undefined &&
                             endpoint.error_rate > 0 &&
@@ -234,8 +261,17 @@ export function SchedulerMonitorPage() {
                         </td>
                         <td className='px-2 py-3'>
                           {formatCapacity(
-                            endpoint.tpm_used,
+                            endpoint.capacity_pool_id
+                              ? endpoint.pool_tpm_used
+                              : endpoint.tpm_used,
                             endpoint.tpm_capacity
+                          )}
+                          {endpoint.capacity_pool_id && (
+                            <div className='text-muted-foreground text-xs'>
+                              {t('This key {{n}}', {
+                                n: endpoint.tpm_used ?? 0,
+                              })}
+                            </div>
                           )}
                           {endpoint.error_rate !== undefined &&
                             endpoint.error_rate > 0 &&

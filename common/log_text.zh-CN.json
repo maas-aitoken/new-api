@@ -372,6 +372,7 @@
   "channel affinity cache get failed: key=%s, err=%v": "渠道亲和性缓存: 读取失败: key=%s, err=%v",
   "channel affinity cache list keys failed: err=%v": "渠道亲和性缓存: 列出缓存键失败: err=%v",
   "channel affinity cache set failed: key=%s, err=%v": "渠道亲和性缓存: 写入失败: key=%s, err=%v",
+  "channel capacity %s failed in Redis: %v": "渠道容量计数 %s 在 Redis 中失败: %v",
   "channel error (channel #%d, status code: %d): %s": "渠道请求出错 (渠道 #%d，状态码 %d): %s",
   "channel pin overridden: winning_source=%s winning_channel_id=%d overridden_source=%s overridden_channel_id=%d": "请求被多处指定了渠道，已按优先级采用其中一个: winning_source=%s winning_channel_id=%d overridden_source=%s overridden_channel_id=%d",
   "channel test bad response: channel_id=%d name=%s type=%d model=%s endpoint_type=%s status=%d err=%v": "渠道测试响应异常: channel_id=%d name=%s type=%d model=%s endpoint_type=%s status=%d err=%v",
