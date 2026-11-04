@@ -35,17 +35,19 @@ type ChannelSettings struct {
 	HTTP2ConnectionShards int `json:"http2_connection_shards,omitempty"`
 	// SendMaasUserId forwards the end user's internal id upstream as the X-Maas-User-Id header
 	SendMaasUserId bool `json:"send_maas_user_id,omitempty"`
-	// CostMultiplierMap maps model name to a per <channel, model> cost multiplier.
-	// Keys are the names the channel actually serves upstream: the target of a
-	// model mapping entry, or a channel model that no mapping entry redirects
-	// away — not the client-facing name when model mapping renames it. It is an
-	// attribute only: it never participates in billing. It is read when
-	// relay_attempts rows are written and scales the recorded cost_actual, so a
-	// channel's recorded cost can reflect its real upstream cost factor.
+	// CostMultiplierMap 是 <渠道, 模型> 的费用倍率，键是**用户请求里的模型名**，
+	// 也就是渠道模型列表里的名字（model_mapping 映射之前）。倍率是相对计费额说的
+	// （relay_attempts.cost_actual = 计费额 × 倍率），计费按用户请求的模型名算，
+	// 所以倍率和计费站在用户调用这一侧：同一渠道里 gpt-4o 和 gpt-4o-latest 即使
+	// 映射到同一个上游模型，也各配各的倍率。
+	// 它只是属性，不参与计费：只乘 relay_attempts 记录的成本，以及 auto 选模型时
+	// 比较的成本。
 	CostMultiplierMap map[string]float64 `json:"cost_multiplier,omitempty"`
 
 	// ModelLimits 是 <渠道, 上游模型> 的容量额度，键是请求走完 model_mapping
-	// 整条链之后真正发给上游的模型名（与 CostMultiplierMap 只解析一层不同）。
+	// 整条链之后**真正发给上游的模型名**。额度管的是网关对上游的流量，所以站在
+	// 上游这一侧，和 CostMultiplierMap 的键不在同一侧：映射到同一个上游模型的几个
+	// 请求名共用一份额度。
 	// 额度按整个渠道合计，不按 key 拆分：多个 key 来自不同账号时由管理员自己
 	// 乘以 key 数再填。网关只统计用量、不据此拦截，执行准入的是调度器。
 	ModelLimits map[string]ModelLimit `json:"model_limits,omitempty"`
@@ -115,8 +117,10 @@ func (s *ChannelSettings) ValidateHTTPTransport() error {
 }
 
 // CostMultiplierForModel returns the cost multiplier configured for the model
-// on this channel, or 1 when the model is not listed. It never affects
-// billing; callers use it to scale the cost recorded in relay_attempts.
+// on this channel, or 1 when the model is not listed. model is the
+// request-side name (see CostMultiplierMap), never the mapped upstream name.
+// It never affects billing; callers use it to scale the cost recorded in
+// relay_attempts.
 func (s *ChannelSettings) CostMultiplierForModel(model string) float64 {
 	if s == nil || len(s.CostMultiplierMap) == 0 {
 		return 1

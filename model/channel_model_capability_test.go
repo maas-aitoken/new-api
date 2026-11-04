@@ -270,38 +270,71 @@ func TestCapabilityTargetsListUndeclaredChannelModelsForCostMultiplier(t *testin
 	assert.Equal(t, 0.0, targets[0].Channels[0].CostMultiplier)
 }
 
-func TestChannelCostMultiplierFollowsModelMapping(t *testing.T) {
+// 倍率按用户请求的模型名（映射之前）存和查：映射到同一上游的两个别名各存各的，
+// 额度却按上游名共用一份。
+func TestChannelCostMultiplierKeysByRequestModel(t *testing.T) {
 	db := setupCapabilityModelTest(t)
-	mapping := `{"public-model":"upstream-model"}`
+	mapping := `{"gpt-4o":"gpt-4o-2024-08-06","gpt-4o-latest":"gpt-4o-2024-08-06"}`
 	require.NoError(t, db.Create(&Channel{
-		Id: 5, Name: "mapped", Group: "default", Models: "public-model",
+		Id: 5, Name: "mapped", Group: "default", Models: "gpt-4o,gpt-4o-latest",
 		ModelMapping: &mapping, Status: common.ChannelStatusEnabled,
 	}).Error)
-	require.NoError(t, db.Create(&Ability{Group: "default", Model: "public-model", ChannelId: 5, Enabled: true}).Error)
+	require.NoError(t, db.Create(&[]Ability{
+		{Group: "default", Model: "gpt-4o", ChannelId: 5, Enabled: true},
+		{Group: "default", Model: "gpt-4o-latest", ChannelId: 5, Enabled: true},
+	}).Error)
 	require.NoError(t, InitCapabilityCache())
 
-	assert.Equal(t, 0.0, ChannelCostMultiplier("", mapping, "public-model"))
+	assert.Equal(t, 0.0, ChannelCostMultiplier("", "gpt-4o"))
 
-	require.NoError(t, SetChannelModelCostMultiplier(5, "public-model", 1.25))
+	require.NoError(t, SetChannelModelCostMultiplier(5, "gpt-4o", 0.8))
+	require.NoError(t, SetChannelModelCostMultiplier(5, "gpt-4o-latest", 0.5))
+	require.NoError(t, SetChannelModelLimit(5, "gpt-4o", dto.ModelLimit{RPM: 100}))
 	var channel Channel
 	require.NoError(t, db.First(&channel, "id = ?", 5).Error)
-	assert.Equal(t, map[string]float64{"upstream-model": 1.25}, channel.GetSetting().CostMultiplierMap)
-	assert.Equal(t, 1.25, ChannelCostMultiplier(*channel.Setting, mapping, "public-model"))
+	setting := channel.GetSetting()
+	assert.Equal(t, map[string]float64{"gpt-4o": 0.8, "gpt-4o-latest": 0.5}, setting.CostMultiplierMap)
+	assert.Equal(t, map[string]dto.ModelLimit{"gpt-4o-2024-08-06": {RPM: 100}}, setting.ModelLimits)
 
 	targets, _, err := GetCapabilityTargets(CapabilityTargetQuery{})
 	require.NoError(t, err)
-	require.Len(t, targets, 1)
-	require.Len(t, targets[0].Channels, 1)
-	assert.Equal(t, 1.25, targets[0].Channels[0].CostMultiplier)
+	require.Len(t, targets, 2)
+	byModel := map[string]CapabilityTargetChannel{}
+	for _, target := range targets {
+		require.Len(t, target.Channels, 1)
+		byModel[target.ModelName] = target.Channels[0]
+	}
+	assert.Equal(t, 0.8, byModel["gpt-4o"].CostMultiplier)
+	assert.Equal(t, 0.5, byModel["gpt-4o-latest"].CostMultiplier)
+	assert.Equal(t, 100, byModel["gpt-4o-latest"].ModelLimit.RPM, "aliases of one upstream share its limits")
 
-	// 0 表示清除倍率，回到按 1 处理。
-	require.NoError(t, SetChannelModelCostMultiplier(5, "public-model", 0))
+	// 0 表示清除倍率，只清这一行，另一个别名不受影响。
+	require.NoError(t, SetChannelModelCostMultiplier(5, "gpt-4o", 0))
 	require.NoError(t, db.First(&channel, "id = ?", 5).Error)
-	assert.Empty(t, channel.GetSetting().CostMultiplierMap)
+	assert.Equal(t, map[string]float64{"gpt-4o-latest": 0.5}, channel.GetSetting().CostMultiplierMap)
 
 	err = SetChannelModelCostMultiplier(5, "other-model", 2)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "does not serve model")
+}
+
+func TestCostMultiplierModel(t *testing.T) {
+	tests := []struct {
+		name          string
+		channelModels []string
+		requestModel  string
+		want          string
+	}{
+		{name: "listed request name", channelModels: []string{"gpt-4o", "gpt-4o-latest"}, requestModel: "gpt-4o-latest", want: "gpt-4o-latest"},
+		{name: "effort variant matched through its base name", channelModels: []string{"gpt-5"}, requestModel: "gpt-5-high", want: "gpt-5"},
+		{name: "listed variant is preferred over its base name", channelModels: []string{"gpt-5", "gpt-5-high"}, requestModel: "gpt-5-high", want: "gpt-5-high"},
+		{name: "unlisted name stays as requested", channelModels: []string{"gpt-4o"}, requestModel: "claude-sonnet-4-5", want: "claude-sonnet-4-5"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, CostMultiplierModel(tt.channelModels, tt.requestModel))
+		})
+	}
 }
 
 func TestResolveMappedModel(t *testing.T) {

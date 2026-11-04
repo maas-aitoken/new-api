@@ -98,10 +98,9 @@ type modelSquareChannel struct {
 
 // modelSquareRoute 是一条启用的"模型 → 渠道"路由，携带计算展示信息所需的渠道字段。
 type modelSquareRoute struct {
-	Model        string
-	ChannelID    int
-	ModelMapping *string
-	Setting      *string
+	Model     string
+	ChannelID int
+	Setting   *string
 }
 
 // modelSquarePricingFromPricing 把倍率换算成美元/百万 token 的单价：倍率 1 对应输入 2 美元，
@@ -185,7 +184,7 @@ func modelSquareItemFromModel(
 func loadModelSquareRoutes() ([]modelSquareRoute, error) {
 	var routes []modelSquareRoute
 	err := model.DB.Table("abilities").
-		Select("abilities.model as model, channels.id as channel_id, channels.model_mapping as model_mapping, channels.setting as setting").
+		Select("abilities.model as model, channels.id as channel_id, channels.setting as setting").
 		Joins("JOIN channels ON channels.id = abilities.channel_id").
 		Where("abilities.enabled = ? AND channels.status = ?", true, common.ChannelStatusEnabled).
 		Distinct().
@@ -201,17 +200,13 @@ func squareChannelsByModel(routes []modelSquareRoute, names map[string]struct{})
 		if _, wanted := names[route.Model]; !wanted {
 			continue
 		}
-		modelMapping := ""
-		if route.ModelMapping != nil {
-			modelMapping = *route.ModelMapping
-		}
 		setting := ""
 		if route.Setting != nil {
 			setting = *route.Setting
 		}
 		channel := modelSquareChannel{
 			ID:             route.ChannelID,
-			CostMultiplier: model.ChannelCostMultiplier(setting, modelMapping, route.Model),
+			CostMultiplier: model.ChannelCostMultiplier(setting, route.Model),
 		}
 		if channel.CostMultiplier <= 0 {
 			channel.CostMultiplier = 1
