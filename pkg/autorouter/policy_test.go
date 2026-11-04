@@ -23,7 +23,6 @@ func TestSelectRoute(t *testing.T) {
 		DifficultyEfforts:      []string{"low", "medium", "high", "xhigh"},
 		DefaultEffort:          "medium",
 		UpgradeBenefit:         0.5,
-		MinTaskTypeProbability: 0.5,
 		ContinuationTaskChange: 0.5,
 	}
 	p := func(v float64) *float64 { return &v }
@@ -59,14 +58,15 @@ func TestSelectRoute(t *testing.T) {
 		{"unavailable task models use the class", decide("code.ops", 1, 1, 0.1), nil, []string{"code-class", "general"}, Route{Profile: "code", Model: "code-class", Effort: "low"}, false, true},
 		{"task type without a list uses the class", decide("code.frontend", 1, 1, 0.1), nil, nil, Route{Profile: "code", Model: "code-class", Effort: "low"}, false, true},
 		{"class without a list uses defaults", decide("general.research", 4, 1, 0.1), nil, nil, Route{Model: "general", Effort: "xhigh"}, false, true},
-		{"split task types trust their class", spread(map[string]float64{"code.build": 0.35, "code.ops": 0.3, "general.chat": 0.35}), nil, nil, Route{Profile: "code", Model: "code-class", Effort: "low"}, false, true},
-		{"no trusted class inherits", spread(map[string]float64{"code.build": 0.4, "general.chat": 0.4, "unknown": 0.2}), coderHigh, nil, *coderHigh, true, true},
+		{"the most probable task type routes however low its probability", spread(map[string]float64{"general.chat": 0.3, "code.build": 0.25, "code.ops": 0.25, "unknown": 0.2}), nil, nil, Route{Profile: "general.chat", Model: "chat", Effort: "low"}, false, true},
+		{"the most probable unknown inherits even when a class sums higher", spread(map[string]float64{"unknown": 0.4, "code.build": 0.3, "code.ops": 0.3}), coderHigh, nil, *coderHigh, true, true},
+		{"unknown without previous uses defaults", spread(map[string]float64{"unknown": 0.9, "code.build": 0.1}), nil, nil, Route{Model: "general", Effort: "medium"}, true, true},
 		{"continuation keeps model and effort", decide("general.chat", 1, 0.1, 0.1), coderHigh, nil, *coderHigh, false, true},
 		{"continuation may raise effort", decide("code.ops", 4, 0.1, 0.1), coderHigh, nil, Route{Profile: "code.build", Model: "coder", Effort: "xhigh"}, false, true},
 		{"new task switches model", decide("general.chat", 1, 0.9, 0.1), coderHigh, nil, Route{Profile: "general.chat", Model: "chat", Effort: "low"}, false, true},
 		{"continuation leaves an unavailable model", decide("general.chat", 1, 0.1, 0.1), coderHigh, []string{"chat"}, Route{Profile: "general.chat", Model: "chat", Effort: "low"}, false, true},
 		{"unknown inherits previous", decide(TaskTypeUnknown, 1, 0.1, 0.1), coderHigh, nil, *coderHigh, true, true},
-		{"low probability inherits previous", &Decision{TaskType: "general.chat", TaskTypeProbability: 0.3, Difficulty: 1}, coderHigh, nil, *coderHigh, true, true},
+		{"low probability still leaves the previous route", &Decision{TaskType: "general.chat", TaskTypeProbability: 0.3, Difficulty: 1}, coderHigh, nil, Route{Profile: "general.chat", Model: "chat", Effort: "low"}, false, true},
 		{"jev failure without previous uses defaults", nil, nil, nil, Route{Model: "general", Effort: "medium"}, true, true},
 		{"unavailable previous uses defaults", nil, coderHigh, []string{"general"}, Route{Model: "general", Effort: "medium"}, true, true},
 		{"nothing available", decide("code.build", 1, 1, 0.1), nil, []string{}, Route{}, false, false},
@@ -94,7 +94,6 @@ func TestSelectRouteJudgesTrustedAndFallbackCandidatesSeparately(t *testing.T) {
 		DifficultyEfforts:      []string{"low", "medium", "high", "xhigh"},
 		DefaultEffort:          "medium",
 		UpgradeBenefit:         0.5,
-		MinTaskTypeProbability: 0.5,
 		ContinuationTaskChange: 0.5,
 	}
 	one := 1.0
@@ -237,7 +236,6 @@ func TestSelectRoutePicksByQualityAndPrice(t *testing.T) {
 		DifficultyEfforts:      []string{"low", "medium", "high", "xhigh"},
 		DefaultEffort:          "medium",
 		UpgradeBenefit:         0.5,
-		MinTaskTypeProbability: 0.5,
 		ContinuationTaskChange: 0.5,
 		Preference:             PreferenceBalanced,
 		CostWeight:             0.07,
@@ -357,8 +355,8 @@ func TestSelectRoutePicksByQualityAndPrice(t *testing.T) {
 			})
 		}
 	})
-	t.Run("the mode answer counts even when the task type is not trusted", func(t *testing.T) {
-		untrusted := &Decision{TaskType: "general.chat", TaskTypeProbability: 0.3, Difficulty: 1}
+	t.Run("the mode answer counts even when the task type is unknown", func(t *testing.T) {
+		untrusted := &Decision{TaskType: TaskTypeUnknown, TaskTypeProbability: 0.9, Difficulty: 1}
 		route, inherited, ok, pick := SelectRoute(withMode(untrusted, 1, 0, 0), nil, adaptive, priced, nil)
 		require.True(t, ok)
 		assert.True(t, inherited)
@@ -504,7 +502,6 @@ func TestSelectRouteTrace(t *testing.T) {
 		DifficultyEfforts:      []string{"low", "medium", "high", "xhigh"},
 		DefaultEffort:          "medium",
 		UpgradeBenefit:         0.5,
-		MinTaskTypeProbability: 0.5,
 		ContinuationTaskChange: 0.5,
 		Preference:             PreferenceBalanced,
 		CostWeight:             0.07,
@@ -528,7 +525,7 @@ func TestSelectRouteTrace(t *testing.T) {
 	t.Run("a trusted leaf records the comparison and how difficulty became the effort", func(t *testing.T) {
 		route, trace := run(decide("code.build", 2, 1, 0.1), nil, candidates)
 		assert.Equal(t, Route{Profile: "code.build", Model: "mid", Effort: "medium"}, route)
-		assert.Equal(t, &Trust{Threshold: 0.5, Profiles: []string{"code.build", "code"}}, trace.Trust)
+		assert.Equal(t, &Trust{Profiles: []string{"code.build", "code"}}, trace.Trust)
 		assert.Equal(t, &EffortTrace{Difficulty: 2, Base: "medium", Benefit: ptr(0.1), Threshold: 0.5}, trace.Effort)
 		assert.Nil(t, trace.Continuation, "没有上一轮路由就谈不上续用")
 		assert.Equal(t, []LadderStep{{Profile: "code.build", Models: 3, Outcome: OutcomeCompared, Model: "mid"}}, trace.Ladder)
@@ -550,11 +547,11 @@ func TestSelectRouteTrace(t *testing.T) {
 			decision *Decision
 			want     Trust
 		}{
-			{"jev failed", nil, Trust{Reason: TrustNoDecision, Threshold: 0.5}},
-			{"no difficulty", &Decision{TaskType: "code.build", TaskTypeProbability: 0.9}, Trust{Reason: TrustNoDifficulty, Threshold: 0.5}},
-			{"no class reaches the threshold",
-				&Decision{Difficulty: 1, TaskTypeProbabilities: map[string]float64{"code.build": 0.3, "general.chat": 0.3, TaskTypeUnknown: 0.4}},
-				Trust{Reason: TrustLowConfidence, Threshold: 0.5, Classes: map[string]float64{"code": 0.3, "general": 0.3}}},
+			{"jev failed", nil, Trust{Reason: TrustNoDecision}},
+			{"no difficulty", &Decision{TaskType: "code.build", TaskTypeProbability: 0.9}, Trust{Reason: TrustNoDifficulty}},
+			{"unknown task type",
+				&Decision{TaskType: TaskTypeUnknown, TaskTypeProbability: 0.4, Difficulty: 1, TaskTypeProbabilities: map[string]float64{"code.build": 0.3, "general.chat": 0.3, TaskTypeUnknown: 0.4}},
+				Trust{Reason: TrustUnknownTask}},
 		}
 		for _, tt := range tests {
 			route, trace := run(tt.decision, nil, candidates)
@@ -563,15 +560,6 @@ func TestSelectRouteTrace(t *testing.T) {
 			assert.Equal(t, []LadderStep{{Profile: DefaultProfile, Models: 1, Outcome: OutcomeFirstAvailable, Model: "general"}}, trace.Ladder, tt.name)
 			assert.Nil(t, trace.Effort, "不可信的判断不看难度: %s", tt.name)
 		}
-	})
-
-	t.Run("split task types trust their class and record the class probabilities", func(t *testing.T) {
-		split := &Decision{TaskType: "code.build", TaskTypeProbability: 0.375, Difficulty: 1, TaskChange: ptr(1),
-			TaskTypeProbabilities: map[string]float64{"code.build": 0.375, "code.ops": 0.25, "general.chat": 0.375}}
-		route, trace := run(split, nil, candidates)
-		assert.Equal(t, Route{Profile: "code", Model: "mid", Effort: "low"}, route)
-		assert.Equal(t, &Trust{Threshold: 0.5, Classes: map[string]float64{"code": 0.625, "general": 0.375}, Profiles: []string{"code"}}, trace.Trust)
-		assert.Equal(t, []LadderStep{{Profile: "code", Models: 2, Outcome: OutcomeCompared, Model: "mid"}}, trace.Ladder)
 	})
 
 	t.Run("a continuation keeps the previous model and never lowers its effort", func(t *testing.T) {

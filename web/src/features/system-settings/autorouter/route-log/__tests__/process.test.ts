@@ -22,7 +22,7 @@ import { routeProcessSteps } from '../process'
 import type { RouteLogDetail, RouteTrace } from '../types'
 
 const request = { human_turns: 1, text_runes: 12 }
-const trust = { threshold: 0.5, profiles: ['code.build'] }
+const trust = { profiles: ['code.build'] }
 const ladder = [{ profile: 'code.build', outcome: 'first_available' }]
 const effort = { difficulty: 2, base: 'medium', threshold: 0.5 }
 const continuation = {
@@ -60,7 +60,7 @@ test.each([
     'a classifier failure, whose untrusted answer still decided the route',
     detailOf({
       judgment: 'live_failed',
-      trust: { reason: 'no_decision', threshold: 0.5 },
+      trust: { reason: 'no_decision' },
       ladder,
     }),
     ['request', 'judgment', 'trust', 'selection', 'result'],
@@ -69,7 +69,7 @@ test.each([
     'a background request, which is never classified and so never trusted',
     detailOf({
       judgment: 'auxiliary',
-      trust: { reason: 'no_decision', threshold: 0.5 },
+      trust: { reason: 'no_decision' },
       ladder,
     }),
     ['request', 'judgment', 'selection', 'result'],

@@ -139,8 +139,8 @@ export function trustReasonLabel(t: TFunction, reason: string): string {
       return t('The classifier gave no answer')
     case 'no_difficulty':
       return t('The answer carries no difficulty')
-    case 'low_confidence':
-      return t('No task type or class is likely enough')
+    case 'unknown_task':
+      return t('The task type is unknown')
     default:
       return reason
   }

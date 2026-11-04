@@ -46,7 +46,6 @@ import type { AutoRouterSettings } from './types'
 
 function createSchema(t: TFunction) {
   return z.object({
-    min_task_type_probability: fractionBetween(t),
     continuation_task_change: fractionBetween(t),
     upgrade_benefit: fractionBetween(t),
     default_effort: z.string(),
@@ -66,15 +65,13 @@ const effortOptions = AUTO_ROUTER_EFFORTS.map((effort) => ({
   label: effort,
 }))
 
-/** How far the classifier's answers are trusted, and which reasoning effort each difficulty gets. */
+/** When a request continues the previous task, and which reasoning effort each difficulty gets. */
 export function JudgmentSection(props: JudgmentSectionProps) {
   const { t } = useTranslation()
   const { save, saving } = useSaveAutoRouterOptions()
   const schema = useMemo(() => createSchema(t), [t])
   const defaults = useMemo<JudgmentValues>(
     () => ({
-      min_task_type_probability:
-        props.settings['autorouter_setting.min_task_type_probability'],
       continuation_task_change:
         props.settings['autorouter_setting.continuation_task_change'],
       upgrade_benefit: props.settings['autorouter_setting.upgrade_benefit'],
@@ -120,17 +117,6 @@ export function JudgmentSection(props: JudgmentSectionProps) {
           />
 
           <SettingsFormGrid>
-            <NumberSettingField
-              control={form.control}
-              name='min_task_type_probability'
-              label={t('Minimum classification confidence')}
-              description={t(
-                'Below this probability the task type is not trusted, and the request keeps the previous model or uses the default models.'
-              )}
-              min={0}
-              max={1}
-              step={0.05}
-            />
             <NumberSettingField
               control={form.control}
               name='continuation_task_change'

@@ -235,7 +235,6 @@ func ResolveAutoModel(c *gin.Context, candidates AutoCandidates) (*autorouter.Re
 			trace.Judgment = autorouter.JudgmentCache
 			if entry.Failed {
 				trace.Judgment = autorouter.JudgmentRecentFailure
-				route.Warning = "jev failed recently, not retried"
 			}
 		} else {
 			connections := setting.Connections()
@@ -261,7 +260,6 @@ func ResolveAutoModel(c *gin.Context, candidates AutoCandidates) (*autorouter.Re
 			if err != nil {
 				trace.Judgment = autorouter.JudgmentLiveFailed
 				result.Jev.Error = err.Error()
-				route.Warning = "jev failed: " + err.Error()
 				_ = cache.SetWithTTL(decisionKey, autoRouterEntry{Failed: true}, autoRouterFailureTTL)
 			} else {
 				trace.Judgment = autorouter.JudgmentLive
@@ -284,9 +282,6 @@ func ResolveAutoModel(c *gin.Context, candidates AutoCandidates) (*autorouter.Re
 		result.Decision = decision
 		result.Route, inherited, ok, result.Pick = autorouter.SelectRoute(decision, previous, policy, routing, trace)
 		result.EffortOverride = !inherited
-		if inherited && decision != nil {
-			route.Warning = "jev decision untrusted"
-		}
 		switch {
 		case !inherited && fromCache:
 			result.Source = autorouter.SourceCache

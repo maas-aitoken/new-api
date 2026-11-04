@@ -70,7 +70,6 @@ type AutoRouterSetting struct {
 	DifficultyEfforts      []string `json:"difficulty_efforts"`
 	DefaultEffort          string   `json:"default_effort"`
 	UpgradeBenefit         float64  `json:"upgrade_benefit"`
-	MinTaskTypeProbability float64  `json:"min_task_type_probability"`
 	ContinuationTaskChange float64  `json:"continuation_task_change"`
 	// TaskScores maps a task type or task class to the leaderboard score of
 	// each of its models, the quality side of the quality/price choice. It is
@@ -137,7 +136,6 @@ var autoRouterSetting = AutoRouterSetting{
 	DifficultyEfforts:        []string{"low", "medium", "high", "xhigh"},
 	DefaultEffort:            "medium",
 	UpgradeBenefit:           0.5,
-	MinTaskTypeProbability:   0.5,
 	ContinuationTaskChange:   0.5,
 	DefaultPreference:        autorouter.PreferenceBalanced,
 	CostWeights:              maps.Clone(defaultCostWeights),
@@ -245,7 +243,6 @@ func (s *AutoRouterSetting) Policy(preference string) autorouter.Policy {
 		DifficultyEfforts:      s.DifficultyEfforts,
 		DefaultEffort:          s.DefaultEffort,
 		UpgradeBenefit:         s.UpgradeBenefit,
-		MinTaskTypeProbability: s.MinTaskTypeProbability,
 		ContinuationTaskChange: s.ContinuationTaskChange,
 		TaskScores:             ranking.TaskScores,
 		Preference:             preference,
