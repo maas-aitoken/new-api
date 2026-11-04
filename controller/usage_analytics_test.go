@@ -72,6 +72,15 @@ func TestUsageAnalyticsEndpointsValidateParams(t *testing.T) {
 			target: fmt.Sprintf("/api/data/analytics?start_timestamp=1&end_timestamp=%d&group_by=summary", 2+92*day), message: "time range cannot exceed 92 days"},
 		{name: "admin rejects unknown group_by", handler: GetAdminUsageAnalytics,
 			target: "/api/data/analytics?start_timestamp=1&end_timestamp=7200&group_by=channel", message: "invalid group_by"},
+		{name: "admin accepts organization group_by with a filter", handler: GetAdminUsageAnalytics,
+			target: "/api/data/analytics?start_timestamp=1&end_timestamp=7200&group_by=team&business_unit=BU-A", success: true},
+		{name: "self rejects organization group_by", handler: GetSelfUsageAnalytics,
+			target: "/api/data/analytics/self?start_timestamp=1&end_timestamp=7200&group_by=department", message: "invalid group_by"},
+		{name: "user trend accepts organization dimensions", handler: GetQuotaDatesByUser,
+			target: "/api/data/users?start_timestamp=1&end_timestamp=7200&dimension=department&team=Web", success: true},
+		{name: "user trend rejects unknown dimensions", handler: GetQuotaDatesByUser,
+			target: "/api/data/users?start_timestamp=1&end_timestamp=7200&dimension=model", message: "invalid dimension"},
+		{name: "org options", handler: GetUsageOrgOptions, target: "/api/data/org-options", success: true},
 		{name: "admin requires group_by", handler: GetAdminUsageAnalytics,
 			target: "/api/data/analytics?start_timestamp=1&end_timestamp=7200", message: "invalid group_by"},
 		{name: "admin rejects end equal to start", handler: GetAdminUsageAnalytics,
@@ -134,6 +143,10 @@ func TestGetAdminUsageAnalyticsOmitsDimensionsOutsideGrouping(t *testing.T) {
 	assert.Equal(t, float64(2), row["user_id"])
 	assert.Equal(t, "", row["display_name"])
 	assert.Equal(t, float64(5), row["request_count"])
+	// Unassigned users still carry the organization fields, as empty strings.
+	assert.Equal(t, "", row["business_unit"])
+	assert.Equal(t, "", row["department"])
+	assert.Equal(t, "", row["team"])
 	assert.NotContains(t, row, "model_name")
 	assert.NotContains(t, row, "channel_id")
 	assert.NotContains(t, row, "channel_name")

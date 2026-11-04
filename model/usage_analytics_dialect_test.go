@@ -67,8 +67,11 @@ func runUsageAnalyticsDialectSuite(t *testing.T, dbType common.DatabaseType, mai
 		"summary closed range":       TestGetUsageAnalyticsSummaryAggregatesClosedRange,
 		"summary filters":            TestGetUsageAnalyticsSummaryAppliesFilters,
 		"group by model":             TestGetUsageAnalyticsGroupByModel,
-		"group by user":              TestGetUsageAnalyticsGroupByUserJoinsDisplayName,
+		"group by user":              TestGetUsageAnalyticsGroupByUserJoinsUserAttributes,
 		"group by user model":        TestGetUsageAnalyticsGroupByUserModel,
+		"organization dimensions":    TestGetUsageAnalyticsOrganizationDimensions,
+		"user quota trend":           TestGetUserQuotaTrendByDimension,
+		"org options":                TestGetUsageOrgOptionsListsDistinctPaths,
 		"group by model channel":     TestGetUsageAnalyticsGroupByModelChannelJoinsChannelName,
 		"peak tpm":                   TestGetPeakTPMTakesHourlyMaxOfMinuteTotals,
 		"consume log columns":        TestRecordConsumeLogWritesExtendedQuotaDataColumns,
@@ -77,6 +80,8 @@ func runUsageAnalyticsDialectSuite(t *testing.T, dbType common.DatabaseType, mai
 		"legacy readers skip failed": TestLegacyQuotaDataReadersSkipFailureOnlyRows,
 		"availability":               testModelAvailabilityOnLogDB,
 		"iself usage":                TestGetIselfUsageAnalytics,
+		"iself cache tokens":         TestGetIselfUsageAnalyticsCacheTokens,
+		"iself attribution":          TestIselfUsageIsAttributedToTheEmailAccount,
 	} {
 		t.Run(name, run)
 	}
@@ -142,10 +147,12 @@ func TestUsageAnalyticsClickHouseLogDB(t *testing.T) {
 	})
 
 	for name, run := range map[string]func(*testing.T){
-		"peak tpm":        TestGetPeakTPMTakesHourlyMaxOfMinuteTotals,
-		"availability":    testModelAvailabilityOnLogDB,
-		"iself usage":     TestGetIselfUsageAnalytics,
-		"relay log email": TestRecordRelayLogsPreservesIselfEmail,
+		"peak tpm":           TestGetPeakTPMTakesHourlyMaxOfMinuteTotals,
+		"availability":       testModelAvailabilityOnLogDB,
+		"iself usage":        TestGetIselfUsageAnalytics,
+		"iself cache tokens": TestGetIselfUsageAnalyticsCacheTokens,
+		"relay log email":    TestRecordRelayLogsPreservesIselfEmail,
+		"iself attribution":  TestIselfUsageIsAttributedToTheEmailAccount,
 	} {
 		t.Run(name, func(t *testing.T) {
 			clearDialectTestLogs(t)

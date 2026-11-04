@@ -181,7 +181,7 @@ func TestLegacyQuotaDataReadersSkipFailureOnlyRows(t *testing.T) {
 		require.NoError(t, DB.Create(&rows[i]).Error)
 	}
 
-	all, err := GetAllQuotaDates(hour, hour+3600, "")
+	all, err := GetAllQuotaDates(hour, hour+3600, "", UsageOrgFilter{})
 	require.NoError(t, err)
 	require.Len(t, all, 1)
 	assert.Equal(t, "gpt-a", all[0].ModelName)
@@ -189,7 +189,7 @@ func TestLegacyQuotaDataReadersSkipFailureOnlyRows(t *testing.T) {
 	assert.Equal(t, int64(12), all[0].CacheReadTokens)
 	assert.Equal(t, int64(7), all[0].CacheCreationTokens)
 
-	byUsername, err := GetAllQuotaDates(hour, hour+3600, "bob")
+	byUsername, err := GetAllQuotaDates(hour, hour+3600, "bob", UsageOrgFilter{})
 	require.NoError(t, err)
 	assert.Empty(t, byUsername)
 
@@ -200,7 +200,7 @@ func TestLegacyQuotaDataReadersSkipFailureOnlyRows(t *testing.T) {
 	assert.Equal(t, int64(12), byUserID[0].CacheReadTokens)
 	assert.Equal(t, int64(7), byUserID[0].CacheCreationTokens)
 
-	byUser, err := GetQuotaDataGroupByUser(hour, hour+3600)
+	byUser, err := GetUserQuotaTrend(hour, hour+3600, UsageAnalyticsGroupUser, UsageOrgFilter{})
 	require.NoError(t, err)
 	require.Len(t, byUser, 1)
 	assert.Equal(t, "alice", byUser[0].Username)

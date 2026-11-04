@@ -115,6 +115,20 @@ func SubscriptionRequestBalancePay(c *gin.Context) {
 	common.ApiSuccess(c, nil)
 }
 
+// TODO: notify the department head once approval notifications exist.
+func RequestSubscriptionQuotaIncrease(c *gin.Context) {
+	plan, err := model.IncreaseUserSubscriptionQuota(c.GetInt("id"))
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, gin.H{
+		"plan_id":      plan.Id,
+		"plan_title":   plan.Title,
+		"total_amount": plan.TotalAmount,
+	})
+}
+
 // ---- Admin APIs ----
 
 func AdminListSubscriptionPlans(c *gin.Context) {
