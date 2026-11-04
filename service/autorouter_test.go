@@ -34,7 +34,7 @@ const (
 // fakeJev answers by the current task: "hard" is a very difficult coding task,
 // "careful" and "frugal" the same task from a user who stresses capability or
 // cost, "ok" is unclassifiable, "split" spreads the task type over several leaves
-// without any single one reaching the trust threshold, anything else is a
+// so that the most probable one stays well below half, anything else is a
 // simple question. Every answer continues the previous task and leans balanced
 // unless the task says otherwise. It expects the key and model that
 // useAutoRouterSetting configures, and that every request asks the mode question.
@@ -195,9 +195,9 @@ func TestResolveAutoModelFollowsPreviousRoute(t *testing.T) {
 	assert.True(t, continued.EffortOverride)
 }
 
-// 没有任何一个叶子的概率过半，但同一大类下各叶子的概率之和过半：按大类的榜单选模型，
-// 这仍然是一次可信的判断，档位由 auto 定，会覆盖客户端自己写的推理字段。
-func TestResolveAutoModelTrustsTheClassWhenNoSingleLeafIsTrusted(t *testing.T) {
+// 概率最高的叶子哪怕只有 0.4，也按它的榜单选模型，code 下两个叶子加起来更高也不改走大类。
+// 这是一次可信的判断，档位由 auto 定，会覆盖客户端自己写的推理字段。
+func TestResolveAutoModelRoutesByTheMostProbableTaskType(t *testing.T) {
 	var calls atomic.Int32
 	useAutoRouterSetting(t, fakeJev(t, &calls, 0).URL, 1000)
 	autorouter_setting.GetAutoRouterSetting().TaskModels["code"] = []string{"class-coder"}
@@ -206,11 +206,11 @@ func TestResolveAutoModelTrustsTheClassWhenNoSingleLeafIsTrusted(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, result.Decision)
 	assert.Less(t, result.Decision.TaskTypeProbability, 0.5, "概率最高的叶子没有过半")
-	assert.Equal(t, autorouter.Route{Profile: "code", Model: "class-coder", Effort: "xhigh"}, result.Route)
-	assert.Equal(t, "class", result.Fallback())
+	assert.Equal(t, autorouter.Route{Profile: "general.chat", Model: "chat", Effort: "xhigh"}, result.Route)
+	assert.Equal(t, "leaf", result.Fallback())
 	assert.Equal(t, autorouter.SourceJev, result.Source)
 	assert.True(t, result.EffortOverride)
-	assert.Equal(t, "class-coder-xhigh", result.ResolvedModel)
+	assert.Equal(t, "chat-xhigh", result.ResolvedModel)
 }
 
 func TestResolveAutoModelEncryptedSubAgentInheritsSessionRoute(t *testing.T) {

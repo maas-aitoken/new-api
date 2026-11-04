@@ -242,7 +242,7 @@ func TestValidateOption(t *testing.T) {
 		{"autorouter_setting.rank_refresh_interval_hours", "24", true},
 		{"autorouter_setting.upgrade_benefit", "0.5", true},
 		{"autorouter_setting.upgrade_benefit", "1.5", false},
-		{"autorouter_setting.min_task_type_probability", "NaN", false},
+		{"autorouter_setting.continuation_task_change", "NaN", false},
 		{"autorouter_setting.default_effort", "medium", true},
 		{"autorouter_setting.default_effort", "", false},
 		{"autorouter_setting.difficulty_efforts", `["low","medium","high","xhigh"]`, true},

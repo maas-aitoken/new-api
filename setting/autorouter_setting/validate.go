@@ -42,7 +42,7 @@ func ValidateOption(key, value string) error {
 		return integerInRange(value, 1, 30*24*3600)
 	case "rank_refresh_interval_hours":
 		return integerInRange(value, 1, 720)
-	case "upgrade_benefit", "min_task_type_probability", "continuation_task_change":
+	case "upgrade_benefit", "continuation_task_change":
 		return fractionInRange(value)
 	case "default_effort":
 		if !slices.Contains(autorouter.Efforts(), value) {
