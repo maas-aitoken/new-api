@@ -34,6 +34,9 @@ const (
 	// for this request, so the usage log can tell it apart from one that asked for that model.
 	ContextKeyAutoRouted ContextKey = "auto_routed"
 	ContextKeyTokenScene ContextKey = "token_scene"
+	// ContextKeyTokenRPM holds the token's per-minute request limit; 0 means unlimited.
+	// TokenRateLimit reads it from the context so it does not repeat the token lookup.
+	ContextKeyTokenRPM ContextKey = "token_rpm"
 
 	/* channel related keys */
 	ContextKeyChannelId                ContextKey = "channel_id"

@@ -74,6 +74,50 @@ func TestTokenSceneRoundTripsThroughRedisHashCache(t *testing.T) {
 	assert.Positive(t, server.TTL(getTokenCacheKey(token.Key)))
 }
 
+// RPM decides whether TokenRateLimit throttles a key, so losing it in the cache
+// is worse than losing a display field: RedisHGetObj leaves a field missing from
+// the hash at its Go zero value, and 0 means "inherit the platform default".
+// Dropping RPM from cacheInitToken would therefore silently ignore every key's
+// own limit without raising an error, and -1 would flip from "never throttled"
+// to "throttled at the platform rate".
+func TestTokenRPMRoundTripsThroughRedisHashCache(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		rpm  int
+	}{
+		{name: "own limit", rpm: 120},
+		{name: "opted out", rpm: -1},
+		{name: "inherits platform default", rpm: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := useUserCacheMiniRedis(t)
+			token := Token{
+				Id:     46,
+				UserId: 7,
+				Key:    "token-rpm-cache-key-" + tc.name,
+				Name:   "rpm-cache",
+				RPM:    tc.rpm,
+			}
+
+			initialized, err := cacheInitToken(token)
+			require.NoError(t, err)
+			require.Equal(t, 1, initialized)
+			cached, err := cacheGetTokenByKey(token.Key)
+			require.NoError(t, err)
+			assert.Equal(t, tc.rpm, cached.RPM)
+			assert.Positive(t, server.TTL(getTokenCacheKey(token.Key)), "新字段占了 ARGV 位置，过期时间的下标要跟着后移")
+
+			refreshed, err := cacheInitToken(token)
+			require.NoError(t, err)
+			require.Equal(t, 2, refreshed)
+			assert.Positive(t, server.TTL(getTokenCacheKey(token.Key)), "刷新分支不得把 TTL 设成 RPM")
+			cached, err = cacheGetTokenByKey(token.Key)
+			require.NoError(t, err, "刷新 TTL 不得删除哈希")
+			assert.Equal(t, tc.rpm, cached.RPM)
+		})
+	}
+}
+
 func TestTokenUpdatePersistsScene(t *testing.T) {
 	truncateTables(t)
 	useUserCacheMiniRedis(t)

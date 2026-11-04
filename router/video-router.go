@@ -15,6 +15,7 @@ func SetVideoRouter(router *gin.Engine) {
 	videoSharedRouter.POST(
 		"/video/generations",
 		middleware.PinTaskPluginEndpoint(),
+		middleware.TokenRateLimit(),
 		middleware.TaskPluginEndpointOnly(middleware.ModelRequestRateLimit()),
 		middleware.PrepareTaskPluginEndpoint(),
 		middleware.Distribute(),
