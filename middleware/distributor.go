@@ -159,16 +159,27 @@ func Distribute() func(c *gin.Context) {
 					pricer := helper.NewRoutingPricer(c, func(candidate string) int64 {
 						return service.RoutingInputTokens(c, candidate)
 					}, userSetting.AcceptUnsetRatioModel)
-					quotes := map[string]helper.RoutingQuote{}
-					quoteOf := func(candidate string) helper.RoutingQuote {
-						if quote, seen := quotes[candidate]; seen {
+					quotes := map[[2]string]helper.RoutingQuote{}
+					// quoteAt 是候选在某个计费分组下的报价（含分组倍率），按请求备忘。
+					quoteAt := func(candidate, billingGroup string) helper.RoutingQuote {
+						key := [2]string{candidate, billingGroup}
+						if quote, seen := quotes[key]; seen {
 							return quote
 						}
-						// 令牌分组是 auto 时，计费分组是第一个对该模型有可用渠道的自动分组，倍率因模型而异；
-						// 固定分组下所有候选的倍率相同，在归一化里抵消。
 						userGroup := common.GetContextKeyString(c, constant.ContextKeyUserGroup)
+						groupRatio, special := ratio_setting.GetGroupGroupRatio(userGroup, billingGroup)
+						if !special {
+							groupRatio = ratio_setting.GetGroupRatio(billingGroup)
+						}
+						quotes[key] = pricer.Quote(candidate, groupRatio)
+						return quotes[key]
+					}
+					// 令牌分组是 auto 时，计费分组是第一个对该模型有可用渠道的自动分组，倍率因模型而异；
+					// 固定分组下所有候选的倍率相同，在归一化里抵消。比价时再按首次会命中的分组重新报价（autoRouteCost）。
+					quoteOf := func(candidate string) helper.RoutingQuote {
 						billingGroup := usingGroup
 						if usingGroup == "auto" {
+							userGroup := common.GetContextKeyString(c, constant.ContextKeyUserGroup)
 							for _, group := range service.GetRequestAutoGroups(c, userGroup) {
 								if len(model.GetEnabledChannelIDsForGroupModel(group, candidate)) > 0 {
 									billingGroup = group
@@ -176,12 +187,7 @@ func Distribute() func(c *gin.Context) {
 								}
 							}
 						}
-						groupRatio, special := ratio_setting.GetGroupGroupRatio(userGroup, billingGroup)
-						if !special {
-							groupRatio = ratio_setting.GetGroupRatio(billingGroup)
-						}
-						quotes[candidate] = pricer.Quote(candidate, groupRatio)
-						return quotes[candidate]
+						return quoteAt(candidate, billingGroup)
 					}
 					channelsOf := func(candidate string) []int {
 						channelIDs, seen := channels[candidate]
@@ -219,16 +225,19 @@ func Distribute() func(c *gin.Context) {
 						refusals[key] = reason
 						return reason
 					}
+					serves := func(candidate string, ignoreClientReasoning bool) bool {
+						return refusal(candidate, ignoreClientReasoning) == ""
+					}
+					costs := autoRouteCost{c: c, usingGroup: usingGroup, gate: capabilityGate, serves: serves, channelsOf: channelsOf, quoteAt: quoteAt}
 					result, err := service.ResolveAutoModel(c, service.AutoCandidates{
-						Serves: func(candidate string, ignoreClientReasoning bool) bool {
-							return refusal(candidate, ignoreClientReasoning) == ""
-						},
+						Serves:   serves,
 						Why:      func(candidate string) string { return refusal(candidate, true) },
 						Channels: func(candidate string) []int { return channels[candidate] },
 						Price: func(candidate string) (float64, bool) {
 							quote := quoteOf(candidate)
 							return quote.PricePerMillion, quote.Kind == helper.RoutingPerToken
 						},
+						Costs: costs.estimate,
 					})
 					if capabilityGate != nil {
 						capabilityGate.LogSummary(c)

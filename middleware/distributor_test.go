@@ -829,6 +829,101 @@ func TestDistributeAutoPricesCandidatesInTheirOwnBillingGroup(t *testing.T) {
 	assert.Equal(t, "cheap-y", originalModel, "exp-x 的计费分组倍率是 4，实际价格是 cheap-y 的 4 倍")
 }
 
+// 比价的价格是"用户价 × 首次会落到的渠道的费用倍率"：倍率能翻转选择；几个渠道时按权重取期望；
+// 会话亲和绑定了渠道时就用那个渠道的倍率。倍率都没配时与只比用户价相同（上面的用例）。
+func TestDistributeAutoComparesThePlatformCost(t *testing.T) {
+	prepare := func(t *testing.T, channels map[int][]string) *gorm.DB {
+		db := setupAutoRoutingDistribute(t, []string{"alt-y"}, channels)
+		// pick-x 用户价 8 美元，alt-y 4 美元，分数接近；均衡档下按用户价会选 alt-y。
+		useModelPrices(t, map[string]float64{"pick-x": 4, "alt-y": 2})
+		s := autorouter_setting.GetAutoRouterSetting()
+		s.TaskModels = map[string][]string{"code.build": {"pick-x", "alt-y"}}
+		s.TaskScores = map[string]map[string]float64{"code.build": {"pick-x": 0.97, "alt-y": 0.96}}
+		t.Setenv("JEV_ENDPOINT", fakeJevFor(t, "code.build"))
+		return db
+	}
+	body := `{"model":"auto","messages":[{"role":"user","content":"fix the bug"}]}`
+	bandOf := func(result *autorouter.Result) map[string]autorouter.Candidate {
+		require.NotNil(t, result)
+		require.NotNil(t, result.Pick)
+		out := map[string]autorouter.Candidate{}
+		for _, candidate := range result.Pick.Band {
+			out[candidate.Model] = candidate
+		}
+		return out
+	}
+
+	t.Run("a cheap channel makes the dearer model cheaper for the platform", func(t *testing.T) {
+		prepare(t, map[int][]string{1: {"pick-x"}, 2: {"alt-y"}})
+		result, originalModel, recorder := serveAutoRoutingResult(t, 9821, body)
+		require.Equal(t, http.StatusNoContent, recorder.Code, recorder.Body.String())
+		assert.Equal(t, "alt-y", originalModel, "without multipliers the user price decides")
+
+		require.NoError(t, model.SetChannelModelCostMultiplier(1, "pick-x", 0.25))
+		result, originalModel, recorder = serveAutoRoutingResult(t, 9822, body)
+		require.Equal(t, http.StatusNoContent, recorder.Code, recorder.Body.String())
+		assert.Equal(t, "pick-x", originalModel, "8 × 0.25 = 2 is below alt-y's 4")
+		band := bandOf(result)
+		assert.Equal(t, autorouter.Candidate{Model: "pick-x", Score: 0.97, Price: 8, CostMultiplier: 0.25, Cost: 2, ChannelID: 1, Channels: 1,
+			CostSource: autorouter.CostSourceExpected, Discount: 0, Utility: 0.97}, band["pick-x"])
+		assert.Equal(t, 1.0, band["alt-y"].CostMultiplier, "an unconfigured channel counts as 1")
+	})
+
+	t.Run("several channels give the expected multiplier by weight", func(t *testing.T) {
+		prepare(t, map[int][]string{1: {"pick-x"}, 2: {"pick-x"}, 3: {"alt-y"}})
+		require.NoError(t, model.SetChannelModelCostMultiplier(1, "pick-x", 0.25))
+		result, _, recorder := serveAutoRoutingResult(t, 9823, body)
+		require.Equal(t, http.StatusNoContent, recorder.Code, recorder.Body.String())
+		pick := bandOf(result)["pick-x"]
+		assert.InDelta(t, 0.625, pick.CostMultiplier, 1e-9, "two channels of equal weight: (0.25 + 1) / 2")
+		assert.Equal(t, 2, pick.Channels)
+		assert.Zero(t, pick.ChannelID)
+		assert.Equal(t, autorouter.CostSourceExpected, pick.CostSource)
+	})
+
+	t.Run("a session bound to a channel is priced at that channel", func(t *testing.T) {
+		prepare(t, map[int][]string{1: {"pick-x"}, 2: {"pick-x"}, 3: {"alt-y"}})
+		require.NoError(t, model.SetChannelModelCostMultiplier(1, "pick-x", 0.25))
+		affinity := operation_setting.GetChannelAffinitySetting()
+		saved := *affinity
+		t.Cleanup(func() { *affinity = saved })
+		affinity.Enabled, affinity.SwitchOnSuccess = true, false
+		affinity.Rules = []operation_setting.ChannelAffinityRule{{
+			Name: "auto-cost-session", ModelRegex: []string{"^pick-x$"},
+			KeySources:      []operation_setting.ChannelAffinityKeySource{{Type: "request_header", Key: "X-Session"}},
+			IncludeRuleName: true, IncludeModelName: true, SessionMode: "prefer",
+		}}
+		session := fmt.Sprintf("session-%s", t.Name())
+		bind, _ := gin.CreateTestContext(httptest.NewRecorder())
+		bind.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+		bind.Request.Header.Set("X-Session", session)
+		service.GetPreferredChannelByAffinity(bind, "pick-x", "default")
+		service.RecordChannelAffinity(bind, 1)
+
+		result, originalModel, recorder := serveAutoRoutingResult(t, 9824, body, func(c *gin.Context) {
+			c.Request.Header.Set("X-Session", session)
+		})
+		require.Equal(t, http.StatusNoContent, recorder.Code, recorder.Body.String())
+		pick := bandOf(result)["pick-x"]
+		assert.Equal(t, 0.25, pick.CostMultiplier, "the bound channel, not the average of both")
+		assert.Equal(t, 1, pick.ChannelID)
+		assert.Equal(t, autorouter.CostSourceAffinity, pick.CostSource)
+		assert.Equal(t, "pick-x", originalModel)
+	})
+
+	t.Run("a channel the capability gate will drop does not count", func(t *testing.T) {
+		db := prepare(t, map[int][]string{1: {"pick-x"}, 2: {"pick-x"}, 3: {"alt-y"}})
+		require.NoError(t, model.SetChannelModelCostMultiplier(1, "pick-x", 0.25))
+		// 渠道 1 便宜，但它把 tools 收窄掉了；请求带 tools，enforce 下首次只会落到渠道 2。
+		useEnforcedToolCapabilities(t, db, []string{"pick-x", "alt-y"}, map[int]string{1: "pick-x"})
+		result, _, recorder := serveAutoRoutingResult(t, 9825, autoRoutingToolsBody)
+		require.Equal(t, http.StatusNoContent, recorder.Code, recorder.Body.String())
+		pick := bandOf(result)["pick-x"]
+		assert.Equal(t, 1.0, pick.CostMultiplier)
+		assert.Equal(t, 2, pick.ChannelID)
+	})
+}
+
 // useTieredExpressions 给 expressions 里的模型配上分档计费表达式。
 func useTieredExpressions(t *testing.T, expressions map[string]string) {
 	t.Helper()

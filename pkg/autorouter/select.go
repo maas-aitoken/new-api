@@ -101,7 +101,7 @@ type Cost struct {
 	Price float64
 	// Multiplier 是会落到的渠道的费用倍率，几个渠道时是按命中概率的期望，没配按 1。
 	Multiplier float64
-	// ChannelID 是确定会落到的那个渠道（调度器预览或会话亲和给出），否则为 0。
+	// ChannelID 是确定会落到的那个渠道（调度器预览、会话亲和，或只有一个可能的渠道），否则为 0。
 	ChannelID int
 	// Channels 是参与期望的渠道个数。
 	Channels int
