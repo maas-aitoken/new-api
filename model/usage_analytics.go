@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
+	"gorm.io/gorm"
 )
 
 const (
@@ -13,7 +14,83 @@ const (
 	UsageAnalyticsGroupUser         = "user"
 	UsageAnalyticsGroupUserModel    = "user_model"
 	UsageAnalyticsGroupModelChannel = "model_channel"
+	UsageAnalyticsGroupBusinessUnit = "business_unit"
+	UsageAnalyticsGroupDepartment   = "department"
+	UsageAnalyticsGroupTeam         = "team"
 )
+
+// UsageOrgUnassigned filters users without a value at that organization level.
+const UsageOrgUnassigned = "__unassigned__"
+
+// The user's current organization; quota_data keeps no snapshot.
+const (
+	usageBusinessUnitExpr = "COALESCE(users.secondary_organization, '')"
+	usageDepartmentExpr   = "COALESCE(users.tertiary_organization, '')"
+	usageTeamExpr         = "COALESCE(users.team, '')"
+)
+
+var usageOrgColumns = []struct{ expr, alias string }{
+	{usageBusinessUnitExpr, "business_unit"},
+	{usageDepartmentExpr, "department"},
+	{usageTeamExpr, "team"},
+}
+
+// usageOrgGrouping also keys on the outer levels, so equal names under different parents stay apart.
+func usageOrgGrouping(groupBy string) (selectList, groupList string, ok bool) {
+	depth := map[string]int{
+		UsageAnalyticsGroupBusinessUnit: 1,
+		UsageAnalyticsGroupDepartment:   2,
+		UsageAnalyticsGroupTeam:         3,
+	}[groupBy]
+	if depth == 0 {
+		return "", "", false
+	}
+	selects := make([]string, depth)
+	groups := make([]string, depth)
+	for i, column := range usageOrgColumns[:depth] {
+		selects[i] = column.expr + " AS " + column.alias
+		groups[i] = column.expr
+	}
+	return strings.Join(selects, ", "), strings.Join(groups, ", "), true
+}
+
+type UsageOrgFilter struct {
+	BusinessUnit string
+	Department   string
+	Team         string
+}
+
+func (f UsageOrgFilter) IsZero() bool {
+	return f.BusinessUnit == "" && f.Department == "" && f.Team == ""
+}
+
+// apply expects quota_data LEFT JOIN users; rows of a missing user are unassigned.
+func (f UsageOrgFilter) apply(query *gorm.DB) *gorm.DB {
+	for _, level := range []struct{ expr, value string }{
+		{usageBusinessUnitExpr, f.BusinessUnit},
+		{usageDepartmentExpr, f.Department},
+		{usageTeamExpr, f.Team},
+	} {
+		switch level.value {
+		case "":
+		case UsageOrgUnassigned:
+			query = query.Where(level.expr + " = ''")
+		default:
+			query = query.Where(level.expr+" = ?", level.value)
+		}
+	}
+	return query
+}
+
+const usageUsersJoin = "LEFT JOIN users ON users.id = quota_data.user_id"
+
+const usageUserAttributesSelect = "COALESCE(MAX(users.display_name), '') AS display_name, " +
+	"COALESCE(MAX(users.email), '') AS email, " +
+	"COALESCE(MAX(users.status), 0) AS user_status, " +
+	"COALESCE(MAX(users.secondary_organization), '') AS business_unit, " +
+	"COALESCE(MAX(users.tertiary_organization), '') AS department, " +
+	"COALESCE(MAX(users.team), '') AS team, " +
+	"COALESCE(MAX(users.org_str), '') AS org_path"
 
 // UsageMetrics counts consume requests separately from final failures.
 type UsageMetrics struct {
@@ -65,6 +142,13 @@ type UsageAnalyticsRow struct {
 	ChannelID   *int    `json:"channel_id,omitempty"`
 	ChannelName *string `json:"channel_name,omitempty"`
 	UserCount   *int64  `json:"user_count,omitempty"`
+	// UserStatus is 0 when the user no longer exists.
+	Email        *string `json:"email,omitempty"`
+	UserStatus   *int    `json:"user_status,omitempty"`
+	BusinessUnit *string `json:"business_unit,omitempty"`
+	Department   *string `json:"department,omitempty"`
+	Team         *string `json:"team,omitempty"`
+	OrgPath      *string `json:"org_path,omitempty"`
 }
 
 type UsageAnalyticsResult struct {
@@ -78,6 +162,7 @@ type UsageAnalyticsParams struct {
 	GroupBy   string
 	Username  string
 	ModelName string
+	Org       UsageOrgFilter
 	// UserID > 0 restricts the query to one user (self analytics).
 	UserID int
 }
@@ -95,8 +180,25 @@ func GetUsageAnalytics(params UsageAnalyticsParams) (*UsageAnalyticsResult, erro
 	if modelName := strings.TrimSpace(params.ModelName); modelName != "" {
 		query = query.Where("quota_data.model_name = ?", modelName)
 	}
+	orgSelect, orgGroup, orgGrouping := usageOrgGrouping(params.GroupBy)
+	// users.id is the primary key, so the join never multiplies quota rows.
+	if !params.Org.IsZero() || orgGrouping ||
+		params.GroupBy == UsageAnalyticsGroupUser || params.GroupBy == UsageAnalyticsGroupUserModel {
+		query = params.Org.apply(query.Joins(usageUsersJoin))
+	}
 
 	result := &UsageAnalyticsResult{Rows: []UsageAnalyticsRow{}}
+	if orgGrouping {
+		err := query.
+			Select(orgSelect + ", " + usageActiveUsersSelect + " AS user_count, " + usageMetricsSelect).
+			Group(orgGroup).
+			Order("quota DESC, " + orgGroup).
+			Scan(&result.Rows).Error
+		if err != nil {
+			return nil, err
+		}
+		return result, nil
+	}
 	switch params.GroupBy {
 	case UsageAnalyticsGroupSummary:
 		summary := &UsageAnalyticsSummary{}
@@ -117,15 +219,13 @@ func GetUsageAnalytics(params UsageAnalyticsParams) (*UsageAnalyticsResult, erro
 	case UsageAnalyticsGroupUser:
 		query = query.
 			Select("quota_data.user_id AS user_id, quota_data.username AS username, " +
-				"COALESCE(MAX(users.display_name), '') AS display_name, " + usageMetricsSelect).
-			Joins("LEFT JOIN users ON users.id = quota_data.user_id").
+				usageUserAttributesSelect + ", " + usageMetricsSelect).
 			Group("quota_data.user_id, quota_data.username").
 			Order("quota DESC, username ASC")
 	case UsageAnalyticsGroupUserModel:
 		query = query.
 			Select("quota_data.user_id AS user_id, quota_data.username AS username, " +
-				"COALESCE(MAX(users.display_name), '') AS display_name, quota_data.model_name AS model_name, " + usageMetricsSelect).
-			Joins("LEFT JOIN users ON users.id = quota_data.user_id").
+				usageUserAttributesSelect + ", quota_data.model_name AS model_name, " + usageMetricsSelect).
 			Group("quota_data.user_id, quota_data.username, quota_data.model_name").
 			Order("quota DESC, username ASC, model_name ASC")
 	case UsageAnalyticsGroupModelChannel:
@@ -142,6 +242,23 @@ func GetUsageAnalytics(params UsageAnalyticsParams) (*UsageAnalyticsResult, erro
 		return nil, err
 	}
 	return result, nil
+}
+
+type UsageOrgOption struct {
+	BusinessUnit string `json:"business_unit"`
+	Department   string `json:"department"`
+	Team         string `json:"team"`
+}
+
+// GetUsageOrgOptions keeps soft-deleted users, whose past usage still counts for their path.
+func GetUsageOrgOptions() ([]UsageOrgOption, error) {
+	options := make([]UsageOrgOption, 0)
+	err := DB.Table("users").
+		Select(usageBusinessUnitExpr + " AS business_unit, " + usageDepartmentExpr + " AS department, " + usageTeamExpr + " AS team").
+		Group(usageBusinessUnitExpr + ", " + usageDepartmentExpr + ", " + usageTeamExpr).
+		Order(usageBusinessUnitExpr + ", " + usageDepartmentExpr + ", " + usageTeamExpr).
+		Scan(&options).Error
+	return options, err
 }
 
 type PeakTPMPoint struct {

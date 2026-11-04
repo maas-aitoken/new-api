@@ -33,6 +33,14 @@ func parseUsageAnalyticsRange(c *gin.Context, maxDays int64) (start int64, end i
 	return start, end, true
 }
 
+func usageOrgFilterFromQuery(c *gin.Context) model.UsageOrgFilter {
+	return model.UsageOrgFilter{
+		BusinessUnit: c.Query("business_unit"),
+		Department:   c.Query("department"),
+		Team:         c.Query("team"),
+	}
+}
+
 func GetAdminUsageAnalytics(c *gin.Context) {
 	start, end, ok := parseUsageAnalyticsRange(c, adminUsageAnalyticsMaxDays)
 	if !ok {
@@ -41,7 +49,8 @@ func GetAdminUsageAnalytics(c *gin.Context) {
 	groupBy := c.Query("group_by")
 	switch groupBy {
 	case model.UsageAnalyticsGroupSummary, model.UsageAnalyticsGroupModel, model.UsageAnalyticsGroupUser,
-		model.UsageAnalyticsGroupUserModel, model.UsageAnalyticsGroupModelChannel:
+		model.UsageAnalyticsGroupUserModel, model.UsageAnalyticsGroupModelChannel,
+		model.UsageAnalyticsGroupBusinessUnit, model.UsageAnalyticsGroupDepartment, model.UsageAnalyticsGroupTeam:
 	default:
 		common.ApiErrorMsg(c, "invalid group_by")
 		return
@@ -52,12 +61,22 @@ func GetAdminUsageAnalytics(c *gin.Context) {
 		GroupBy:   groupBy,
 		Username:  c.Query("username"),
 		ModelName: c.Query("model"),
+		Org:       usageOrgFilterFromQuery(c),
 	})
 	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
 	common.ApiSuccess(c, data)
+}
+
+func GetUsageOrgOptions(c *gin.Context) {
+	options, err := model.GetUsageOrgOptions()
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, options)
 }
 
 // GetSelfUsageAnalytics ignores client identity filters.

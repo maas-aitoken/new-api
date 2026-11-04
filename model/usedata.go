@@ -208,17 +208,6 @@ func increaseQuotaData(quotaData *QuotaData) {
 	}
 }
 
-func GetQuotaDataByUsername(username string, startTime int64, endTime int64) (quotaData []*QuotaData, err error) {
-	var quotaDatas []*QuotaData
-	// 从quota_data表中查询数据
-	err = DB.Table("quota_data").
-		Select("user_id, username, model_name, created_at, sum(count) as count, sum(quota) as quota, sum(token_used) as token_used, sum(cache_read_tokens) as cache_read_tokens, sum(cache_creation_tokens) as cache_creation_tokens").
-		Where("username = ? and created_at >= ? and created_at <= ? and count > 0", username, startTime, endTime).
-		Group("user_id, username, model_name, created_at").
-		Find(&quotaDatas).Error
-	return quotaDatas, err
-}
-
 func GetQuotaDataByUserId(userId int, startTime int64, endTime int64) (quotaData []*QuotaData, err error) {
 	var quotaDatas []*QuotaData
 	// 从quota_data表中查询数据
@@ -230,24 +219,63 @@ func GetQuotaDataByUserId(userId int, startTime int64, endTime int64) (quotaData
 	return quotaDatas, err
 }
 
-func GetQuotaDataGroupByUser(startTime int64, endTime int64) (quotaData []*QuotaData, err error) {
-	var quotaDatas []*QuotaData
-	err = DB.Table("quota_data").
-		Select("username, created_at, sum(count) as count, sum(quota) as quota, sum(token_used) as token_used, sum(cache_read_tokens) as cache_read_tokens, sum(cache_creation_tokens) as cache_creation_tokens").
-		Where("created_at >= ? and created_at <= ? and count > 0", startTime, endTime).
-		Group("username, created_at").
-		Find(&quotaDatas).Error
-	return quotaDatas, err
+// Columns are qualified because organization filters join users.
+const quotaChartSumsSelect = "SUM(quota_data.count) AS count, SUM(quota_data.quota) AS quota, " +
+	"SUM(quota_data.token_used) AS token_used, SUM(quota_data.cache_read_tokens) AS cache_read_tokens, " +
+	"SUM(quota_data.cache_creation_tokens) AS cache_creation_tokens"
+
+type UserQuotaTrendRow struct {
+	Username            string  `json:"username,omitempty"`
+	BusinessUnit        *string `json:"business_unit,omitempty"`
+	Department          *string `json:"department,omitempty"`
+	Team                *string `json:"team,omitempty"`
+	CreatedAt           int64   `json:"created_at"`
+	Count               int64   `json:"count"`
+	Quota               int64   `json:"quota"`
+	TokenUsed           int64   `json:"token_used"`
+	CacheReadTokens     int64   `json:"cache_read_tokens"`
+	CacheCreationTokens int64   `json:"cache_creation_tokens"`
 }
 
-func GetAllQuotaDates(startTime int64, endTime int64, username string) (quotaData []*QuotaData, err error) {
+// GetUserQuotaTrend returns hourly consumption per username or per organization path.
+func GetUserQuotaTrend(startTime, endTime int64, dimension string, org UsageOrgFilter) ([]UserQuotaTrendRow, error) {
+	keySelect, keyGroup, orgDimension := usageOrgGrouping(dimension)
+	if !orgDimension {
+		if dimension != UsageAnalyticsGroupUser {
+			return nil, fmt.Errorf("unsupported dimension: %s", dimension)
+		}
+		keySelect, keyGroup = "quota_data.username AS username", "quota_data.username"
+	}
+	query := DB.Table("quota_data").
+		Where("quota_data.created_at >= ? AND quota_data.created_at <= ? AND quota_data.count > 0", startTime, endTime)
+	if orgDimension || !org.IsZero() {
+		query = org.apply(query.Joins(usageUsersJoin))
+	}
+	rows := make([]UserQuotaTrendRow, 0)
+	err := query.
+		Select(keySelect + ", quota_data.created_at AS created_at, " + quotaChartSumsSelect).
+		Group(keyGroup + ", quota_data.created_at").
+		Scan(&rows).Error
+	return rows, err
+}
+
+func GetAllQuotaDates(startTime int64, endTime int64, username string, org UsageOrgFilter) (quotaData []*QuotaData, err error) {
+	query := DB.Table("quota_data").
+		Where("quota_data.created_at >= ? AND quota_data.created_at <= ? AND quota_data.count > 0", startTime, endTime)
+	if !org.IsZero() {
+		query = org.apply(query.Joins(usageUsersJoin))
+	}
 	if username != "" {
-		return GetQuotaDataByUsername(username, startTime, endTime)
+		query = query.Where("quota_data.username = ?", username).
+			Select("quota_data.user_id AS user_id, quota_data.username AS username, quota_data.model_name AS model_name, " +
+				"quota_data.created_at AS created_at, " + quotaChartSumsSelect).
+			Group("quota_data.user_id, quota_data.username, quota_data.model_name, quota_data.created_at")
+	} else {
+		query = query.
+			Select("quota_data.model_name AS model_name, quota_data.created_at AS created_at, " + quotaChartSumsSelect).
+			Group("quota_data.model_name, quota_data.created_at")
 	}
 	var quotaDatas []*QuotaData
-	// 从quota_data表中查询数据
-	// only select model_name, sum(count) as count, sum(quota) as quota, model_name, created_at from quota_data group by model_name, created_at;
-	//err = DB.Table("quota_data").Where("created_at >= ? and created_at <= ?", startTime, endTime).Find(&quotaDatas).Error
-	err = DB.Table("quota_data").Select("model_name, sum(count) as count, sum(quota) as quota, sum(token_used) as token_used, sum(cache_read_tokens) as cache_read_tokens, sum(cache_creation_tokens) as cache_creation_tokens, created_at").Where("created_at >= ? and created_at <= ? and count > 0", startTime, endTime).Group("model_name, created_at").Find(&quotaDatas).Error
+	err = query.Find(&quotaDatas).Error
 	return quotaDatas, err
 }

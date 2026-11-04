@@ -173,7 +173,7 @@ func TestRecordConsumeLogDashboardTokenTotalIncludesCacheWithoutChangingUsageLog
 	require.Equal(t, 5, logs[0].CompletionTokens)
 
 	SaveQuotaDataCache()
-	rows, err := GetAllQuotaDates(0, common.GetTimestamp()+3600, "")
+	rows, err := GetAllQuotaDates(0, common.GetTimestamp()+3600, "", UsageOrgFilter{})
 	require.NoError(t, err)
 	require.Len(t, rows, 2)
 	tokenUsedByModel := make(map[string]int, len(rows))
