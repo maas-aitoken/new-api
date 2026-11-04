@@ -5,6 +5,7 @@ import (
 	"crypto/md5"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -394,10 +395,6 @@ func runSsoUserSync(_ context.Context) (*ssoSyncResult, error) {
 	}
 
 	result := &ssoSyncResult{Fetched: len(users)}
-	for i, u := range users {
-		common.SysLog(fmt.Sprintf("SSO user[%d]: uid=%d email=%q name=%q dept=%q",
-			i, u.Uid, u.Email, u.Name, u.DepartmentTreePathStr))
-	}
 	for _, u := range users {
 		email := strings.TrimSpace(u.Email)
 		if email == "" {
@@ -408,7 +405,13 @@ func runSsoUserSync(_ context.Context) (*ssoSyncResult, error) {
 		if u.Uid == 0 {
 			hoidcId = "sso:" + email
 		}
-		_, err := service.ProvisionSsoUser(hoidcId, email, u.Name, u.Avatar, u.DepartmentTreePathStr, common.HoidcAllowSignup)
+		_, err := service.ProvisionSsoUser(
+			hoidcId, email, u.Name, u.Avatar, u.DepartmentTreePathStr,
+			u.StraightLineManagerEmail, u.StraightLineManagerName,
+			u.StraightLineManagerUid, u.MentorUid, u.DottedLineManagerUid, u.OrganizationOid, u.DepartmentOid,
+			u.IsCharge,
+			common.HoidcAllowSignup,
+		)
 		if err != nil {
 			result.Failed++
 			common.SysError(fmt.Sprintf("SSO sync failed for %s: %v", email, err))
@@ -431,11 +434,19 @@ func runSsoUserSync(_ context.Context) (*ssoSyncResult, error) {
 }
 
 type ssoUserListItem struct {
-	Uid                   int    `json:"uid"`
-	Email                 string `json:"email"`
-	Name                  string `json:"name"`
-	Avatar                string `json:"avatar"`
-	DepartmentTreePathStr string `json:"department_tree_path_str"`
+	Uid                      int    `json:"uid"`
+	Email                    string `json:"email"`
+	Name                     string `json:"name"`
+	Avatar                   string `json:"avatar"`
+	DepartmentTreePathStr    string `json:"department_tree_path_str"`
+	StraightLineManagerEmail string `json:"straight_line_manager_email"`
+	StraightLineManagerName  string `json:"straight_line_manager_name"`
+	StraightLineManagerUid   int64  `json:"straight_line_manager_uid"`
+	MentorUid                int64  `json:"mentor_uid"`
+	DottedLineManagerUid     int64  `json:"dotted_line_manager_uid"`
+	OrganizationOid          int64  `json:"organization_oid"`
+	DepartmentOid            int64  `json:"department_oid"`
+	IsCharge                 int    `json:"is_charge"`
 }
 
 func fetchAllSsoUsers() ([]ssoUserListItem, error) {
@@ -468,12 +479,18 @@ func fetchAllSsoUsers() ([]ssoUserListItem, error) {
 		return nil, fmt.Errorf("SSO user list failed: HTTP %d", resp.StatusCode)
 	}
 
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read SSO user list response: %w", err)
+	}
+	common.SysLog(common.LogText("SSO user list response: %s", raw))
+
 	var body struct {
 		Code int               `json:"code"`
 		Msg  string            `json:"msg"`
 		Data []ssoUserListItem `json:"data"`
 	}
-	if err := common.DecodeJson(resp.Body, &body); err != nil {
+	if err := common.Unmarshal(raw, &body); err != nil {
 		return nil, fmt.Errorf("failed to parse SSO user list response: %w", err)
 	}
 	if body.Code != 0 {
