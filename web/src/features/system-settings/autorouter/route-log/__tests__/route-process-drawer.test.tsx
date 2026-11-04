@@ -76,7 +76,7 @@ const routed: RouteLog = {
     trace: {
       request: { protocol: 'anthropic', human_turns: 2, text_runes: 80 },
       judgment: 'live',
-      trust: { threshold: 0.5, profiles: ['code.build', 'code'] },
+      trust: { profiles: ['code.build', 'code'] },
       effort: { difficulty: 3, base: 'high', threshold: 0.5, benefit: 0.2 },
       ladder: [
         {
@@ -228,7 +228,7 @@ test('a continued request names the previous model and says its effort was held'
       trace: {
         request: { human_turns: 3, text_runes: 20, previous_runes: 30, truncated: true },
         judgment: 'cache',
-        trust: { threshold: 0.5, profiles: ['code.build'] },
+        trust: { profiles: ['code.build'] },
         continuation: { previous: 'coder', task_change: 0.2, threshold: 0.5, continued: true },
         effort: { difficulty: 1, base: 'low', threshold: 0.5, floored: true, benefit: 0.1 },
       },
@@ -328,7 +328,7 @@ test('an untrusted classification says why and that the previous route is kept',
       trace: {
         request: { human_turns: 1, text_runes: 9 },
         judgment: 'live_failed',
-        trust: { reason: 'no_decision', threshold: 0.5 },
+        trust: { reason: 'no_decision' },
         ladder: [{ profile: 'general', models: 2, outcome: 'first_available', model: 'general' }],
       },
     },
@@ -342,6 +342,30 @@ test('an untrusted classification says why and that the previous route is kept',
     screen.getByText('An untrusted answer keeps the previous route, or uses the default models.')
   ).toBeVisible()
   expect(screen.getByText('First servable model in list order')).toBeVisible()
+})
+
+test('an unknown task type says so and keeps the previous route', async () => {
+  mockLog({
+    ...logItem,
+    task_type: 'unknown',
+    source: 'inherit',
+    detail: {
+      result: { resolved_model: 'coder', model: 'coder', effort: 'high', source: 'inherit' },
+      trace: {
+        request: { human_turns: 2, text_runes: 2, previous_runes: 30 },
+        judgment: 'live',
+        trust: { reason: 'unknown_task' },
+        ladder: [{ profile: 'code.build', outcome: 'inherited', model: 'coder' }],
+      },
+    },
+  })
+  renderDrawer({})
+
+  expect(await screen.findByText('The task type is unknown')).toBeVisible()
+  expect(
+    screen.getByText('An untrusted answer keeps the previous route, or uses the default models.')
+  ).toBeVisible()
+  expect(screen.getByText('Kept the previous route')).toBeVisible()
 })
 
 const tiers = { capability: 0, balanced: 0.07, cost: 0.3 }
@@ -369,7 +393,7 @@ function adaptiveLog(mode: RouteTraceMode): RouteLog {
       trace: {
         request: { protocol: 'chat', human_turns: 1, text_runes: 30 },
         judgment: 'live',
-        trust: { threshold: 0.5, profiles: ['code.build'] },
+        trust: { profiles: ['code.build'] },
         mode,
         ladder: [{ profile: 'code.build', models: 2, outcome: 'compared', model: 'haiku' }],
       },

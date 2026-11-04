@@ -116,8 +116,6 @@ export type RouteTraceReason = {
 
 export type RouteTraceTrust = {
   reason?: string
-  threshold: number
-  classes?: Record<string, number>
   profiles?: string[]
 }
 
