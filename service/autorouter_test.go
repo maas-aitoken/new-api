@@ -591,10 +591,25 @@ func TestResolveAutoModelTraceSpans(t *testing.T) {
 		require.NoError(t, err)
 		spans := spansByName(exporter)
 		require.Len(t, spans, 2)
-		assert.Equal(t, codes.Error, spans["newapi.jev.classify"].Status.Code)
+		assert.Equal(t, codes.Error, spans["newapi.jev.classify"].Status.Code, "jev 的失败记在它自己的 span 上")
 		route := spans["newapi.auto_router"]
-		assert.Equal(t, "WARNING", attr(route, "langfuse.observation.level"))
-		assert.Contains(t, attr(route, "langfuse.observation.status_message"), "jev failed")
+		assert.Empty(t, attr(route, "langfuse.observation.level"))
+		assert.NotEqual(t, codes.Error, route.Status.Code, "兜底选出了模型，选路本身没有失败")
+	})
+
+	t.Run("an unknown task type keeps the previous route without a warning", func(t *testing.T) {
+		var calls atomic.Int32
+		useAutoRouterSetting(t, fakeJev(t, &calls, 0).URL, 1000)
+		_, err := ResolveAutoModel(newAutoRouterContext(9604, body), allModelsAvailable)
+		require.NoError(t, err)
+
+		c, exporter := newTracedContext(t, 9604, `{"messages":[
+			{"role":"user","content":"hard"},{"role":"assistant","content":"done"},{"role":"user","content":"ok"}]}`)
+		_, err = ResolveAutoModel(c, allModelsAvailable)
+		require.NoError(t, err)
+		route := spansByName(exporter)["newapi.auto_router"]
+		assert.Equal(t, autorouter.SourceInherit, attr(route, "langfuse.observation.metadata.source"))
+		assert.Empty(t, attr(route, "langfuse.observation.level"))
 	})
 
 	t.Run("no available model", func(t *testing.T) {
