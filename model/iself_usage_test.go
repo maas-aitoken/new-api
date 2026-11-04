@@ -58,3 +58,31 @@ func TestGetIselfUsageAnalytics(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, []IselfUsageRow{}, missingUser)
 }
+
+func TestGetIselfUsageAnalyticsCacheTokens(t *testing.T) {
+	clearDialectTestLogs(t)
+	t.Cleanup(func() { clearDialectTestLogs(t) })
+	other := func(values map[string]any) string { return common.MapToJsonStr(values) }
+	require.NoError(t, LOG_DB.Create(&[]Log{
+		// OpenAI semantics: prompt tokens already include cache reads.
+		{IselfEmail: "alice@example.com", ModelName: "gpt-cached", Type: LogTypeConsume, CreatedAt: 1000, Quota: 100, PromptTokens: 100, CompletionTokens: 10,
+			Other: other(map[string]any{"cache_tokens": 40})},
+		// Anthropic semantics: prompt tokens exclude cache reads and writes.
+		{IselfEmail: "alice@example.com", ModelName: "claude-cached", Type: LogTypeConsume, CreatedAt: 1100, Quota: 300, PromptTokens: 10, CompletionTokens: 5,
+			Other: other(map[string]any{"claude": true, "usage_semantic": "anthropic", "cache_tokens": 60, "cache_creation_tokens": 20, "cache_write_tokens": 30})},
+		// Logs written before cache_write_tokens fall back to cache_creation_tokens.
+		{IselfEmail: "alice@example.com", ModelName: "claude-cached", Type: LogTypeConsume, CreatedAt: 1200, Quota: 200, PromptTokens: 2, CompletionTokens: 1,
+			Other: other(map[string]any{"usage_semantic": "anthropic", "cache_tokens": 40, "cache_creation_tokens": 40})},
+		{IselfEmail: "alice@example.com", ModelName: "claude-cached", Type: LogTypeConsume, CreatedAt: 1300, Quota: 100, PromptTokens: 50, CompletionTokens: 5,
+			Other: "not json"},
+	}).Error)
+
+	rows, err := GetIselfUsageAnalytics(IselfUsageParams{Start: 1000, End: 2000})
+	require.NoError(t, err)
+	assert.Equal(t, []IselfUsageRow{
+		{Email: "alice@example.com", Source: "iself", ModelName: "claude-cached", RequestCount: 3, Quota: 600,
+			InputTokens: 232, CompletionTokens: 11, CacheReadTokens: 100, CacheWriteTokens: 70, TokenUsed: 243, LastCalledAt: 1300},
+		{Email: "alice@example.com", Source: "iself", ModelName: "gpt-cached", RequestCount: 1, Quota: 100,
+			InputTokens: 100, CompletionTokens: 10, CacheReadTokens: 40, TokenUsed: 110, LastCalledAt: 1000},
+	}, rows)
+}
