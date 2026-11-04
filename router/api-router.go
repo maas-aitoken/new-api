@@ -181,6 +181,7 @@ func SetApiRouter(router *gin.Engine) {
 				adminRoute.PUT("/data-scopes/:manager_id", controller.UpdateUserDataScope)
 				adminRoute.DELETE("/data-scopes/:manager_id", controller.DeleteUserDataScope)
 				adminRoute.GET("/:id/oauth/bindings", controller.GetUserOAuthBindingsByAdmin)
+				adminRoute.GET("/:id/tokens", controller.ListUserTokens)
 				adminRoute.DELETE("/:id/oauth/bindings/:provider_id", controller.UnbindCustomOAuthByAdmin)
 				adminRoute.DELETE("/:id/bindings/:binding_type", controller.AdminClearUserBinding)
 				adminRoute.GET("/:id", controller.GetUser)

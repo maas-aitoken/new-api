@@ -145,28 +145,72 @@ func setTokenAutoGroups(c *gin.Context, token *model.Token, groups []string) boo
 	return true
 }
 
+// parseTokenFilter 读取列表与搜索共用的筛选参数
+func parseTokenFilter(c *gin.Context) (model.TokenFilter, bool) {
+	filter := model.TokenFilter{UserId: c.GetInt("id")}
+
+	switch scene := c.Query("scene"); scene {
+	case "":
+	case string(common.TokenSceneOffice), string(common.TokenSceneBusiness):
+		filter.Scene = common.TokenScene(scene)
+	default:
+		common.ApiErrorT(c, "Invalid scene filter")
+		return filter, false
+	}
+
+	switch routingMode := c.Query("routing_mode"); routingMode {
+	case "":
+	case string(common.TokenRoutingModeSmart), string(common.TokenRoutingModeFixed):
+		filter.RoutingMode = common.TokenRoutingMode(routingMode)
+	default:
+		common.ApiErrorT(c, "Invalid routing mode filter")
+		return filter, false
+	}
+
+	if statusParam := c.Query("status"); statusParam != "" {
+		status, err := strconv.Atoi(statusParam)
+		if err != nil || !slices.Contains([]int{
+			common.TokenStatusEnabled,
+			common.TokenStatusDisabled,
+			common.TokenStatusExpired,
+			common.TokenStatusExhausted,
+		}, status) {
+			common.ApiErrorT(c, "Invalid status filter")
+			return filter, false
+		}
+		filter.Status = status
+	}
+
+	return filter, true
+}
+
 func GetAllTokens(c *gin.Context) {
-	userId := c.GetInt("id")
+	filter, ok := parseTokenFilter(c)
+	if !ok {
+		return
+	}
 	pageInfo := common.GetPageQuery(c)
-	tokens, err := model.GetAllUserTokens(userId, pageInfo.GetStartIdx(), pageInfo.GetPageSize())
+	tokens, total, err := model.ListTokens(filter, pageInfo.GetStartIdx(), pageInfo.GetPageSize())
 	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
-	total, _ := model.CountUserTokens(userId)
 	pageInfo.SetTotal(int(total))
 	pageInfo.SetItems(buildMaskedTokenResponses(tokens))
 	common.ApiSuccess(c, pageInfo)
 }
 
 func SearchTokens(c *gin.Context) {
-	userId := c.GetInt("id")
+	filter, ok := parseTokenFilter(c)
+	if !ok {
+		return
+	}
 	keyword := c.Query("keyword")
 	token := c.Query("token")
 
 	pageInfo := common.GetPageQuery(c)
 
-	tokens, total, err := model.SearchUserTokens(userId, keyword, token, pageInfo.GetStartIdx(), pageInfo.GetPageSize())
+	tokens, total, err := model.SearchUserTokens(filter, keyword, token, pageInfo.GetStartIdx(), pageInfo.GetPageSize())
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -639,4 +683,37 @@ func GetTokenKeysBatch(c *gin.Context) {
 	params["returned_ids"] = returnedIDs
 	common.SetContextKey(c, constant.ContextKeyTokenAuditSucceeded, true)
 	common.ApiSuccess(c, gin.H{"keys": keysMap})
+}
+
+// ListUserTokens lets an admin list another user's tokens (masked keys only),
+// e.g. to populate the token filter of the admin usage records page.
+func ListUserTokens(c *gin.Context) {
+	userId, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	user, err := model.GetUserById(userId, false)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	if !canManageTargetRole(c.GetInt("role"), user.Role) {
+		common.ApiErrorT(c, "No permission to access users of same or higher level")
+		return
+	}
+	filter, ok := parseTokenFilter(c)
+	if !ok {
+		return
+	}
+	filter.UserId = userId
+	pageInfo := common.GetPageQuery(c)
+	tokens, total, err := model.ListTokens(filter, pageInfo.GetStartIdx(), pageInfo.GetPageSize())
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	pageInfo.SetTotal(int(total))
+	pageInfo.SetItems(buildMaskedTokenResponses(tokens))
+	common.ApiSuccess(c, pageInfo)
 }
