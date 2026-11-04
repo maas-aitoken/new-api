@@ -15,8 +15,14 @@ import (
 //	<前缀>:capacity:{池ID}:tpm       hash，字段是 Unix 秒，值是记在这一秒的 token 数
 //	<前缀>:capacity:{池ID}:inflight  zset，成员是租约 ID，分数是租约到期的 Unix 毫秒
 //
+// 容量池（cp-<id>）另有三个键，同一个 hash tag：
+//
+//	<前缀>:capacity:{池ID}:limit   hash，动态额度（见 PublishLimit），TTL 即宽限期
+//	<前缀>:capacity:{池ID}:total   hash，requests / tokens 累计数，配速学换算比例用
+//	<前缀>:capacity:{池ID}:status  hash，最近一次计算的结果（ok 或失败原因）
+//
 // maas-scheduler 按同样的布局读：rpm/tpm 取字段 > 当前秒-60 的值求和，
-// inflight 数分数大于当前毫秒的成员。改布局要两边一起改。
+// inflight 数分数大于当前毫秒的成员，limit 的字段见 PublishLimit。改布局要两边一起改。
 func poolKey(poolID, kind string) string {
 	return runtimePrefix() + ":capacity:{" + poolID + "}:" + kind
 }
@@ -49,9 +55,10 @@ return 1
 `)
 
 // 结束：删掉租约，把输入差额记回开始那一秒，输出记到结束这一秒。
-// 字段被减到 0 或以下时删掉，计数不会出现负数。
-// KEYS: tpm, inflight
-// ARGV: 租约ID, 开始秒, 输入差额, 当前秒, 输出, 键过期毫秒
+// 字段被减到 0 或以下时删掉，计数不会出现负数。给了第三个键（容量池的 total）时
+// 再累加累计请求数和 token 数；它与另两个键同一个 hash tag。
+// KEYS: tpm, inflight[, total]
+// ARGV: 租约ID, 开始秒, 输入差额, 当前秒, 输出, 键过期毫秒, 累计请求, 累计 token, total 过期毫秒
 var redisFinishScript = redis.NewScript(`
 redis.call('ZREM', KEYS[2], ARGV[1])
 local delta = tonumber(ARGV[3])
@@ -66,14 +73,19 @@ if output > 0 then
   redis.call('HINCRBY', KEYS[1], ARGV[4], output)
 end
 redis.call('PEXPIRE', KEYS[1], ARGV[6])
+if KEYS[3] then
+  redis.call('HINCRBY', KEYS[3], 'requests', ARGV[7])
+  redis.call('HINCRBY', KEYS[3], 'tokens', ARGV[8])
+  redis.call('PEXPIRE', KEYS[3], ARGV[9])
+end
 return 1
 `)
 
-func redisBegin(lease *Lease, current time.Time) error {
+func redisBegin(lease *Lease, poolID string, current time.Time) error {
 	ctx, cancel := context.WithTimeout(context.Background(), redisTimeout)
 	defer cancel()
 	return redisBeginScript.Run(ctx, common.RDB,
-		[]string{poolKey(lease.poolID, "rpm"), poolKey(lease.poolID, "tpm"), poolKey(lease.poolID, "inflight")},
+		[]string{poolKey(poolID, "rpm"), poolKey(poolID, "tpm"), poolKey(poolID, "inflight")},
 		lease.startSecond,
 		lease.startSecond-windowSeconds,
 		lease.estimatedInput,
@@ -83,17 +95,23 @@ func redisBegin(lease *Lease, current time.Time) error {
 	).Err()
 }
 
-func redisFinish(lease *Lease, current time.Time, inputDelta, output int64) error {
+func redisFinish(lease *Lease, poolID string, current time.Time, inputDelta, output int64, totals Totals) error {
 	ctx, cancel := context.WithTimeout(context.Background(), redisTimeout)
 	defer cancel()
-	return redisFinishScript.Run(ctx, common.RDB,
-		[]string{poolKey(lease.poolID, "tpm"), poolKey(lease.poolID, "inflight")},
+	keys := []string{poolKey(poolID, "tpm"), poolKey(poolID, "inflight")}
+	if totals.Requests > 0 || totals.Tokens > 0 {
+		keys = append(keys, poolKey(poolID, "total"))
+	}
+	return redisFinishScript.Run(ctx, common.RDB, keys,
 		lease.id,
 		lease.startSecond,
 		inputDelta,
 		current.Unix(),
 		output,
 		poolKeyTTL.Milliseconds(),
+		totals.Requests,
+		totals.Tokens,
+		totalsKeyTTL.Milliseconds(),
 	).Err()
 }
 
@@ -105,13 +123,43 @@ func redisRenew(active []*Lease, current time.Time) error {
 	expiresAt := float64(current.Add(leaseTTL).UnixMilli())
 	_, err := common.RDB.Pipelined(ctx, func(pipe redis.Pipeliner) error {
 		for _, lease := range active {
-			inflight := poolKey(lease.poolID, "inflight")
-			pipe.ZAddXX(ctx, inflight, &redis.Z{Score: expiresAt, Member: lease.id})
-			pipe.PExpire(ctx, inflight, poolKeyTTL)
+			for _, poolID := range lease.poolIDs {
+				inflight := poolKey(poolID, "inflight")
+				pipe.ZAddXX(ctx, inflight, &redis.Z{Score: expiresAt, Member: lease.id})
+				pipe.PExpire(ctx, inflight, poolKeyTTL)
+			}
 		}
 		return nil
 	})
 	return err
+}
+
+func redisTotals(poolIDs []string) (map[string]Totals, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), snapshotTimeout)
+	defer cancel()
+	cmds := make(map[string]*redis.StringStringMapCmd, len(poolIDs))
+	_, err := common.RDB.Pipelined(ctx, func(pipe redis.Pipeliner) error {
+		for _, poolID := range poolIDs {
+			if _, seen := cmds[poolID]; !seen {
+				cmds[poolID] = pipe.HGetAll(ctx, poolKey(poolID, "total"))
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	result := make(map[string]Totals, len(cmds))
+	for poolID, cmd := range cmds {
+		values := cmd.Val()
+		if len(values) == 0 {
+			continue
+		}
+		requests, _ := strconv.ParseInt(values["requests"], 10, 64)
+		tokens, _ := strconv.ParseInt(values["tokens"], 10, 64)
+		result[poolID] = Totals{Requests: requests, Tokens: tokens}
+	}
+	return result, nil
 }
 
 func redisSnapshot(poolIDs []string) (map[string]Usage, error) {

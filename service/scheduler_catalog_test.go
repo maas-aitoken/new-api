@@ -9,6 +9,7 @@ import (
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
 	channelcapacity "github.com/QuantumNous/new-api/pkg/channel_capacity"
+	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -33,7 +34,7 @@ func TestBuildSchedulerCatalogFromChannelsIsCredentialFreeAndExpandsKeys(t *test
 		},
 	}
 
-	catalog, err := BuildSchedulerCatalogFromChannels("deepseek-v4-flash", []*model.Channel{channel})
+	catalog, err := BuildSchedulerCatalogFromChannels("deepseek-v4-flash", []*model.Channel{channel}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,11 +69,11 @@ func TestBuildSchedulerCatalogPoolsByMappedUpstreamModel(t *testing.T) {
 		Models: "alias,upstream-x,other", ModelMapping: &mapping, Setting: &setting,
 	}
 
-	viaAlias, err := BuildSchedulerCatalogFromChannels("alias", []*model.Channel{channel})
+	viaAlias, err := BuildSchedulerCatalogFromChannels("alias", []*model.Channel{channel}, nil)
 	require.NoError(t, err)
-	direct, err := BuildSchedulerCatalogFromChannels("upstream-x", []*model.Channel{channel})
+	direct, err := BuildSchedulerCatalogFromChannels("upstream-x", []*model.Channel{channel}, nil)
 	require.NoError(t, err)
-	other, err := BuildSchedulerCatalogFromChannels("other", []*model.Channel{channel})
+	other, err := BuildSchedulerCatalogFromChannels("other", []*model.Channel{channel}, nil)
 	require.NoError(t, err)
 
 	// 别名与上游名打到同一个上游模型，共用一个池和一份额度；别的模型各算各的、不限。
@@ -85,15 +86,51 @@ func TestBuildSchedulerCatalogPoolsByMappedUpstreamModel(t *testing.T) {
 	// 额度变化要换 Catalog 版本，调度器才会重新加载。
 	changed := `{"model_limits":{"upstream-x":{"rpm":31}}}`
 	channel.Setting = &changed
-	reloaded, err := BuildSchedulerCatalogFromChannels("alias", []*model.Channel{channel})
+	reloaded, err := BuildSchedulerCatalogFromChannels("alias", []*model.Channel{channel}, nil)
 	require.NoError(t, err)
 	assert.NotEqual(t, viaAlias.Version, reloaded.Version)
+}
+
+func TestBuildSchedulerCatalogCountsBoundMembersInCapacityPool(t *testing.T) {
+	mapping := `{"alias":"upstream-x"}`
+	bound := `{"model_limits":{"upstream-x":{"rpm":30}},"capacity_pools":{"upstream-x":3}}`
+	dangling := `{"model_limits":{"upstream-x":{"rpm":7}},"capacity_pools":{"upstream-x":99}}`
+	channels := []*model.Channel{
+		{Id: 5, Type: constant.ChannelTypeOpenAI, Key: "k1\nk2", Status: common.ChannelStatusEnabled, Models: "alias", ModelMapping: &mapping, Setting: &bound,
+			ChannelInfo: model.ChannelInfo{IsMultiKey: true}},
+		{Id: 6, Type: constant.ChannelTypeOpenAI, Key: "k", Status: common.ChannelStatusEnabled, Models: "alias", ModelMapping: &mapping, Setting: &bound},
+		{Id: 8, Type: constant.ChannelTypeOpenAI, Key: "k", Status: common.ChannelStatusEnabled, Models: "alias", ModelMapping: &mapping, Setting: &dangling},
+	}
+	floors := map[int]dto.ModelLimit{3: {RPM: 40, MaxConcurrency: 4}}
+
+	catalog, err := BuildSchedulerCatalogFromChannels("alias", channels, floors)
+	require.NoError(t, err)
+	require.Len(t, catalog.Endpoints, 4)
+	for _, endpoint := range catalog.Endpoints {
+		if endpoint.ChannelID == 8 {
+			// 指向已删除的池：按没绑定处理，回到自己的 <渠道, 上游模型> 池和额度。
+			assert.Equal(t, channelcapacity.PoolID(8, "upstream-x"), endpoint.CapacityPoolID)
+			assert.Equal(t, SchedulerLimits{RPM: 7}, endpoint.Limits)
+			continue
+		}
+		// 两个渠道的所有 key 都计进容量池，Limits 是池的保底额度，自己的 model_limits 不生效。
+		assert.Equal(t, "cp-3", endpoint.CapacityPoolID)
+		assert.Equal(t, SchedulerLimits{RPM: 40, MaxConcurrency: 4}, endpoint.Limits)
+	}
+
+	// 动态额度不进 Catalog：只有保底额度变了才换版本。
+	again, err := BuildSchedulerCatalogFromChannels("alias", channels, map[int]dto.ModelLimit{3: {RPM: 40, MaxConcurrency: 4}})
+	require.NoError(t, err)
+	assert.Equal(t, catalog.Version, again.Version)
+	changed, err := BuildSchedulerCatalogFromChannels("alias", channels, map[int]dto.ModelLimit{3: {RPM: 41, MaxConcurrency: 4}})
+	require.NoError(t, err)
+	assert.NotEqual(t, catalog.Version, changed.Version)
 }
 
 func TestBuildSchedulerCatalogIncludesModelMappingSourceAlias(t *testing.T) {
 	mapping := `{"customer-model":"deepseek-v4-flash"}`
 	channel := &model.Channel{Id: 9, Type: constant.ChannelTypeOpenAI, Key: "secret", Status: common.ChannelStatusEnabled, Models: "deepseek-v4-flash", ModelMapping: &mapping}
-	catalog, err := BuildSchedulerCatalogFromChannels("customer-model", []*model.Channel{channel})
+	catalog, err := BuildSchedulerCatalogFromChannels("customer-model", []*model.Channel{channel}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,7 +141,7 @@ func TestBuildSchedulerCatalogIncludesModelMappingSourceAlias(t *testing.T) {
 
 func TestBuildSchedulerCatalogRejectsUnknownModel(t *testing.T) {
 	channel := &model.Channel{Id: 1, Type: constant.ChannelTypeOpenAI, Key: "secret", Status: common.ChannelStatusEnabled, Models: "other-model"}
-	if _, err := BuildSchedulerCatalogFromChannels("missing-model", []*model.Channel{channel}); err == nil {
+	if _, err := BuildSchedulerCatalogFromChannels("missing-model", []*model.Channel{channel}, nil); err == nil {
 		t.Fatal("expected unknown model error")
 	}
 }
@@ -112,7 +149,7 @@ func TestBuildSchedulerCatalogRejectsUnknownModel(t *testing.T) {
 func TestBuildSchedulerCatalogAdvertisesRelayRequestCapabilities(t *testing.T) {
 	channel := &model.Channel{Id: 1, Type: constant.ChannelTypeOpenAI, Key: "secret", Status: common.ChannelStatusEnabled, Models: "m"}
 
-	catalog, err := BuildSchedulerCatalogFromChannels("m", []*model.Channel{channel})
+	catalog, err := BuildSchedulerCatalogFromChannels("m", []*model.Channel{channel}, nil)
 	require.NoError(t, err)
 	require.Len(t, catalog.Endpoints, 1)
 

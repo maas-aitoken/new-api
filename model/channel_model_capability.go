@@ -374,6 +374,10 @@ type CapabilityTargetChannel struct {
 	// ModelLimit 按它存放：指向同一上游的别名共用一份额度。
 	UpstreamModel string         `json:"upstream_model"`
 	ModelLimit    dto.ModelLimit `json:"model_limit"`
+	// CapacityPoolId 不为 0 表示这个上游模型绑在容量池上，额度由池动态算出，
+	// ModelLimit 在绑定期间不生效；CapacityPoolName 是池名，池已被删时为空。
+	CapacityPoolId   int    `json:"capacity_pool_id"`
+	CapacityPoolName string `json:"capacity_pool_name"`
 }
 
 // CapabilityTarget 是"模型 → 服务渠道"清单的一行。
@@ -520,6 +524,14 @@ func GetCapabilityTargets(query CapabilityTargetQuery) ([]CapabilityTarget, int,
 	if err != nil {
 		return nil, 0, err
 	}
+	pools, err := GetCapacityPools("")
+	if err != nil {
+		return nil, 0, err
+	}
+	poolNames := make(map[int]string, len(pools))
+	for _, pool := range pools {
+		poolNames[pool.Id] = pool.Name
+	}
 	channelsByModel := make(map[string][]CapabilityTargetChannel)
 	names := make(map[string]struct{}, len(exactNames)+len(rows))
 	for _, name := range exactNames {
@@ -535,14 +547,16 @@ func GetCapabilityTargets(query CapabilityTargetQuery) ([]CapabilityTarget, int,
 		if row.Setting != nil {
 			setting = *row.Setting
 		}
-		limit, upstream := ChannelModelLimitOf(setting, modelMapping, row.Model)
+		capacity := ChannelModelCapacityOf(setting, modelMapping, row.Model)
 		channelsByModel[row.Model] = append(channelsByModel[row.Model], CapabilityTargetChannel{
-			ID:             row.ID,
-			Name:           row.Name,
-			Type:           row.Type,
-			CostMultiplier: ChannelCostMultiplier(setting, modelMapping, row.Model),
-			UpstreamModel:  upstream,
-			ModelLimit:     limit,
+			ID:               row.ID,
+			Name:             row.Name,
+			Type:             row.Type,
+			CostMultiplier:   ChannelCostMultiplier(setting, modelMapping, row.Model),
+			UpstreamModel:    capacity.UpstreamModel,
+			ModelLimit:       capacity.Limit,
+			CapacityPoolId:   capacity.CapacityPoolId,
+			CapacityPoolName: poolNames[capacity.CapacityPoolId],
 		})
 	}
 

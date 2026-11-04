@@ -59,6 +59,8 @@ const targets: CapabilityTarget[] = [
         cost_multiplier: 1.5,
         upstream_model: 'sonnet-5',
         model_limit: { rpm: 60, max_concurrency: 2 },
+        capacity_pool_id: 0,
+        capacity_pool_name: '',
       },
       {
         id: 19,
@@ -68,6 +70,8 @@ const targets: CapabilityTarget[] = [
         cost_multiplier: 0,
         upstream_model: 'claude-sonnet-5-20261001',
         model_limit: {},
+        capacity_pool_id: 0,
+        capacity_pool_name: '',
       },
     ],
   },
@@ -311,6 +315,74 @@ it('shows live usage and the remaining quota for channels with limits', async ()
       'Redis is not configured, so live usage reflects only this node.'
     )
   ).toBeVisible()
+})
+
+it('shows a read-only capacity pool note instead of limit inputs for a bound channel', async () => {
+  const bound: CapabilityTarget[] = [
+    {
+      ...targets[0],
+      channels: [
+        {
+          ...targets[0].channels[0],
+          capacity_pool_id: 3,
+          capacity_pool_name: 'kiro-aws1',
+        },
+        targets[0].channels[1],
+      ],
+    },
+  ]
+  await renderTargets(bound, 1, {
+    items: [
+      {
+        channel_id: 12,
+        model: 'sonnet-5',
+        upstream_model: 'sonnet-5',
+        pool_id: 'cp-3',
+        limit: { rpm: 300 },
+        rpm_used: 40,
+        tpm_used: 0,
+        in_flight: 3,
+        remaining: { rpm: 260, tpm: null, concurrency: null },
+        capacity_pool: {
+          id: 3,
+          name: 'kiro-aws1',
+          source: 'dynamic',
+          exhausted: false,
+          computed_at: 1,
+          member_rpm_used: 4,
+          member_tpm_used: 0,
+          member_in_flight: 1,
+        },
+      },
+    ],
+    shared: true,
+    window_seconds: 60,
+  })
+  const user = userEvent.setup()
+  await user.click(screen.getByRole('button', { name: 'Expand' }))
+
+  const card = screen.getByText('#12 · main').closest('li') as HTMLElement
+  // 绑定期间不能在这里改额度，只显示跟随哪个池、池的数和这个渠道自己用了多少。
+  expect(
+    within(card).queryByLabelText('RPM limit for channel #12')
+  ).not.toBeInTheDocument()
+  expect(
+    within(card).getByText('Follows capacity pool kiro-aws1')
+  ).toBeVisible()
+  expect(within(card).getByText('Dynamic limit')).toBeVisible()
+  expect(
+    within(card).getByText('This channel: RPM 4, in flight 1')
+  ).toBeVisible()
+  expect(
+    within(card).getByRole('link', {
+      name: 'Manage on the Resource Pools page',
+    })
+  ).toHaveAttribute('href', '/resource-pools')
+  expect(
+    await within(card).findByLabelText('Live usage for channel #12')
+  ).toHaveTextContent('RPM 40 / 300 · 260 left')
+  // 没绑定的渠道照常显示输入框。
+  expect(screen.getByLabelText('RPM limit for channel #19')).toBeVisible()
 })
 
 it('requests the filtered page when the model name and channel ID inputs change', async () => {

@@ -50,6 +50,12 @@ type ChannelSettings struct {
 	// 乘以 key 数再填。网关只统计用量、不据此拦截，执行准入的是调度器。
 	ModelLimits map[string]ModelLimit `json:"model_limits,omitempty"`
 
+	// CapacityPools 把 <渠道, 上游模型> 绑到资源池页的容量池，值是容量池 id，键与
+	// ModelLimits 相同（model_mapping 链尾的上游模型名）。绑定后这个上游模型与池里
+	// 其它成员共用一个计数桶，额度由容量池按账号数和余量动态算出，自己的
+	// ModelLimits 在绑定期间不生效。成员只能在资源池页增删。
+	CapacityPools map[string]int `json:"capacity_pools,omitempty"`
+
 	// TLSInsecureSkipVerify accepts upstream certificates that fail
 	// verification, such as self-signed ones, for this channel only.
 	TLSInsecureSkipVerify bool `json:"tls_insecure_skip_verify,omitempty"`
@@ -189,6 +195,28 @@ func (s *ChannelSettings) ValidateModelLimits() error {
 		}
 		if err := limit.Validate(); err != nil {
 			return fmt.Errorf("model_limits for model %s: %w", model, err)
+		}
+	}
+	return nil
+}
+
+// CapacityPoolFor 返回上游模型绑定的容量池 id，没绑定时返回 0。
+func (s ChannelSettings) CapacityPoolFor(upstreamModel string) int {
+	return s.CapacityPools[upstreamModel]
+}
+
+// ValidateCapacityPools 在保存渠道时校验 capacity_pools：模型名不能为空，池 id 为正数。
+// 不检查池是否存在：池被删时会顺带清掉绑定，残留的 id 按未绑定处理。
+func (s *ChannelSettings) ValidateCapacityPools() error {
+	if s == nil {
+		return nil
+	}
+	for model, poolID := range s.CapacityPools {
+		if strings.TrimSpace(model) == "" {
+			return fmt.Errorf("capacity_pools has a blank model name")
+		}
+		if poolID <= 0 {
+			return fmt.Errorf("capacity_pools for model %s must be a positive pool id, got %d", model, poolID)
 		}
 	}
 	return nil

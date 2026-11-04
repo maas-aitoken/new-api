@@ -1069,8 +1069,9 @@ func SchedulerReservationResizeRequired(c *gin.Context) bool {
 	if channel.Setting != nil {
 		settingRaw = *channel.Setting
 	}
-	limit, _ := model.ChannelModelLimitOf(settingRaw, channel.GetModelMapping(), common.GetContextKeyString(c, constant.ContextKeyOriginalModel))
-	return limit.TPM > 0
+	capacity := model.ChannelModelCapacityOf(settingRaw, channel.GetModelMapping(), common.GetContextKeyString(c, constant.ContextKeyOriginalModel))
+	// 绑了容量池时 TPM 由池动态算出，这里看不到，按需要 resize 处理。
+	return capacity.CapacityPoolId != 0 || capacity.Limit.TPM > 0
 }
 
 // schedulerEffectivePolicy builds the Scheduler policy for the current request

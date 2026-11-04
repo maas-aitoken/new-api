@@ -32,6 +32,9 @@ const (
 	// poolKeyTTL 是计数池 Redis 键的过期时间，要比窗口和租约都长，
 	// 闲下来的池会自己消失。
 	poolKeyTTL = 120 * time.Second
+	// totalsKeyTTL 是容量池累计数的过期时间。配速只回看最近 6 小时，
+	// 两天没有流量的池重新开始计数也不影响学到的比例。
+	totalsKeyTTL = 48 * time.Hour
 	// redisTimeout 与调度器运行时计数一致，Redis 慢了不拖累请求。
 	redisTimeout = 50 * time.Millisecond
 	// snapshotTimeout 给管理页的批量读取用，一次可能读上百个池。
@@ -50,10 +53,20 @@ func PoolID(channelID int, upstreamModel string) string {
 	return fmt.Sprintf("c%d-%s", channelID, common.Sha1([]byte(upstreamModel))[:12])
 }
 
+// CapacityPoolID 是资源池页容量池的计数池标识。绑到容量池的 <渠道, 上游模型>
+// 额外计进这个池，调度器按它准入、按它读动态额度。"cp-" 开头与 PoolID 的
+// "c<数字>-" 不会撞上。
+func CapacityPoolID(capacityPoolID int) string {
+	return fmt.Sprintf("cp-%d", capacityPoolID)
+}
+
 // Lease 是一次已登记的尝试，必须配一次 Finish。
 type Lease struct {
-	id             string
-	poolID         string
+	id string
+	// poolIDs 是这次登记成功的计数池：先是 <渠道, 上游模型> 池，绑了容量池时再加容量池。
+	poolIDs []string
+	// totalsPoolID 是要累加累计请求/token 数的容量池，没绑时为空。
+	totalsPoolID   string
 	startSecond    int64
 	estimatedInput int64
 	// redis 为 true 表示这次登记在 Redis 里，结束和续租也只走 Redis。
@@ -62,35 +75,62 @@ type Lease struct {
 }
 
 // Begin 为发往 <channelID, upstreamModel> 的一次尝试登记用量：RPM 加 1，
-// TPM 记上输入估算，在途数加 1。返回的 Lease 必须交给 Finish；
-// 渠道或模型为空时返回 nil，Redis 出错时也返回 nil（这次不计数，请求照常）。
-func Begin(channelID int, upstreamModel string, estimatedInput int) *Lease {
+// TPM 记上输入估算，在途数加 1。capacityPoolID 不为 0 时同样计进那个容量池，
+// 成员共用它的计数；<渠道, 上游模型> 池照记，用来看每个成员各用了多少。
+// 返回的 Lease 必须交给 Finish；渠道或模型为空时返回 nil，Redis 出错时也返回 nil
+// （这次不计数，请求照常）。容量池那一份失败时只少计容量池。
+func Begin(channelID int, upstreamModel string, capacityPoolID int, estimatedInput int) *Lease {
 	if channelID <= 0 || strings.TrimSpace(upstreamModel) == "" {
 		return nil
 	}
 	current := now()
 	lease := &Lease{
 		id:             fmt.Sprintf("%d-%s", current.UnixNano(), common.GetRandomString(8)),
-		poolID:         PoolID(channelID, upstreamModel),
 		startSecond:    current.Unix(),
 		estimatedInput: int64(max(estimatedInput, 0)),
 	}
+	poolIDs := []string{PoolID(channelID, upstreamModel)}
+	if capacityPoolID > 0 {
+		poolIDs = append(poolIDs, CapacityPoolID(capacityPoolID))
+	}
 	if !Shared() {
-		memoryBegin(lease)
+		for _, poolID := range poolIDs {
+			memoryBegin(lease, poolID)
+		}
+		lease.poolIDs = poolIDs
+		lease.totalsPoolID = capacityPoolOf(poolIDs)
 		return lease
 	}
-	if err := redisBegin(lease, current); err != nil {
-		logRedisError("begin", err)
-		return nil
+	for i, poolID := range poolIDs {
+		if err := redisBegin(lease, poolID, current); err != nil {
+			logRedisError("begin", err)
+			if i == 0 {
+				// <渠道, 上游模型> 池没记上时整次不计数，也不再去记容量池。
+				return nil
+			}
+			continue
+		}
+		lease.poolIDs = append(lease.poolIDs, poolID)
 	}
+	lease.totalsPoolID = capacityPoolOf(lease.poolIDs)
 	lease.redis = true
 	trackLease(lease)
 	return lease
 }
 
+// capacityPoolOf 返回登记里的容量池，没有时为空。
+func capacityPoolOf(poolIDs []string) string {
+	if len(poolIDs) > 1 {
+		return poolIDs[1]
+	}
+	return ""
+}
+
 // Finish 结束一次登记。actualInput>0 时用它校正开始时的输入估算（开始那一秒
 // 已滑出窗口就不再校正），actualOutput 记到结束这一秒；失败且没有任何用量时
 // 撤回输入估算。RPM 不撤回：这次尝试确实发出去过。
+// 上游报了用量时，容量池的累计请求数加 1、累计 token 数加上实际输入+输出，
+// 配速用它和账号额度的变化学换算比例。
 // 对 nil 或已经结束的 Lease 什么也不做，所以可以放在 defer 里兜底。
 func Finish(lease *Lease, success bool, actualInput, actualOutput int) {
 	if lease == nil || !lease.finished.CompareAndSwap(false, true) {
@@ -108,14 +148,48 @@ func Finish(lease *Lease, success bool, actualInput, actualOutput int) {
 		inputDelta = 0
 	}
 	output := int64(max(actualOutput, 0))
+	totals := Totals{}
+	if actualInput > 0 || actualOutput > 0 {
+		totals = Totals{Requests: 1, Tokens: int64(max(actualInput, 0)) + output}
+	}
 	if !lease.redis {
-		memoryFinish(lease, current, inputDelta, output)
+		for _, poolID := range lease.poolIDs {
+			memoryFinish(lease, poolID, current, inputDelta, output, lease.totalsFor(poolID, totals))
+		}
 		return
 	}
 	untrackLease(lease)
-	if err := redisFinish(lease, current, inputDelta, output); err != nil {
-		logRedisError("finish", err)
+	for _, poolID := range lease.poolIDs {
+		if err := redisFinish(lease, poolID, current, inputDelta, output, lease.totalsFor(poolID, totals)); err != nil {
+			logRedisError("finish", err)
+		}
 	}
+}
+
+// totalsFor 只给容量池记累计数，<渠道, 上游模型> 池不需要。
+func (l *Lease) totalsFor(poolID string, totals Totals) Totals {
+	if poolID != l.totalsPoolID {
+		return Totals{}
+	}
+	return totals
+}
+
+// Totals 是容量池从计数开始以来累计的请求数和 token 数（只算上游报了用量的尝试）。
+// 只增不减；Redis 键 48 小时没有写入会过期，读到的值变小时调用方应当作重新开始。
+type Totals struct {
+	Requests int64
+	Tokens   int64
+}
+
+// ReadTotals 批量读取容量池的累计数，没有记录的池不出现在结果里。
+func ReadTotals(poolIDs []string) (map[string]Totals, error) {
+	if len(poolIDs) == 0 {
+		return map[string]Totals{}, nil
+	}
+	if !Shared() {
+		return memoryTotals(poolIDs), nil
+	}
+	return redisTotals(poolIDs)
 }
 
 // Usage 是一个计数池此刻的用量。

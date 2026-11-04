@@ -100,6 +100,9 @@ export interface SchedulerMonitorEndpoint {
   pool_rpm_used?: number
   pool_tpm_used?: number
   pool_inflight?: number
+  // 资源池页容量池（cp-<id>）：额度是 new-api 发布的动态额度；耗尽时调度器不再选它。
+  pool_dynamic_limit?: boolean
+  pool_exhausted?: boolean
   updated_at?: string
   profiles?: Record<string, { score?: number; gate_tier: number }>
 }

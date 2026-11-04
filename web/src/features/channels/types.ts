@@ -99,6 +99,8 @@ export interface ChannelSettings {
     string,
     { rpm?: number; tpm?: number; max_concurrency?: number }
   >
+  /** 上游模型 → 容量池 id，在资源池页编辑。 */
+  capacity_pools?: Record<string, number>
   tls_insecure_skip_verify?: boolean
 }
 

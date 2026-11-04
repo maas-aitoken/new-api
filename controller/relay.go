@@ -246,12 +246,19 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 
 		keyIndex := common.GetContextKeyInt(c, constant.ContextKeyChannelMultiKeyIndex)
 		attemptStart := time.Now()
+		// 重试共用一个 gin.Context：先清掉上一次尝试记下的用量，否则这次没报用量
+		// （比如连不上上游）时会把上一次的 token 数当成这次的。
+		service.ResetSchedulerAttemptMetrics(c)
 		runtimeWindow := service.BeginSchedulerRuntime(channel.Id, keyIndex)
 		// <渠道, 上游模型> 的实时用量只统计不拦截。上游名按 model_mapping 链尾算，
-		// 与 setting.model_limits 的键一致。defer 兜底：handler panic 时也会
-		// 结束这次登记；正常路径下面会带着实际用量先结束，defer 就什么也不做。
+		// 与 setting.model_limits 的键一致；绑了容量池的再计进容量池。defer 兜底：
+		// handler panic 时也会结束这次登记；正常路径下面会带着实际用量先结束，defer 就什么也不做。
 		capacityUpstream, _, _ := model.ResolveMappedModel(c.GetString("model_mapping"), relayInfo.OriginModelName)
-		capacityLease := channelcapacity.Begin(channel.Id, capacityUpstream, relayInfo.GetEstimatePromptTokens())
+		capacityPoolID := 0
+		if channelSetting, ok := common.GetContextKeyType[dto.ChannelSettings](c, constant.ContextKeyChannelSetting); ok {
+			capacityPoolID = channelSetting.CapacityPoolFor(capacityUpstream)
+		}
+		capacityLease := channelcapacity.Begin(channel.Id, capacityUpstream, capacityPoolID, relayInfo.GetEstimatePromptTokens())
 		defer channelcapacity.Finish(capacityLease, false, 0, 0)
 		priceData := relayInfo.PriceData
 		attempt := attemptScope.BeginAttempt(c, retryParam.GetRetry(), attemptlog.ChannelTarget{

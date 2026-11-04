@@ -161,6 +161,8 @@ func main() {
 	service.StartCapabilityGateEventWriter()
 	// Routing logs of auto requests go through the same kind of batched writer.
 	service.StartAutoRouteLogWriter()
+	// 资源池页的容量池：主节点每分钟按账号数与余量重算动态额度。
+	service.StartCapacityPoolPoller()
 
 	// Wire task polling adaptor factory (breaks service -> relay import cycle).
 	// Must run before the system task runner starts: the async_task_poll handler

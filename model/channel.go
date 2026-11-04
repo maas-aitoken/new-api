@@ -1117,6 +1117,9 @@ func (channel *Channel) ValidateSettings() error {
 	if err := channelParams.ValidateModelLimits(); err != nil {
 		return err
 	}
+	if err := channelParams.ValidateCapacityPools(); err != nil {
+		return err
+	}
 	channelOtherSettings := &dto.ChannelOtherSettings{}
 	if channel.OtherSettings != "" {
 		err := common.UnmarshalJsonStr(channel.OtherSettings, channelOtherSettings)
