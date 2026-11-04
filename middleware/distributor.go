@@ -228,7 +228,11 @@ func Distribute() func(c *gin.Context) {
 					serves := func(candidate string, ignoreClientReasoning bool) bool {
 						return refusal(candidate, ignoreClientReasoning) == ""
 					}
-					costs := autoRouteCost{c: c, usingGroup: usingGroup, gate: capabilityGate, serves: serves, channelsOf: channelsOf, quoteAt: quoteAt}
+					costs := autoRouteCost{c: c, usingGroup: usingGroup, gate: capabilityGate, serves: serves, channelsOf: channelsOf, quoteAt: quoteAt,
+						exclude: func(candidate, reason string) {
+							// 两种口径的备忘都记上，后面的兜底和最终解析都不会再选它。
+							refusals[candidate], refusals[candidate+"|auto-reasoning"] = reason, reason
+						}}
 					result, err := service.ResolveAutoModel(c, service.AutoCandidates{
 						Serves:   serves,
 						Why:      func(candidate string) string { return refusal(candidate, true) },

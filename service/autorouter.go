@@ -285,6 +285,12 @@ func ResolveAutoModel(c *gin.Context, candidates AutoCandidates) (*autorouter.Re
 		// 路由每次按本次请求自己的可用集合重新算，缓存里只有 jev 的判断。
 		var inherited bool
 		result.Decision = decision
+		// 调度器的 workload 在选路前就定下来：比价时的调度器预览和选定后的正式调度用同一个值，
+		// 两边按同一份评分排序。客户端自己带了 workload 时以客户端为准。
+		if decision != nil && decision.TaskType != autorouter.TaskTypeUnknown &&
+			common.GetContextKeyString(c, constant.ContextKeySchedulerWorkload) == "" {
+			common.SetContextKey(c, constant.ContextKeySchedulerWorkload, decision.TaskType)
+		}
 		result.Route, inherited, ok, result.Pick = autorouter.SelectRoute(decision, previous, policy, routing, trace)
 		result.EffortOverride = !inherited
 		if inherited && decision != nil {
@@ -364,10 +370,6 @@ func ResolveAutoModel(c *gin.Context, candidates AutoCandidates) (*autorouter.Re
 	}
 	c.Set(ginKeyAutoRouterResult, result)
 	common.SetContextKey(c, constant.ContextKeyAutoRouted, true)
-	if result.Decision != nil && result.Decision.TaskType != autorouter.TaskTypeUnknown &&
-		common.GetContextKeyString(c, constant.ContextKeySchedulerWorkload) == "" {
-		common.SetContextKey(c, constant.ContextKeySchedulerWorkload, result.Decision.TaskType)
-	}
 	return result, nil
 }
 

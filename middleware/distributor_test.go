@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
@@ -922,6 +923,133 @@ func TestDistributeAutoComparesThePlatformCost(t *testing.T) {
 		assert.Equal(t, 1.0, pick.CostMultiplier)
 		assert.Equal(t, 2, pick.ChannelID)
 	})
+}
+
+// 调度器强制模式下比价问调度器的只读预览：用预览给出的渠道的倍率；预览说没有渠道的模型不选
+// （正式调度一定 503）；调度器不支持预览时退回原生估算。预览和正式调度带同一个 workload。
+func TestDistributeAutoAsksTheSchedulerPreviewWhenItDecides(t *testing.T) {
+	previewChannel := map[string]int{}
+	previewStatus := map[string]string{}
+	var workloads []string
+	var allowed map[string][]int
+	previewSupported := true
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/preview":
+			if !previewSupported {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+			var request struct {
+				Workload string `json:"workload"`
+				Models   []struct {
+					Model             string `json:"model"`
+					AllowedChannelIDs []int  `json:"allowed_channel_ids"`
+				} `json:"models"`
+			}
+			require.NoError(t, common.DecodeJson(r.Body, &request))
+			workloads = append(workloads, request.Workload)
+			allowed = map[string][]int{}
+			results := make([]map[string]any, len(request.Models))
+			for i, item := range request.Models {
+				allowed[item.Model] = item.AllowedChannelIDs
+				status := previewStatus[item.Model]
+				if status == "" {
+					status = "ok"
+				}
+				results[i] = map[string]any{"model": item.Model, "status": status, "channel_id": previewChannel[item.Model]}
+			}
+			encoded, _ := common.Marshal(map[string]any{"results": results})
+			_, _ = w.Write(encoded)
+		case "/v1/schedule":
+			var request schedulerScheduleProbe
+			require.NoError(t, common.DecodeJson(r.Body, &request))
+			workloads = append(workloads, request.Workload)
+			channel := previewChannel[request.Model]
+			if channel == 0 {
+				channel = request.AllowedChannelIDs[0]
+			}
+			_, _ = fmt.Fprintf(w, `{"decision_id":"d","catalog_version":"v","candidates":[{"endpoint_id":"new-api-ch-%d","channel_id":%d,"model":%q,"reason":["available"]}]}`, channel, channel, request.Model)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+	prepare := func(t *testing.T) {
+		setupAutoRoutingDistribute(t, []string{"alt-y"}, map[int][]string{1: {"pick-x"}, 2: {"pick-x"}, 3: {"alt-y"}})
+		useModelPrices(t, map[string]float64{"pick-x": 4, "alt-y": 2})
+		s := autorouter_setting.GetAutoRouterSetting()
+		s.TaskModels = map[string][]string{"code.build": {"pick-x", "alt-y"}}
+		s.TaskScores = map[string]map[string]float64{"code.build": {"pick-x": 0.97, "alt-y": 0.96}}
+		t.Setenv("JEV_ENDPOINT", fakeJevFor(t, "code.build"))
+		require.NoError(t, model.SetChannelModelCostMultiplier(1, "pick-x", 0.25))
+		service.ConfigureSchedulerClientForTest(service.SchedulerClientConfig{Enabled: true, Mode: "enforced", BaseURL: server.URL, Token: "scheduler-test", Timeout: time.Second})
+		t.Cleanup(func() { service.ConfigureSchedulerClientForTest(service.SchedulerClientConfig{}) })
+		clear(previewChannel)
+		clear(previewStatus)
+		workloads, previewSupported = nil, true
+	}
+	body := `{"model":"auto","messages":[{"role":"user","content":"fix the bug"}]}`
+	pickOf := func(t *testing.T, result *autorouter.Result) autorouter.Candidate {
+		require.NotNil(t, result)
+		require.NotNil(t, result.Pick)
+		for _, candidate := range result.Pick.Band {
+			if candidate.Model == "pick-x" {
+				return candidate
+			}
+		}
+		return autorouter.Candidate{}
+	}
+
+	t.Run("the previewed channel's multiplier is the one compared", func(t *testing.T) {
+		prepare(t)
+		previewChannel["pick-x"] = 1
+		result, originalModel, recorder := serveAutoRoutingResult(t, 9831, body)
+		require.Equal(t, http.StatusNoContent, recorder.Code, recorder.Body.String())
+		assert.Equal(t, autorouter.Candidate{Model: "pick-x", Score: 0.97, Price: 8, CostMultiplier: 0.25, Cost: 2, ChannelID: 1, Channels: 1,
+			CostSource: autorouter.CostSourceScheduler, Discount: 0, Utility: 0.97}, pickOf(t, result))
+		assert.Equal(t, "pick-x", originalModel)
+		assert.Equal(t, []int{1, 2}, allowed["pick-x"], "the preview gets the same channel scope as the real schedule")
+		assert.Equal(t, []string{"code.build", "code.build"}, workloads, "preview and schedule carry the same workload")
+
+		previewChannel["pick-x"] = 2
+		result, _, recorder = serveAutoRoutingResult(t, 9832, body)
+		require.Equal(t, http.StatusNoContent, recorder.Code, recorder.Body.String())
+		pick := pickOf(t, result)
+		assert.Equal(t, 1.0, pick.CostMultiplier, "the scheduler would pick channel 2, which has no discount")
+		assert.Equal(t, 2, pick.ChannelID)
+	})
+
+	t.Run("a model the scheduler cannot place is never picked", func(t *testing.T) {
+		prepare(t)
+		previewStatus["pick-x"] = "no_candidate"
+		_, originalModel, recorder := serveAutoRoutingResult(t, 9833, body)
+		require.Equal(t, http.StatusNoContent, recorder.Code, recorder.Body.String())
+		assert.Equal(t, "alt-y", originalModel)
+
+		// 榜单里只剩它时也不会被按榜单顺序的兜底选回来。
+		autorouter_setting.GetAutoRouterSetting().TaskModels = map[string][]string{"code.build": {"pick-x"}}
+		_, originalModel, recorder = serveAutoRoutingResult(t, 9834, body)
+		require.Equal(t, http.StatusNoContent, recorder.Code, recorder.Body.String())
+		assert.Equal(t, "alt-y", originalModel)
+	})
+
+	t.Run("an old scheduler without preview falls back to the native estimate", func(t *testing.T) {
+		prepare(t)
+		previewSupported = false
+		result, _, recorder := serveAutoRoutingResult(t, 9835, body)
+		require.Equal(t, http.StatusNoContent, recorder.Code, recorder.Body.String())
+		pick := pickOf(t, result)
+		assert.InDelta(t, 0.625, pick.CostMultiplier, 1e-9)
+		assert.Equal(t, autorouter.CostSourceExpected, pick.CostSource)
+	})
+}
+
+// schedulerScheduleProbe 是测试桩读的正式调度请求字段。
+type schedulerScheduleProbe struct {
+	Model             string `json:"model"`
+	Workload          string `json:"workload"`
+	AllowedChannelIDs []int  `json:"allowed_channel_ids"`
 }
 
 // useTieredExpressions 给 expressions 里的模型配上分档计费表达式。
