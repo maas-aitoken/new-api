@@ -735,6 +735,7 @@
   "subscription expire task failed: %v": "处理过期订阅失败: %v",
   "subscription maintenance: reset_count=%d, expired_count=%d": "订阅维护: reset_count=%d, expired_count=%d",
   "subscription payment completion": "订阅支付完成",
+  "subscription quota increase": "订阅提额",
   "subscription quota reset task failed: %v": "重置订阅额度失败: %v",
   "subscription quota reset task started: tick=%s": "订阅额度重置任务已启动: tick=%s",
   "sweepTimedOutTasks CAS update error for task %s: %v": "sweepTimedOutTasks: 更新任务 %s 的状态出错: %v",
