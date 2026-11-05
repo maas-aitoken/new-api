@@ -84,6 +84,24 @@ func TestCapabilityGateChannelFilter(t *testing.T) {
 	assert.Equal(t, []int{2}, enforce.FilterChannels(&gin.Context{}, "gated-model", channelIDs))
 }
 
+// KeptChannels 与选定模型后的收窄同一口径：enforce 留下通过判定的渠道，shadow 不收窄；只读不计数。
+func TestCapabilityGateKeptChannelsMatchesChannelFilter(t *testing.T) {
+	setupCapabilityGateTest(t)
+	needs := &capability.Needs{ToolsCount: 1}
+	channelIDs := []int{1, 2}
+
+	enforce := &CapabilityGate{mode: CapabilityGateEnforce, needs: needs, modelVerdicts: map[string]capabilityVerdict{}}
+	assert.Equal(t, []int{2}, enforce.KeptChannels("gated-model", channelIDs, false))
+	assert.True(t, enforce.AllowsAnyChannel("gated-model", channelIDs, false))
+	assert.Equal(t, []int{2}, enforce.KeptChannels("gated-model", channelIDs, false), "the memoized verdict keeps the same channels")
+	assert.Equal(t, 1, enforce.evaluated, "KeptChannels does not count as an evaluation")
+
+	shadow := &CapabilityGate{mode: CapabilityGateShadow, needs: needs, modelVerdicts: map[string]capabilityVerdict{}}
+	assert.Equal(t, channelIDs, shadow.KeptChannels("gated-model", channelIDs, false))
+	var off *CapabilityGate
+	assert.Equal(t, channelIDs, off.KeptChannels("gated-model", channelIDs, false))
+}
+
 func TestCapabilityGateExplainsModelRejection(t *testing.T) {
 	setupCapabilityGateTest(t)
 	needs := &capability.Needs{BuiltinTools: []string{"web_search"}}

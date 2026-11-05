@@ -77,7 +77,7 @@ func GetChannelModelCapability(c *gin.Context) {
 		if channel.Setting != nil {
 			setting = *channel.Setting
 		}
-		costMultiplier = model.ChannelCostMultiplier(setting, channel.GetModelMapping(), modelName)
+		costMultiplier = model.ChannelCostMultiplier(setting, modelName)
 	}
 	common.ApiSuccess(c, gin.H{
 		"channel_id":         channelID,

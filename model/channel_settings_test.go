@@ -140,62 +140,25 @@ func TestChannelValidateSettingsRejectsInvalidCostMultiplier(t *testing.T) {
 	}
 }
 
-func TestChannelValidateSettingsCostMultiplierModelKey(t *testing.T) {
+// 保存渠道时倍率的键不对照模型列表：被映射走的请求名就是正确的键；删掉模型后留下的
+// 孤儿键也不能让整条渠道存不了（能力页看不到它，清不掉）。
+func TestChannelValidateSettingsDoesNotCrossCheckCostMultiplierKeys(t *testing.T) {
+	mapping := `{"gpt-4o":"gpt-4o-2024-08-06"}`
 	tests := []struct {
 		name          string
-		models        string
-		modelMapping  string
 		multiplierKey string
-		wantErr       string
 	}{
-		{
-			name:          "mapped upstream model name is valid",
-			models:        "gpt-4o",
-			modelMapping:  `{"gpt-4o":"gpt-4o-2024-08"}`,
-			multiplierKey: "gpt-4o-2024-08",
-		},
-		{
-			name:          "client model name without mapping is valid",
-			models:        "gpt-4o",
-			multiplierKey: "gpt-4o",
-		},
-		{
-			name:          "client model name that mapping redirects away is rejected",
-			models:        "gpt-4o",
-			modelMapping:  `{"gpt-4o":"gpt-4o-2024-08"}`,
-			multiplierKey: "gpt-4o",
-			wantErr:       "cost_multiplier",
-		},
-		{
-			name:          "unknown model name is rejected",
-			models:        "gpt-4o",
-			multiplierKey: "claude-3",
-			wantErr:       "cost_multiplier",
-		},
-		{
-			name:          "no models configured skips cross-check",
-			models:        "",
-			multiplierKey: "anything",
-		},
+		{name: "request name that mapping redirects", multiplierKey: "gpt-4o"},
+		{name: "orphan key left after the model was removed", multiplierKey: "claude-3"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			channel := &Channel{Models: tt.models}
-			if tt.modelMapping != "" {
-				channel.ModelMapping = &tt.modelMapping
-			}
+			channel := &Channel{Models: "gpt-4o", ModelMapping: &mapping}
 			channel.SetSetting(dto.ChannelSettings{
 				CostMultiplierMap: map[string]float64{tt.multiplierKey: 1.5},
 			})
-
-			err := channel.ValidateSettings()
-			if tt.wantErr == "" {
-				require.NoError(t, err)
-				return
-			}
-			require.Error(t, err)
-			assert.Contains(t, err.Error(), tt.wantErr)
+			require.NoError(t, channel.ValidateSettings())
 		})
 	}
 }

@@ -57,6 +57,8 @@ email.binding.old_intro: "A change to your account email address was requested. 
 email.binding.code: "Verification code: <strong>{{.Code}}</strong>"
 email.binding.new_validity: "This code expires in {{.Minutes}} minutes. If you did not request this change, do not share this code."
 email.binding.old_validity: "This code expires in {{.Minutes}} minutes. If you did not request this change, do not share this code and contact your administrator."
+email.step_up.subject: "{{.SystemName}} — Security verification code"
+email.step_up.intro: "You are performing an action that requires security verification. Enter the following code on the page."
 email.security_notice.subject: "{{.SystemName}} — Account security notification"
 email.security_notice.changed: "Your account security settings have changed: {{.Event}}."
 email.security_notice.advice: "If you did not make this change, open your account security settings, revoke other login sessions, and contact your administrator."

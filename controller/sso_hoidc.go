@@ -1,12 +1,15 @@
 package controller
 
 import (
+	"cmp"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/system_setting"
 	"github.com/gin-gonic/gin"
@@ -22,25 +25,9 @@ func SsoHoidcLogin(c *gin.Context) {
 		return
 	}
 
-	redirect := c.Query("redirect")
-	if redirect == "" {
-		redirect = "/"
-	}
-
-	serverAddr := ""
-	if common.HoidcRedirectOrigin != "" {
-		serverAddr = strings.TrimRight(common.HoidcRedirectOrigin, "/")
-	}
-	if serverAddr == "" {
-		serverAddr = strings.TrimRight(system_setting.ServerAddress, "/")
-	}
-	if serverAddr == "" {
-		scheme := "http"
-		if c.Request.TLS != nil || c.GetHeader("X-Forwarded-Proto") == "https" {
-			scheme = "https"
-		}
-		serverAddr = scheme + "://" + c.Request.Host
-	}
+	redirect := sanitizeHoidcRedirect(c, c.Query("redirect"))
+	// The first configured origin wins; the request origin is the fallback.
+	serverAddr := cmp.Or(hoidcTrustedOrigins(c)...)
 
 	callbackUrl := serverAddr +
 		"/api/sso/hoidc/callback?platform_id=" + url.QueryEscape(common.HoidcPlatformId) +
@@ -65,10 +52,9 @@ func SsoHoidcCallback(c *gin.Context) {
 		return
 	}
 
-	redirect := c.Query("redirect")
-	if redirect == "" {
-		redirect = "/"
-	}
+	// The callback can be reached without our login endpoint, so it checks the
+	// redirect again.
+	redirect := sanitizeHoidcRedirect(c, c.Query("redirect"))
 
 	userInfo, err := service.VerifySsoToken(token)
 	if err != nil {
@@ -104,13 +90,54 @@ func SsoHoidcCallback(c *gin.Context) {
 	service.WriteRefreshCookie(c, bundle.RefreshToken)
 
 	c.Set("login_method", "sso_hoidc")
+	model.UpdateUserLastLoginAt(user.Id)
 	recordLoginAudit(user, c)
 
-	redirectUrl := redirect
-	if strings.Contains(redirectUrl, "?") {
-		redirectUrl += "&access_token=" + url.QueryEscape(bundle.AccessToken)
-	} else {
-		redirectUrl += "?access_token=" + url.QueryEscape(bundle.AccessToken)
+	// The frontends restore the session from the refresh cookie, so the access
+	// token never goes into the URL.
+	c.Redirect(http.StatusFound, redirect)
+}
+
+// hoidcTrustedOrigins lists the origins HOIDC may return to, in the order the
+// login callback prefers them: the configured redirect origin, the server
+// address, then the origin of the current request. Empty entries are kept.
+func hoidcTrustedOrigins(c *gin.Context) []string {
+	scheme := "http"
+	if c.Request.TLS != nil || c.GetHeader("X-Forwarded-Proto") == "https" {
+		scheme = "https"
 	}
-	c.Redirect(http.StatusFound, redirectUrl)
+	return []string{
+		strings.TrimRight(common.HoidcRedirectOrigin, "/"),
+		strings.TrimRight(system_setting.ServerAddress, "/"),
+		scheme + "://" + c.Request.Host,
+	}
+}
+
+// sanitizeHoidcRedirect keeps a post-login redirect on this site: a relative
+// path, or an absolute URL on one of the trusted origins. Anything else becomes
+// "/", so a crafted login link cannot send the user to another site.
+func sanitizeHoidcRedirect(c *gin.Context, raw string) string {
+	if raw == "" || strings.Contains(raw, "\\") || strings.ContainsFunc(raw, unicode.IsControl) {
+		return "/"
+	}
+	if strings.HasPrefix(raw, "/") {
+		if strings.HasPrefix(raw, "//") {
+			return "/"
+		}
+		return raw
+	}
+	target, err := url.Parse(raw)
+	if err != nil || (target.Scheme != "http" && target.Scheme != "https") || target.User != nil || target.Host == "" {
+		return "/"
+	}
+	for _, origin := range hoidcTrustedOrigins(c) {
+		trusted, err := url.Parse(origin)
+		if err != nil || trusted.Host == "" {
+			continue
+		}
+		if strings.EqualFold(trusted.Scheme, target.Scheme) && strings.EqualFold(trusted.Host, target.Host) {
+			return raw
+		}
+	}
+	return "/"
 }

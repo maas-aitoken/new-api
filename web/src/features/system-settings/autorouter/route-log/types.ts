@@ -64,10 +64,22 @@ export type RouteDecision = {
   larger_model_benefit?: number | null
 }
 
+export type RouteCostSource = 'scheduler' | 'affinity' | 'expected'
+
 export type RoutePickCandidate = {
   model: string
   score: number
+  /** 用户侧混合价（美元/百万 token）。 */
   price: number
+  /**
+   * 首次会落到的渠道的费用倍率（几个渠道时是期望）。有它时比较的是 cost = price × 倍率
+   * （平台成本，不参与计费）；没有表示没估算，按 price 比较。
+   */
+  cost_multiplier?: number
+  cost?: number
+  channel_id?: number
+  channels?: number
+  cost_source?: RouteCostSource
   discount: number
   utility: number
 }

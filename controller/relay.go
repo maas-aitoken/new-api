@@ -248,9 +248,11 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		// （比如连不上上游）时会把上一次的 token 数当成这次的。
 		service.ResetSchedulerAttemptMetrics(c)
 		// <渠道, 上游模型> 的实时用量只统计不拦截。上游名按 model_mapping 链尾算，
-		// 与 setting.model_limits 的键一致；绑了容量池的再计进容量池。defer 兜底：
-		// handler panic 时也会结束这次登记；正常路径下面会带着实际用量先结束，defer 就什么也不做。
-		capacityUpstream, _, _ := model.ResolveMappedModel(c.GetString("model_mapping"), relayInfo.OriginModelName)
+		// 与 setting.model_limits 的键一致；绑了容量池的再计进容量池。链的起点是选渠道时
+		// 定下的计数名（渠道只列了 gpt-5 时 gpt-5-high 也从 gpt-5 起），与调度器 Catalog
+		// 的池一致。defer 兜底：handler panic 时也会结束这次登记；正常路径下面会带着
+		// 实际用量先结束，defer 就什么也不做。
+		capacityUpstream, _, _ := model.ResolveMappedModel(c.GetString("model_mapping"), common.GetContextKeyString(c, constant.ContextKeyChannelCapacityModel))
 		capacityPoolID := 0
 		if channelSetting, ok := common.GetContextKeyType[dto.ChannelSettings](c, constant.ContextKeyChannelSetting); ok {
 			capacityPoolID = channelSetting.CapacityPoolFor(capacityUpstream)
@@ -448,13 +450,12 @@ func finishInputFor(c *gin.Context, info *relaycommon.RelayInfo, apiErr *types.N
 		CostMultiplier:         1,
 	}
 
-	// The cost multiplier is a <channel, model> attribute read from the channel
-	// setting the distributor refreshed for this attempt, keyed by the upstream
-	// (model-mapped) model name — that name is only final here, after the relay
-	// handler has applied the channel's model mapping. It never touches
-	// billing; the attempt log scales cost_actual with it.
-	if channelSetting, ok := common.GetContextKeyType[dto.ChannelSettings](c, constant.ContextKeyChannelSetting); ok {
-		in.CostMultiplier = channelSetting.CostMultiplierForModel(in.UpstreamModelName)
+	// 费用倍率在选定渠道时（SetupContextForSelectedChannel，每次尝试都会经过）按用户请求
+	// 一侧的模型名算好放在上下文里。这里不按 UpstreamModelName 查：那是映射后的上游名，
+	// 流式响应还会把它改成上游回报的模型名（比如带日期的快照名），会查不到。
+	// 倍率不参与计费，只乘 relay_attempts.cost_actual。
+	if multiplier, ok := common.GetContextKeyType[float64](c, constant.ContextKeyChannelCostMultiplier); ok && multiplier > 0 {
+		in.CostMultiplier = multiplier
 	}
 
 	if info.StreamStatus != nil {

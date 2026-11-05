@@ -128,6 +128,8 @@ export function skipReasonLabel(t: TFunction, reason: string): string {
       return t("Ruled out by the client's own reasoning settings")
     case 'unavailable':
       return t('Unavailable')
+    case 'scheduler_no_candidate':
+      return t('The scheduler has no channel that can take it right now')
     default:
       return reason
   }

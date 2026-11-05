@@ -383,6 +383,82 @@ func TestRunSchedulerShadowPreservesNoCandidateAfterFallback(t *testing.T) {
 	assert.True(t, schedulerCircuitAllows(time.Now()), "request-scoped rejection must not open the infrastructure circuit")
 }
 
+// 预览一次问所有候选，每个候选带自己的渠道范围、偏好渠道和按自己家族估的输入长度；
+// 请求级字段（策略、分组、workload）与正式调度相同；结果按顺序对应候选。
+func TestPreviewSchedulerAsksEveryTargetWithItsOwnScope(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	var request schedulerPreviewRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "/v1/preview", r.URL.Path)
+		require.Equal(t, "Bearer scheduler-test", r.Header.Get("Authorization"))
+		require.NoError(t, common.DecodeJson(r.Body, &request))
+		_, _ = w.Write([]byte(`{"results":[{"model":"a","status":"ok","channel_id":7},{"model":"b","status":"no_candidate"}]}`))
+	}))
+	defer server.Close()
+	ConfigureSchedulerClientForTest(SchedulerClientConfig{Enabled: true, Mode: "enforced", BaseURL: server.URL, Token: "scheduler-test", Timeout: time.Second, RuntimeHighWatermark: 0.75})
+	t.Cleanup(func() { ConfigureSchedulerClientForTest(SchedulerClientConfig{}) })
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"auto","messages":[{"role":"user","content":"hi"}]}`))
+	c.Set(common.RequestIdKey, "req-preview")
+	common.SetContextKey(c, constant.ContextKeySchedulerWorkload, "code.build")
+	common.SetContextKey(c, constant.ContextKeyTokenRoutingPreference, &dto.RoutingPreference{Mode: "price"})
+
+	results := PreviewScheduler(c, "default", []SchedulerPreviewTarget{
+		{Model: "a", AllowedChannelIDs: []int{7, 8}, PreferredChannelID: 8},
+		{Model: "b"},
+	})
+
+	assert.Equal(t, []SchedulerPreviewResult{{Status: SchedulerPreviewOK, ChannelID: 7}, {Status: SchedulerPreviewNoCandidate}}, results)
+	assert.Equal(t, "req-preview", request.RequestID)
+	assert.Equal(t, "default", request.Group)
+	assert.Equal(t, "code.build", request.Workload)
+	assert.Equal(t, map[string]any{"mode": "price", "runtime_high_watermark": 0.75}, request.Policy)
+	assert.Equal(t, []schedulerPreviewModel{
+		{Model: "a", AllowedChannelIDs: []int{7, 8}, PreferredChannelID: 8, EstimatedInputTokens: int(RoutingInputTokens(c, "a"))},
+		{Model: "b", AllowedChannelIDs: []int{}, EstimatedInputTokens: int(RoutingInputTokens(c, "b"))},
+	}, request.Models, "an empty scope is sent as [], never null")
+}
+
+// 预览失败只是退回原生估算：不计入熔断；旧调度器回 404 后一段时间内不再问；
+// 调度器不决定渠道（影子模式）时根本不问。
+func TestPreviewSchedulerFailuresNeverTouchTheCircuit(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	var calls atomic.Int32
+	status := http.StatusInternalServerError
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(status)
+	}))
+	defer server.Close()
+	configure := func(mode string) {
+		ConfigureSchedulerClientForTest(SchedulerClientConfig{Enabled: true, Mode: mode, BaseURL: server.URL, Token: "scheduler-test", Timeout: time.Second})
+	}
+	t.Cleanup(func() { ConfigureSchedulerClientForTest(SchedulerClientConfig{}) })
+	newContext := func() *gin.Context {
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"auto"}`))
+		return c
+	}
+	targets := []SchedulerPreviewTarget{{Model: "a", AllowedChannelIDs: []int{1}}}
+
+	configure("shadow")
+	assert.Nil(t, PreviewScheduler(newContext(), "default", targets))
+	assert.Zero(t, calls.Load(), "shadow mode lets new-api pick the channel, so there is nothing to preview")
+
+	configure("enforced")
+	for range 5 {
+		assert.Nil(t, PreviewScheduler(newContext(), "default", targets))
+	}
+	assert.True(t, schedulerCircuitClosed(), "failed previews never open the scheduler circuit")
+	assert.True(t, schedulerCircuitAllows(time.Now()))
+
+	status = http.StatusNotFound
+	before := calls.Load()
+	assert.Nil(t, PreviewScheduler(newContext(), "default", targets))
+	assert.Nil(t, PreviewScheduler(newContext(), "default", targets))
+	assert.Equal(t, before+1, calls.Load(), "an old scheduler without /v1/preview is not asked again right away")
+}
+
 func TestSchedulerCircuitRequiresTwoSuccessfulProbesToClose(t *testing.T) {
 	ConfigureSchedulerClientForTest(SchedulerClientConfig{})
 	now := time.Now()

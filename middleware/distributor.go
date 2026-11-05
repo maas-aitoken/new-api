@@ -174,16 +174,27 @@ func Distribute() func(c *gin.Context) {
 					pricer := helper.NewRoutingPricer(c, func(candidate string) int64 {
 						return service.RoutingInputTokens(c, candidate)
 					}, userSetting.AcceptUnsetRatioModel)
-					quotes := map[string]helper.RoutingQuote{}
-					quoteOf := func(candidate string) helper.RoutingQuote {
-						if quote, seen := quotes[candidate]; seen {
+					quotes := map[[2]string]helper.RoutingQuote{}
+					// quoteAt 是候选在某个计费分组下的报价（含分组倍率），按请求备忘。
+					quoteAt := func(candidate, billingGroup string) helper.RoutingQuote {
+						key := [2]string{candidate, billingGroup}
+						if quote, seen := quotes[key]; seen {
 							return quote
 						}
-						// 令牌分组是 auto 时，计费分组是第一个对该模型有可用渠道的自动分组，倍率因模型而异；
-						// 固定分组下所有候选的倍率相同，在归一化里抵消。
 						userGroup := common.GetContextKeyString(c, constant.ContextKeyUserGroup)
+						groupRatio, special := ratio_setting.GetGroupGroupRatio(userGroup, billingGroup)
+						if !special {
+							groupRatio = ratio_setting.GetGroupRatio(billingGroup)
+						}
+						quotes[key] = pricer.Quote(candidate, groupRatio)
+						return quotes[key]
+					}
+					// 令牌分组是 auto 时，计费分组是第一个对该模型有可用渠道的自动分组，倍率因模型而异；
+					// 固定分组下所有候选的倍率相同，在归一化里抵消。比价时再按首次会命中的分组重新报价（autoRouteCost）。
+					quoteOf := func(candidate string) helper.RoutingQuote {
 						billingGroup := usingGroup
 						if usingGroup == "auto" {
+							userGroup := common.GetContextKeyString(c, constant.ContextKeyUserGroup)
 							for _, group := range service.GetRequestAutoGroups(c, userGroup) {
 								if len(model.GetEnabledChannelIDsForGroupModel(group, candidate)) > 0 {
 									billingGroup = group
@@ -191,17 +202,12 @@ func Distribute() func(c *gin.Context) {
 								}
 							}
 						}
-						groupRatio, special := ratio_setting.GetGroupGroupRatio(userGroup, billingGroup)
-						if !special {
-							groupRatio = ratio_setting.GetGroupRatio(billingGroup)
-						}
-						quotes[candidate] = pricer.Quote(candidate, groupRatio)
-						return quotes[candidate]
+						return quoteAt(candidate, billingGroup)
 					}
 					channelsOf := func(candidate string) []int {
 						channelIDs, seen := channels[candidate]
 						if !seen {
-							channelIDs = usableChannelIDs(c, candidate, usingGroup, c.Request.URL.Path)
+							channelIDs = usableChannelIDs(c, candidate, usingGroup, c.Request.URL.Path, model.GetEnabledChannelIDsForGroupModel)
 							channels[candidate] = channelIDs
 						}
 						return channelIDs
@@ -234,16 +240,23 @@ func Distribute() func(c *gin.Context) {
 						refusals[key] = reason
 						return reason
 					}
+					serves := func(candidate string, ignoreClientReasoning bool) bool {
+						return refusal(candidate, ignoreClientReasoning) == ""
+					}
+					costs := autoRouteCost{c: c, usingGroup: usingGroup, gate: capabilityGate, serves: serves, channelsOf: channelsOf, quoteAt: quoteAt,
+						exclude: func(candidate, reason string) {
+							// 两种口径的备忘都记上，后面的兜底和最终解析都不会再选它。
+							refusals[candidate], refusals[candidate+"|auto-reasoning"] = reason, reason
+						}}
 					result, err := service.ResolveAutoModel(c, service.AutoCandidates{
-						Serves: func(candidate string, ignoreClientReasoning bool) bool {
-							return refusal(candidate, ignoreClientReasoning) == ""
-						},
+						Serves:   serves,
 						Why:      func(candidate string) string { return refusal(candidate, true) },
 						Channels: func(candidate string) []int { return channels[candidate] },
 						Price: func(candidate string) (float64, bool) {
 							quote := quoteOf(candidate)
 							return quote.PricePerMillion, quote.Kind == helper.RoutingPerToken
 						},
+						Costs: costs.estimate,
 					})
 					if capabilityGate != nil {
 						capabilityGate.LogSummary(c)
@@ -274,7 +287,7 @@ func Distribute() func(c *gin.Context) {
 		if !pinned && shouldSelectChannel {
 			usingGroup := common.GetContextKeyString(c, constant.ContextKeyUsingGroup)
 			var selectGroup string
-			allowedChannels := usableChannelIDs(c, modelRequest.Model, usingGroup, c.Request.URL.Path)
+			allowedChannels := usableChannelIDs(c, modelRequest.Model, usingGroup, c.Request.URL.Path, model.GetRoutableChannelIDsForGroupModel)
 			if capabilityGate != nil {
 				narrowed := capabilityGate.FilterChannels(c, modelRequest.Model, allowedChannels)
 				if len(allowedChannels) > 0 && len(narrowed) == 0 {
@@ -394,14 +407,18 @@ func Distribute() func(c *gin.Context) {
 // enabled channels of the group (or auto groups) that serve the model on this
 // request path. Scheduler must never rank a channel outside it, and the auto
 // router only picks models that have one.
-func usableChannelIDs(c *gin.Context, modelName, usingGroup, requestPath string) []int {
+// lookup 决定按什么口径找分组里的渠道：选定模型后的请求范围用
+// model.GetRoutableChannelIDsForGroupModel，与原生选路一致（带推理后缀的名字退到
+// 路由名）；auto 判断候选用 model.GetEnabledChannelIDsForGroupModel，强度变体只有
+// 渠道真的列了才算可用。
+func usableChannelIDs(c *gin.Context, modelName, usingGroup, requestPath string, lookup func(group, modelName string) []int) []int {
 	groups := []string{usingGroup}
 	if usingGroup == "auto" {
 		groups = service.GetRequestAutoGroups(c, common.GetContextKeyString(c, constant.ContextKeyUserGroup))
 	}
 	allowed := make(map[int]struct{})
 	for _, group := range groups {
-		for _, channelID := range model.GetEnabledChannelIDsForGroupModel(group, modelName) {
+		for _, channelID := range lookup(group, modelName) {
 			channel, err := model.CacheGetChannel(channelID)
 			if err != nil || channel == nil || channel.Status != common.ChannelStatusEnabled ||
 				!channelSupportsRequestPath(channel, requestPath, modelName) {
@@ -943,11 +960,16 @@ func SetupContextForSelectedChannel(c *gin.Context, channel *model.Channel, mode
 	common.SetContextKey(c, constant.ContextKeyChannelTag, channel.GetTag())
 	common.SetContextKey(c, constant.ContextKeyChannelType, channel.Type)
 	common.SetContextKey(c, constant.ContextKeyChannelCreateTime, channel.CreatedTime)
-	common.SetContextKey(c, constant.ContextKeyChannelSetting, channel.GetSetting())
+	channelSetting := channel.GetSetting()
+	common.SetContextKey(c, constant.ContextKeyChannelSetting, channelSetting)
+	// 费用倍率按用户请求一侧的模型名查（和计费同侧），在这里就算好：这时还没有映射，
+	// 请求名还是请求名；结束时再查，拿到的是映射后、甚至被流式响应改过的上游名。
+	common.SetContextKey(c, constant.ContextKeyChannelCostMultiplier,
+		channelSetting.CostMultiplierForModel(model.CostMultiplierModel(channel.GetModels(), modelName)))
 	common.SetContextKey(c, constant.ContextKeyChannelOtherSetting, channel.GetOtherSettings())
 	switch channel.Type {
 	case constant.ChannelTypeTaskPlugin:
-		c.Set("task_plugin_key", channel.GetSetting().TaskPluginKey)
+		c.Set("task_plugin_key", channelSetting.TaskPluginKey)
 	case constant.ChannelTypeNewAPI:
 		// The bound plugin verified above executes; ordinary requests through
 		// the same gateway channel carry no pinned plugin.
@@ -968,6 +990,7 @@ func SetupContextForSelectedChannel(c *gin.Context, channel *model.Channel, mode
 	}
 	common.SetContextKey(c, constant.ContextKeyChannelAutoBan, channel.GetAutoBan())
 	common.SetContextKey(c, constant.ContextKeyChannelModelMapping, channel.GetModelMapping())
+	common.SetContextKey(c, constant.ContextKeyChannelCapacityModel, model.ChannelCapacityModel(channel.GetModels(), channel.GetModelMapping(), modelName))
 	common.SetContextKey(c, constant.ContextKeyChannelStatusCodeMapping, channel.GetStatusCodeMapping())
 
 	key, index, newAPIError := channel.GetNextEnabledKey()

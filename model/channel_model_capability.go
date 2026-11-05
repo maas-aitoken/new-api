@@ -12,6 +12,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/service/capability"
+	"github.com/QuantumNous/new-api/setting/ratio_setting"
 
 	"gorm.io/gorm"
 )
@@ -368,12 +369,16 @@ type CapabilityTargetChannel struct {
 	Name       string `json:"name"`
 	Type       int    `json:"type"`
 	Configured bool   `json:"configured"`
-	// CostMultiplier 是渠道对该模型的费用倍率，0 表示未配置（按 1 处理）。
+	// CostMultiplier 是渠道对这一行模型名（用户请求的名字，映射之前）的费用倍率，
+	// 0 表示未配置（按 1 处理）。映射到同一上游的别名各有各的倍率，不共用。
 	CostMultiplier float64 `json:"cost_multiplier"`
 	// UpstreamModel 是该模型走完 model_mapping 链后真正发给上游的名字，
 	// ModelLimit 按它存放：指向同一上游的别名共用一份额度。
 	UpstreamModel string         `json:"upstream_model"`
 	ModelLimit    dto.ModelLimit `json:"model_limit"`
+	// SharedModels 是这个渠道里映射到同一个上游模型的其它模型名：它们和这一行共用额度，
+	// 倍率却各配各的。为空表示这一行的额度不和别的模型共用。
+	SharedModels []string `json:"shared_models,omitempty"`
 	// CapacityPoolId 不为 0 表示这个上游模型绑在容量池上，额度由池动态算出，
 	// ModelLimit 在绑定期间不生效；CapacityPoolName 是池名，池已被删时为空。
 	CapacityPoolId   int    `json:"capacity_pool_id"`
@@ -392,40 +397,44 @@ type CapabilityTarget struct {
 	Channels []CapabilityTargetChannel `json:"channels"`
 }
 
-// ChannelCostMultiplier 返回渠道对某个公开模型配置的费用倍率，未配置时返回 0。
-// 倍率的键是 model_mapping 映射后的上游模型名，所以这里先解析映射。
-func ChannelCostMultiplier(settingRaw, modelMappingRaw, publicModel string) float64 {
+// ChannelCostMultiplier 返回渠道对一个模型名配置的费用倍率，未配置时返回 0。
+// model 是用户请求一侧的名字（渠道模型列表里的名字），直接查表，不解析 model_mapping：
+// 倍率和计费同侧，按用户请求的名字算；按上游名算的是 RPM/TPM/并发额度（见 ChannelModelCapacityOf）。
+// 入参是 setting 原文，不走 Channel.GetSetting（它解析失败时会写库）。
+func ChannelCostMultiplier(settingRaw, model string) float64 {
 	setting := dto.ChannelSettings{}
 	if strings.TrimSpace(settingRaw) != "" {
 		if err := common.UnmarshalJsonStr(settingRaw, &setting); err != nil {
 			return 0
 		}
 	}
-	multiplier, ok := setting.CostMultiplierMap[resolveUpstreamModelName(modelMappingRaw, publicModel)]
+	multiplier, ok := setting.CostMultiplierMap[model]
 	if !ok || multiplier <= 0 || math.IsNaN(multiplier) || math.IsInf(multiplier, 0) {
 		return 0
 	}
 	return multiplier
 }
 
-// resolveUpstreamModelName 返回渠道实际向上游发送的模型名。
-func resolveUpstreamModelName(modelMappingRaw, publicModel string) string {
-	if strings.TrimSpace(modelMappingRaw) == "" {
-		return publicModel
+// CostMultiplierModel 返回一次请求落到这个渠道时，查费用倍率用的模型名。
+// 请求名就在渠道模型列表里时用它；否则这个渠道是按去掉推理档位等后缀的名字选中的
+// （选渠道时的同一个回退，见 GetRandomSatisfiedChannel），用那个名字，例如请求
+// gpt-5-high 落到只登记了 gpt-5 的渠道，就按 gpt-5 的倍率。两个都不在列表里
+// （比如令牌固定渠道时）就原样返回请求名，查不到按 1 算。
+// 记录 cost_actual 和 auto 估算都用它，所以两边查的是同一个键。
+func CostMultiplierModel(channelModels []string, requestModel string) string {
+	if slices.Contains(channelModels, requestModel) {
+		return requestModel
 	}
-	mapping := make(map[string]string)
-	if err := common.UnmarshalJsonStr(modelMappingRaw, &mapping); err != nil {
-		return publicModel
+	if matched := ratio_setting.RoutingMatchModelName(requestModel); slices.Contains(channelModels, matched) {
+		return matched
 	}
-	if upstream := strings.TrimSpace(mapping[publicModel]); upstream != "" {
-		return upstream
-	}
-	return publicModel
+	return requestModel
 }
 
-// SetChannelModelCostMultiplier 写入渠道对一个公开模型的费用倍率。
-// multiplier<=0 表示清除，回到未配置（按 1 处理）。倍率乘数只影响
-// relay_attempts 记录的成本，不参与计费。
+// SetChannelModelCostMultiplier 写入渠道对一个公开模型的费用倍率，键就是这个
+// 公开模型名（映射之前的名字），映射到同一上游的别名各存各的。
+// multiplier<=0 表示清除，回到未配置（按 1 处理）。倍率只影响 relay_attempts
+// 记录的成本和 auto 比较的成本，不参与计费。
 func SetChannelModelCostMultiplier(channelID int, publicModel string, multiplier float64) error {
 	publicModel = strings.TrimSpace(publicModel)
 	if channelID <= 0 || publicModel == "" {
@@ -436,12 +445,11 @@ func SetChannelModelCostMultiplier(channelID int, publicModel string, multiplier
 	}
 	err := DB.Transaction(func(tx *gorm.DB) error {
 		var row struct {
-			Models       string
-			ModelMapping *string
-			Setting      *string
+			Models  string
+			Setting *string
 		}
 		if err := lockForUpdate(tx).Model(&Channel{}).
-			Select("models", "model_mapping", "setting").
+			Select("models", "setting").
 			Where("id = ?", channelID).
 			Take(&row).Error; err != nil {
 			return fmt.Errorf("channel #%d not found", channelID)
@@ -458,18 +466,13 @@ func SetChannelModelCostMultiplier(channelID int, publicModel string, multiplier
 				return fmt.Errorf("invalid channel setting: %w", err)
 			}
 		}
-		modelMapping := ""
-		if row.ModelMapping != nil {
-			modelMapping = *row.ModelMapping
-		}
-		upstream := resolveUpstreamModelName(modelMapping, publicModel)
 		if multiplier > 0 {
 			if setting.CostMultiplierMap == nil {
 				setting.CostMultiplierMap = make(map[string]float64)
 			}
-			setting.CostMultiplierMap[upstream] = multiplier
+			setting.CostMultiplierMap[publicModel] = multiplier
 		} else {
-			delete(setting.CostMultiplierMap, upstream)
+			delete(setting.CostMultiplierMap, publicModel)
 			if len(setting.CostMultiplierMap) == 0 {
 				setting.CostMultiplierMap = nil
 			}
@@ -511,11 +514,12 @@ func GetCapabilityTargets(query CapabilityTargetQuery) ([]CapabilityTarget, int,
 		ID           int
 		Name         string
 		Type         int
+		Models       string
 		ModelMapping *string
 		Setting      *string
 	}
 	err := DB.Table("abilities").
-		Select("abilities.model as model, channels.id as id, channels.name as name, channels.type as type, channels.model_mapping as model_mapping, channels.setting as setting").
+		Select("abilities.model as model, channels.id as id, channels.name as name, channels.type as type, channels.models as models, channels.model_mapping as model_mapping, channels.setting as setting").
 		Joins("JOIN channels ON channels.id = abilities.channel_id").
 		Where("abilities.enabled = ? AND channels.status = ?", true, common.ChannelStatusEnabled).
 		Distinct().
@@ -537,6 +541,8 @@ func GetCapabilityTargets(query CapabilityTargetQuery) ([]CapabilityTarget, int,
 	for _, name := range exactNames {
 		names[name] = struct{}{}
 	}
+	// 每个渠道只解析一次映射：上游名 → 映射到它的模型名，用来列出共用额度的别名。
+	modelsByUpstream := make(map[int]map[string][]string)
 	for _, row := range rows {
 		names[row.Model] = struct{}{}
 		modelMapping := ""
@@ -547,14 +553,33 @@ func GetCapabilityTargets(query CapabilityTargetQuery) ([]CapabilityTarget, int,
 		if row.Setting != nil {
 			setting = *row.Setting
 		}
+		grouped, seen := modelsByUpstream[row.ID]
+		if !seen {
+			grouped = make(map[string][]string)
+			for _, name := range strings.Split(row.Models, ",") {
+				if name == "" {
+					continue
+				}
+				upstream, _, _ := ResolveMappedModel(modelMapping, name)
+				grouped[upstream] = append(grouped[upstream], name)
+			}
+			modelsByUpstream[row.ID] = grouped
+		}
 		capacity := ChannelModelCapacityOf(setting, modelMapping, row.Model)
+		var shared []string
+		for _, name := range grouped[capacity.UpstreamModel] {
+			if name != row.Model {
+				shared = append(shared, name)
+			}
+		}
 		channelsByModel[row.Model] = append(channelsByModel[row.Model], CapabilityTargetChannel{
 			ID:               row.ID,
 			Name:             row.Name,
 			Type:             row.Type,
-			CostMultiplier:   ChannelCostMultiplier(setting, modelMapping, row.Model),
+			CostMultiplier:   ChannelCostMultiplier(setting, row.Model),
 			UpstreamModel:    capacity.UpstreamModel,
 			ModelLimit:       capacity.Limit,
+			SharedModels:     shared,
 			CapacityPoolId:   capacity.CapacityPoolId,
 			CapacityPoolName: poolNames[capacity.CapacityPoolId],
 		})

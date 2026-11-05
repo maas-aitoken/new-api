@@ -58,6 +58,8 @@ email.binding.old_intro: "您的帳戶正在申請更換電子郵件地址，請
 email.binding.code: "驗證碼：<strong>{{.Code}}</strong>"
 email.binding.new_validity: "驗證碼 {{.Minutes}} 分鐘內有效。如果不是您本人操作，請勿將驗證碼告訴任何人。"
 email.binding.old_validity: "驗證碼 {{.Minutes}} 分鐘內有效。如果不是您本人操作，請勿將驗證碼告訴任何人，並聯絡管理員。"
+email.step_up.subject: "{{.SystemName}}安全驗證碼"
+email.step_up.intro: "您正在進行一項需要安全驗證的操作，請在頁面中輸入以下驗證碼。"
 email.security_notice.subject: "{{.SystemName}}帳戶安全提醒"
 email.security_notice.changed: "您的帳戶安全設定有變動：{{.Event}}。"
 email.security_notice.advice: "如果不是您本人操作，請開啟帳戶安全設定，登出其他工作階段，並聯絡管理員。"
