@@ -72,6 +72,7 @@ func runUsageAnalyticsDialectSuite(t *testing.T, dbType common.DatabaseType, mai
 		"organization dimensions":    TestGetUsageAnalyticsOrganizationDimensions,
 		"user quota trend":           TestGetUserQuotaTrendByDimension,
 		"org options":                TestGetUsageOrgOptionsListsDistinctPaths,
+		"user filter matching":       TestMatchUsageUserIdsByNameOrEmail,
 		"group by model channel":     TestGetUsageAnalyticsGroupByModelChannelJoinsChannelName,
 		"peak tpm":                   TestGetPeakTPMTakesHourlyMaxOfMinuteTotals,
 		"consume log columns":        TestRecordConsumeLogWritesExtendedQuotaDataColumns,

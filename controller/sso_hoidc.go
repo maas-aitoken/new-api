@@ -80,7 +80,7 @@ func SsoHoidcCallback(c *gin.Context) {
 	// Reporting line and org ids are left to the SSO user sync task.
 	user, err := service.ProvisionSsoUser(
 		strconv.Itoa(userInfo.Uid), userInfo.Email, userInfo.Name, userInfo.Avatar, userInfo.DepartmentTreePathStr,
-		"", "", 0, 0, 0, 0, 0, 0,
+		"", "", 0, 0, 0, 0, 0, nil,
 		common.HoidcAllowSignup,
 	)
 	if err != nil {

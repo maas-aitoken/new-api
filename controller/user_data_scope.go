@@ -11,8 +11,10 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// OrgPaths are granted as a whole; their people in MemberIds are not stored one by one.
 type userDataScopeRequest struct {
-	MemberIds []int `json:"member_ids"`
+	MemberIds []int    `json:"member_ids"`
+	OrgPaths  []string `json:"org_paths"`
 }
 
 // Only these fields leave the server; the SSO list also carries phone, bank and HR data.
@@ -112,12 +114,22 @@ func GetUserDataScope(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid user ID")
 		return
 	}
+	respondUserDataScope(c, managerId)
+}
+
+// respondUserDataScope reports everyone covered now and the granted departments.
+func respondUserDataScope(c *gin.Context, managerId int) {
 	memberIds, err := model.GetUserDataScopeMemberIds(managerId)
 	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
-	common.ApiSuccess(c, gin.H{"manager_id": managerId, "member_ids": memberIds})
+	orgPaths, err := model.GetUserDataScopeOrgPaths(managerId)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, gin.H{"manager_id": managerId, "member_ids": memberIds, "org_paths": orgPaths})
 }
 
 func UpdateUserDataScope(c *gin.Context) {
@@ -131,12 +143,11 @@ func UpdateUserDataScope(c *gin.Context) {
 		common.ApiErrorT(c, "Invalid parameters")
 		return
 	}
-	memberIds, err := model.ReplaceUserDataScope(managerId, req.MemberIds, c.GetInt("id"))
-	if err != nil {
+	if _, _, err := model.ReplaceUserDataScope(managerId, req.MemberIds, req.OrgPaths, c.GetInt("id")); err != nil {
 		common.ApiError(c, err)
 		return
 	}
-	common.ApiSuccess(c, gin.H{"manager_id": managerId, "member_ids": memberIds})
+	respondUserDataScope(c, managerId)
 }
 
 func DeleteUserDataScope(c *gin.Context) {

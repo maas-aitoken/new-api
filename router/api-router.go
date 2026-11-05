@@ -384,12 +384,14 @@ func SetApiRouter(router *gin.Engine) {
 
 		dataRoute := apiRouter.Group("/data")
 		dataRoute.GET("/", middleware.AdminAuth(), controller.GetAllQuotaDates)
-		dataRoute.GET("/analytics", middleware.AdminAuth(), controller.GetAdminUsageAnalytics)
+		// Cross-user analytics: the handlers limit non-administrators to the people they may see.
+		dataRoute.GET("/scope", middleware.UserAuth(), controller.GetUsageDataScope)
+		dataRoute.GET("/analytics", middleware.UserAuth(), controller.GetUsageAnalytics)
 		dataRoute.GET("/analytics/self", middleware.UserAuth(), controller.GetSelfUsageAnalytics)
-		dataRoute.GET("/org-options", middleware.AdminAuth(), controller.GetUsageOrgOptions)
+		dataRoute.GET("/org-options", middleware.UserAuth(), controller.GetUsageOrgOptions)
 		dataRoute.GET("/iself", middleware.AdminAuth(), controller.GetAdminIselfUsageAnalytics)
 		dataRoute.GET("/iself/self", middleware.UserAuth(), controller.GetSelfIselfUsageAnalytics)
-		dataRoute.GET("/peak-tpm", middleware.AdminAuth(), controller.GetPeakTPM)
+		dataRoute.GET("/peak-tpm", middleware.UserAuth(), controller.GetPeakTPM)
 		dataRoute.GET("/peak-tpm/self", middleware.UserAuth(), controller.GetSelfPeakTPM)
 		dataRoute.GET("/users", middleware.AdminAuth(), controller.GetQuotaDatesByUser)
 		dataRoute.GET("/self", middleware.UserAuth(), controller.GetUserQuotaDates)
