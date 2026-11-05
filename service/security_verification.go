@@ -21,6 +21,7 @@ const (
 	VerificationMethodPassword           = "password"
 	VerificationMethodOAuth              = "oauth"
 	VerificationMethodSession            = "session"
+	VerificationMethodEmail              = "email"
 	VerificationScopeChannelKeyRead      = "channel.key.read"
 	VerificationScopePasskeyRegister     = "passkey.register"
 	VerificationScopePasskeyDelete       = "passkey.delete"
@@ -342,7 +343,9 @@ func securityVerificationPolicy(scope string, state model.UserVerificationState)
 		}
 		if len(methods) == 0 {
 			if state.HoidcId != "" {
-				methods = []string{VerificationMethodOAuth}
+				// HOIDC is not an oauth.Provider, so these accounts verify with a
+				// code sent to their bound email address instead.
+				methods = []string{VerificationMethodEmail}
 			} else if state.HasPassword {
 				methods = []string{VerificationMethodPassword}
 			} else {
@@ -400,6 +403,21 @@ func GetVerificationRequirements(identity AuthIdentity, scope string) (*Verifica
 				VerificationScopeAdminUserTwoFADisable, VerificationScopeAdminUserBindingClear:
 				methods[i].Available, methods[i].Reason = false, "Password authentication is disabled."
 			}
+		}
+		if methods[i].Method == VerificationMethodEmail {
+			// Like OAuth, email verification is reserved for browser sign-ins.
+			if _, ok := model.ParseAccessTokenSessionID(identity.SessionID); ok {
+				methods[i].Available, methods[i].Reason = false, "Email verification requires a browser sign-in. Enable two-factor authentication or a Passkey to continue."
+				continue
+			}
+			user, err := model.GetUserById(identity.UserID, false)
+			if err != nil {
+				return nil, err
+			}
+			if model.NormalizeEmail(user.Email) == "" {
+				methods[i].Available, methods[i].Reason = false, "No email address is linked to this account."
+			}
+			continue
 		}
 		if methods[i].Method != VerificationMethodOAuth {
 			continue
@@ -610,7 +628,7 @@ func VerifySecurityInput(identity AuthIdentity, input VerificationInput) (*Secur
 		if err := VerifyTwoFactorCode(twoFA, input.Code); err != nil {
 			return nil, err
 		}
-	case VerificationMethodPasskey, VerificationMethodOAuth:
+	case VerificationMethodPasskey, VerificationMethodOAuth, VerificationMethodEmail:
 		return nil, ErrVerificationFlowRequired
 	default:
 		return nil, ErrProofMethod
