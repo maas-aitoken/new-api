@@ -6855,6 +6855,7 @@
     "This user account no longer exists.": "Эта учётная запись пользователя больше не существует.",
     "this user group": "эта группа пользователей",
     "This user has no active subscription to this plan": "У этого пользователя нет активной подписки на этот план",
+    "This user has no active subscription": "У этого пользователя нет активной подписки",
     "This user has no bindings": "У этого пользователя нет привязок",
     "This user is already a common user": "Этот пользователь уже является обычным пользователем",
     "This user is already an administrator": "Этот пользователь уже является администратором",

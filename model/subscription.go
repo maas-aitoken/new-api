@@ -758,6 +758,106 @@ func AdminBindSubscription(userId int, planId int, sourceNote string) (*common.M
 	return nil, nil
 }
 
+// AdminChangeUserSubscriptionPlan switches the user's current subscription to
+// planId in place; the used amount and end time stay.
+func AdminChangeUserSubscriptionPlan(userId int, planId int) (*common.Message, error) {
+	if userId <= 0 || planId <= 0 {
+		return nil, errors.New("invalid userId or planId")
+	}
+	plan, err := GetSubscriptionPlanById(planId)
+	if err != nil {
+		return nil, err
+	}
+	plan.NormalizeDefaults()
+	changedId := 0
+	groupChanged := false
+	err = DB.Transaction(func(tx *gorm.DB) error {
+		var userRow User
+		if err := lockForUpdate(tx).Select("id").Where("id = ?", userId).First(&userRow).Error; err != nil {
+			return err
+		}
+		var subs []UserSubscription
+		if err := activeUserSubscriptions(lockForUpdate(tx), userId, GetDBTimestamp()).Order("id asc").Find(&subs).Error; err != nil {
+			return err
+		}
+		current := currentSubscription(subs)
+		if current == nil {
+			return common.NewMessage("This user has no active subscription")
+		}
+		if current.PlanId == plan.Id {
+			return nil
+		}
+		previous, err := getSubscriptionPlanByIdTx(tx, current.PlanId)
+		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+			return err
+		}
+		changedId = current.Id
+		groupChanged, err = switchSubscriptionPlanTx(tx, current, previous, plan)
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	if changedId > 0 {
+		_, _ = getSubscriptionPlanInfoCache().DeleteMany([]string{subscriptionPlanInfoCacheKey(changedId)})
+	}
+	if groupChanged {
+		refreshSubscriptionUserGroupCache(userId, common.LogText("admin subscription change"))
+		return common.NewMessage("User group will be upgraded to {{group}}", map[string]any{"group": plan.UpgradeGroup}), nil
+	}
+	return nil, nil
+}
+
+// UserCurrentSubscription is a user's current subscription as the admin user list shows it.
+type UserCurrentSubscription struct {
+	UserId         int    `json:"user_id"`
+	SubscriptionId int    `json:"subscription_id"`
+	PlanId         int    `json:"plan_id"`
+	PlanTitle      string `json:"plan_title"`
+	AmountTotal    int64  `json:"amount_total"`
+	AmountUsed     int64  `json:"amount_used"`
+	EndTime        int64  `json:"end_time"`
+}
+
+// GetUsersCurrentSubscriptions returns the current subscription of each user who has one.
+func GetUsersCurrentSubscriptions(userIds []int) ([]UserCurrentSubscription, error) {
+	result := make([]UserCurrentSubscription, 0, len(userIds))
+	if len(userIds) == 0 {
+		return result, nil
+	}
+	var subs []UserSubscription
+	if err := billableSubscriptions(DB.Where("user_id IN ?", userIds), GetDBTimestamp()).Order("id asc").Find(&subs).Error; err != nil {
+		return nil, err
+	}
+	byUser := make(map[int][]UserSubscription)
+	planIds := make([]int, 0, len(subs))
+	for _, sub := range subs {
+		byUser[sub.UserId] = append(byUser[sub.UserId], sub)
+		planIds = append(planIds, sub.PlanId)
+	}
+	var plans []SubscriptionPlan
+	if len(planIds) > 0 {
+		if err := DB.Select("id", "title").Where("id IN ?", planIds).Find(&plans).Error; err != nil {
+			return nil, err
+		}
+	}
+	titles := make(map[int]string, len(plans))
+	for _, plan := range plans {
+		titles[plan.Id] = plan.Title
+	}
+	for _, userId := range userIds {
+		current := currentSubscription(byUser[userId])
+		if current == nil {
+			continue
+		}
+		result = append(result, UserCurrentSubscription{
+			UserId: userId, SubscriptionId: current.Id, PlanId: current.PlanId, PlanTitle: titles[current.PlanId],
+			AmountTotal: current.AmountTotal, AmountUsed: current.AmountUsed, EndTime: current.EndTime,
+		})
+	}
+	return result, nil
+}
+
 func calcSubscriptionBalanceQuota(priceAmount float64) (int, error) {
 	if priceAmount <= 0 {
 		return 0, nil

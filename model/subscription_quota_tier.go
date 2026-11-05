@@ -23,13 +23,17 @@ func IsQuotaTierSource(source string) bool {
 	return slices.Contains(quotaTierSources, source)
 }
 
-// activeUserSubscriptions scopes billable subscriptions; tier ones only while tiers are on.
-func activeUserSubscriptions(tx *gorm.DB, userId int, now int64) *gorm.DB {
-	tx = tx.Where("user_id = ? AND status = ? AND end_time > ?", userId, "active", now)
+// billableSubscriptions scopes active subscriptions; tier ones only while tiers are on.
+func billableSubscriptions(tx *gorm.DB, now int64) *gorm.DB {
+	tx = tx.Where("status = ? AND end_time > ?", "active", now)
 	if !operation_setting.IsQuotaTierEnabled() {
 		tx = tx.Where("(source IS NULL OR source NOT IN ?)", quotaTierSources)
 	}
 	return tx
+}
+
+func activeUserSubscriptions(tx *gorm.DB, userId int, now int64) *gorm.DB {
+	return billableSubscriptions(tx.Where("user_id = ?", userId), now)
 }
 
 // EnsureUserQuotaTier gives a user without a subscription the lowest enabled plan, with this

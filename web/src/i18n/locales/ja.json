@@ -6856,6 +6856,7 @@
     "This user account no longer exists.": "このユーザーアカウントは存在しません。",
     "this user group": "このユーザーグループ",
     "This user has no active subscription to this plan": "このユーザーにはこのプランの有効なサブスクリプションがありません",
+    "This user has no active subscription": "このユーザーには有効なサブスクリプションがありません",
     "This user has no bindings": "このユーザーには連携がありません",
     "This user is already a common user": "このユーザーは既に一般ユーザーです",
     "This user is already an administrator": "このユーザーは既に管理者です",

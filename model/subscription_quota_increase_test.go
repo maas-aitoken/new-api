@@ -53,6 +53,7 @@ func TestIncreaseUserSubscriptionQuota(t *testing.T) {
 				"keeps original group for expiry": testQuotaIncreaseKeepsOriginalGroupForExpiry,
 				"assigns the lowest tier":         testQuotaTierAssignsLowestTier,
 				"serves only auto past the quota": testQuotaTierServesOnlyAutoPastQuota,
+				"admin changes the plan in place": testAdminChangesSubscriptionPlanInPlace,
 			} {
 				operation_setting.SetQuotaTierEnabled(true)
 				// Plans of one case would join the tier ladder of the next.
@@ -320,4 +321,43 @@ func testQuotaTierServesOnlyAutoPastQuota(t *testing.T) {
 	_, err = PreConsumeUserSubscription("legacy", user.Id, "m", 0, 50, true)
 	require.EqualError(t, err, "subscription quota insufficient, need=50")
 	require.Error(t, PostConsumeUserSubscriptionDelta(bought.Id, 10))
+}
+
+func testAdminChangesSubscriptionPlanInPlace(t *testing.T) {
+	user := seedQuotaIncreaseUser(t, "admin-change-user")
+	other := User{Username: "admin-change-expired", Password: "unused-password-hash", AffCode: "aff-admin-change-expired",
+		Role: common.RoleCommonUser, Status: common.UserStatusEnabled, Group: "default"}
+	require.NoError(t, DB.Create(&other).Error)
+	v1 := seedQuotaIncreasePlan(t, SubscriptionPlan{Title: "v1", TotalAmount: 1000, QuotaResetPeriod: SubscriptionResetMonthly}, true)
+	v3 := seedQuotaIncreasePlan(t, SubscriptionPlan{Title: "v3", TotalAmount: 6000, QuotaResetPeriod: SubscriptionResetMonthly}, true)
+
+	_, err := AdminChangeUserSubscriptionPlan(user.Id, v3.Id)
+	require.Error(t, err)
+	assert.Equal(t, "This user has no active subscription", err.Error())
+
+	_, err = AdminBindSubscription(user.Id, v1.Id, "")
+	require.NoError(t, err)
+	first := activeQuotaIncreaseSubs(t, user.Id)[0]
+	require.NoError(t, DB.Model(&first).Update("amount_used", 800).Error)
+	_, err = AdminBindSubscription(other.Id, v3.Id, "")
+	require.NoError(t, err)
+	require.NoError(t, DB.Model(&UserSubscription{}).Where("user_id = ?", other.Id).Update("end_time", GetDBTimestamp()-1).Error)
+
+	current, err := GetUsersCurrentSubscriptions([]int{user.Id, other.Id})
+	require.NoError(t, err)
+	assert.Equal(t, []UserCurrentSubscription{{UserId: user.Id, SubscriptionId: first.Id, PlanId: v1.Id, PlanTitle: "v1",
+		AmountTotal: 1000, AmountUsed: 800, EndTime: first.EndTime}}, current)
+
+	// Up and back down: same row, used amount and end time kept.
+	for _, plan := range []SubscriptionPlan{v3, v1} {
+		_, err = AdminChangeUserSubscriptionPlan(user.Id, plan.Id)
+		require.NoError(t, err)
+		subs := activeQuotaIncreaseSubs(t, user.Id)
+		require.Len(t, subs, 1)
+		assert.Equal(t, first.Id, subs[0].Id)
+		assert.Equal(t, plan.Id, subs[0].PlanId)
+		assert.Equal(t, plan.TotalAmount, subs[0].AmountTotal)
+		assert.EqualValues(t, 800, subs[0].AmountUsed)
+		assert.Equal(t, first.EndTime, subs[0].EndTime)
+	}
 }

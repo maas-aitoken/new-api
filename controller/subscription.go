@@ -490,6 +490,61 @@ func AdminCreateUserSubscription(c *gin.Context) {
 	subscriptionChangeSuccess(c, msg)
 }
 
+// AdminChangeUserSubscriptionPlan switches a user's current subscription to another plan.
+func AdminChangeUserSubscriptionPlan(c *gin.Context) {
+	if !requirePaymentCompliance(c) {
+		return
+	}
+	userId, _ := strconv.Atoi(c.Param("id"))
+	if userId <= 0 {
+		common.ApiErrorT(c, "Invalid user ID")
+		return
+	}
+	var req AdminCreateUserSubscriptionRequest
+	if err := c.ShouldBindJSON(&req); err != nil || req.PlanId <= 0 {
+		common.ApiErrorT(c, "Invalid parameters")
+		return
+	}
+	msg, err := model.AdminChangeUserSubscriptionPlan(userId, req.PlanId)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	subscriptionChangeSuccess(c, msg)
+}
+
+const maxCurrentSubscriptionUsers = 200
+
+// AdminListCurrentSubscriptions takes user_ids=1,2,3 (one page of the user list).
+func AdminListCurrentSubscriptions(c *gin.Context) {
+	userIds := make([]int, 0)
+	seen := make(map[int]bool)
+	for part := range strings.SplitSeq(c.Query("user_ids"), ",") {
+		if strings.TrimSpace(part) == "" {
+			continue
+		}
+		id, err := strconv.Atoi(strings.TrimSpace(part))
+		if err != nil || id <= 0 {
+			common.ApiErrorT(c, "Invalid parameters")
+			return
+		}
+		if !seen[id] {
+			seen[id] = true
+			userIds = append(userIds, id)
+		}
+	}
+	if len(userIds) > maxCurrentSubscriptionUsers {
+		common.ApiErrorT(c, "Invalid parameters")
+		return
+	}
+	subs, err := model.GetUsersCurrentSubscriptions(userIds)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, subs)
+}
+
 func AdminResetUserSubscriptionsByPlan(c *gin.Context) {
 	userId, _ := strconv.Atoi(c.Param("id"))
 	if userId <= 0 {
