@@ -481,7 +481,7 @@ func TestPreviewSchedulerFailuresNeverTouchTheCircuit(t *testing.T) {
 }
 
 // 一个地址回 404（没有 /v1/preview，或前面的网关只放行 /v1/schedule）不影响问下一个地址；
-// 一次最多问 32 个候选，后面的标 over_limit，不会让调度器整批回 400。
+// 一次最多问 schedulerPreviewMaxModels 个候选，后面的标 over_limit，不会让调度器整批回 400。
 func TestPreviewSchedulerSkipsAnAddressWithoutPreviewAndCapsTheBatch(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	var gatewayHits, schedulerHits atomic.Int32

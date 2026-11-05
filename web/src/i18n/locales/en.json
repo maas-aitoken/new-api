@@ -6144,7 +6144,7 @@
     "The scheduler has not loaded this model yet": "The scheduler has not loaded this model yet",
     "The scheduler could not place this model": "The scheduler could not place this model",
     "The channel the scheduler gave cannot be priced here": "The channel the scheduler gave cannot be priced here",
-    "Beyond the 32 models one preview can ask about": "Beyond the 32 models one preview can ask about",
+    "Beyond the 64 models one preview can ask about": "Beyond the 64 models one preview can ask about",
     "Search": "Search",
     "Search by name or URL...": "Search by name or URL...",
     "Search by order number...": "Search by order number...",

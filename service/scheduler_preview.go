@@ -44,7 +44,8 @@ const (
 )
 
 // schedulerPreviewMaxModels 与调度器 sdk 的 MaxPreviewModels 一致，超过时调度器整批回 400。
-const schedulerPreviewMaxModels = 32
+// 不能比调度器的大：调大时先升级调度器，再升级 new-api。
+const schedulerPreviewMaxModels = 64
 
 // SchedulerPreview 是一次预览的结果。Status 说明问没问、为什么没拿到回答：为空表示没配调度器，
 // 不留痕；SchedulerPreviewAnswered 时 Results 与 targets 一一对应，其余情况 Results 为空，

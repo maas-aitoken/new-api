@@ -194,7 +194,7 @@ export function previewNoteLabel(t: TFunction, note: string): string {
     case 'unusable_channel':
       return t('The channel the scheduler gave cannot be priced here')
     case 'over_limit':
-      return t('Beyond the 32 models one preview can ask about')
+      return t('Beyond the 64 models one preview can ask about')
     default:
       return note
   }
