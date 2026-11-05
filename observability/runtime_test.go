@@ -355,6 +355,12 @@ func TestStripContextFieldsKeepsRequestParamsOnly(t *testing.T) {
 			want:   `{"model":"claude","thinking":{"type":"adaptive"},"metadata":{"session":"secret"}}`,
 		},
 		{
+			name:   "gemini",
+			format: types.RelayFormatGemini,
+			body:   `{"contents":[{"role":"user","parts":[{"text":"hi"}]}],"systemInstruction":{"parts":[{"text":"be brief"}]},"tools":[{"functionDeclarations":[]}],"generationConfig":{"temperature":0.7,"thinkingConfig":{"thinkingBudget":128}},"safetySettings":[{"category":"HARM_CATEGORY_HARASSMENT","threshold":"OFF"}]}`,
+			want:   `{"generationConfig":{"temperature":0.7,"thinkingConfig":{"thinkingBudget":128}},"safetySettings":[{"category":"HARM_CATEGORY_HARASSMENT","threshold":"OFF"}]}`,
+		},
+		{
 			name:   "context only leaves nothing",
 			format: types.RelayFormatOpenAI,
 			body:   `{"messages":[{"role":"user","content":"hi"}]}`,
@@ -362,8 +368,8 @@ func TestStripContextFieldsKeepsRequestParamsOnly(t *testing.T) {
 		},
 		{
 			name:   "unknown format",
-			format: types.RelayFormatGemini,
-			body:   `{"contents":[{"role":"user"}],"temperature":0.7}`,
+			format: types.RelayFormatEmbedding,
+			body:   `{"input":["hi"],"model":"text-embedding"}`,
 			want:   "",
 		},
 		{
@@ -494,6 +500,18 @@ func TestBuildLangfuseInputKeepsProtocolContextOnly(t *testing.T) {
 			format: types.RelayFormatClaude,
 			body:   `{"model":"claude","system":"be helpful","messages":[{"role":"user","content":"hi"}],"tools":[],"thinking":{"type":"adaptive"},"metadata":{"session":"secret"}}`,
 			want:   `{"system":"be helpful","messages":[{"role":"user","content":"hi"}],"tools":[]}`,
+		},
+		{
+			name:   "gemini",
+			format: types.RelayFormatGemini,
+			body:   `{"contents":[{"role":"user","parts":[{"text":"hi"}]}],"systemInstruction":{"parts":[{"text":"be brief"}]},"tools":[{"functionDeclarations":[]}],"generationConfig":{"temperature":0.7}}`,
+			want:   `{"contents":[{"role":"user","parts":[{"text":"hi"}]}],"systemInstruction":{"parts":[{"text":"be brief"}]},"tools":[{"functionDeclarations":[]}]}`,
+		},
+		{
+			name:   "gemini passthrough snake case",
+			format: types.RelayFormatGemini,
+			body:   `{"contents":[{"role":"user","parts":[{"text":"hi"}]}],"system_instruction":{"parts":[{"text":"be brief"}]}}`,
+			want:   `{"contents":[{"role":"user","parts":[{"text":"hi"}]}],"system_instruction":{"parts":[{"text":"be brief"}]}}`,
 		},
 	}
 	for _, tt := range tests {
@@ -821,6 +839,65 @@ func TestRecordStreamChunkRebuildsClaudeThinkingAndToolUse(t *testing.T) {
 		`[{"role":"assistant","content":"","reasoning_content":"let me think\n","tool_calls":[{"id":"toolu_1","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"SF\"}"}}]}]`,
 		attributeValue(spans[0].Attributes, "gen_ai.output.messages").AsString(),
 	)
+}
+
+func TestGeminiUpstreamExportsInputAndOutput(t *testing.T) {
+	newRuntime := func(t *testing.T) (*Runtime, *tracetest.InMemoryExporter) {
+		exporter := tracetest.NewInMemoryExporter()
+		provider := trace.NewTracerProvider(trace.WithSpanProcessor(trace.NewSimpleSpanProcessor(exporter)))
+		t.Cleanup(func() { require.NoError(t, provider.Shutdown(context.Background())) })
+		return &Runtime{
+			enabled:         true,
+			captureMode:     captureModeFull,
+			captureMaxBytes: 4096,
+			tracerProvider:  provider,
+			tracer:          provider.Tracer("test"),
+			propagator:      propagationTraceContextForTest(),
+		}, exporter
+	}
+	upstreamBody := `{"contents":[{"role":"user","parts":[{"text":"weather in SF?"}]}],"generationConfig":{"temperature":0.2}}`
+
+	t.Run("non-stream", func(t *testing.T) {
+		runtime, exporter := newRuntime(t)
+		info := &common.RelayInfo{RequestId: "req-gemini", OriginModelName: "gemini-test", RelayFormat: types.RelayFormatOpenAI, ChannelMeta: &common.ChannelMeta{ApiType: constant.APITypeGemini}}
+		ctx, span := runtime.StartLLMRequest(context.Background(), info, nil)
+		runtime.RecordInput(ctx, []byte(upstreamBody), types.RelayFormatGemini)
+		body := runtime.WrapResponseBody(ctx, io.NopCloser(strings.NewReader(`{"candidates":[{"content":{"role":"model","parts":[{"text":"checking","thought":true},{"text":"Sunny."},{"functionCall":{"id":"call_1","name":"get_weather","args":{"city":"SF"}}}]},"finishReason":"STOP","index":0}],"usageMetadata":{"promptTokenCount":4,"candidatesTokenCount":2,"totalTokenCount":6},"modelVersion":"gemini-test"}`)))
+		_, readErr := io.ReadAll(body)
+		require.NoError(t, readErr)
+		runtime.FinishLLM(ctx, span, nil, info)
+
+		spans := exporter.GetSpans()
+		require.Len(t, spans, 1)
+		require.JSONEq(t, `{"contents":[{"role":"user","parts":[{"text":"weather in SF?"}]}]}`, attributeValue(spans[0].Attributes, "gen_ai.input.messages").AsString())
+		require.JSONEq(t, `{"generationConfig":{"temperature":0.2}}`, attributeValue(spans[0].Attributes, "new_api.request.upstream").AsString())
+		require.JSONEq(t,
+			`[{"role":"assistant","content":"Sunny.","reasoning_content":"checking","tool_calls":[{"id":"call_1","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"SF\"}"}}]}]`,
+			attributeValue(spans[0].Attributes, "gen_ai.output.messages").AsString(),
+		)
+	})
+
+	// A Vertex AI channel prefers the Claude aggregator first, so the Gemini
+	// frames also prove that aggregator turns them down.
+	t.Run("stream", func(t *testing.T) {
+		runtime, exporter := newRuntime(t)
+		info := &common.RelayInfo{RequestId: "req-gemini-stream", OriginModelName: "gemini-test", RelayFormat: types.RelayFormatOpenAI, IsStream: true, ChannelMeta: &common.ChannelMeta{ApiType: constant.APITypeVertexAi}}
+		ctx, span := runtime.StartLLMRequest(context.Background(), info, nil)
+		runtime.RecordInput(ctx, []byte(upstreamBody), types.RelayFormatGemini)
+		runtime.RecordStreamChunk(ctx, `{"candidates":[{"content":{"role":"model","parts":[{"text":"checking","thought":true}]},"index":0}]}`)
+		runtime.RecordStreamChunk(ctx, `{"candidates":[{"content":{"role":"model","parts":[{"text":"Sunny"}]},"index":0}]}`)
+		runtime.RecordStreamChunk(ctx, `{"candidates":[{"content":{"role":"model","parts":[{"text":" today."}]},"index":0}]}`)
+		runtime.RecordStreamChunk(ctx, `{"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"id":"call_1","name":"get_weather","args":{"city":"SF"}}}]},"finishReason":"STOP","index":0}],"usageMetadata":{"promptTokenCount":4,"candidatesTokenCount":3,"totalTokenCount":7}}`)
+		runtime.FinishLLM(ctx, span, nil, info)
+
+		spans := exporter.GetSpans()
+		require.Len(t, spans, 1)
+		require.JSONEq(t, `{"contents":[{"role":"user","parts":[{"text":"weather in SF?"}]}]}`, attributeValue(spans[0].Attributes, "gen_ai.input.messages").AsString())
+		require.JSONEq(t,
+			`[{"role":"assistant","content":"Sunny today.","reasoning_content":"checking","tool_calls":[{"id":"call_1","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"SF\"}"}}]}]`,
+			attributeValue(spans[0].Attributes, "gen_ai.output.messages").AsString(),
+		)
+	})
 }
 
 // responsesAssistantOutputJSON is the compact semantic form recorded for an

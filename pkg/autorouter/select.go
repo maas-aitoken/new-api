@@ -80,7 +80,7 @@ func (t TierWeights) Blend(probabilities map[string]float64) ModeTrace {
 type Candidates struct {
 	// Available 按客户端原样的请求判定；兜底路径不碰客户端的推理字段，用它。
 	Available func(model string) bool
-	// Overridable 撇开客户端的推理字段判定；可信的判断自己定档位，用它。
+	// Overridable 撇开客户端的推理字段判定；档位由判断定下时 auto 会改写这些字段，用它。
 	Overridable func(model string) bool
 	// Price 返回模型的混合用户价（美元/百万 token）。ok 为 false 表示没有价格或按次计价，
 	// 没法按 token 比较。Price 为 nil 时不比价，按榜单顺序取第一个可用的。

@@ -751,7 +751,7 @@ func TestDistributeAutoWritesConvergedEffortIntoStoredBody(t *testing.T) {
 	}{
 		{
 			// 请求带 tools，渠道 3 不支持 tools，剩下的渠道最高声明到 high；难度要 xhigh，收敛到 high。
-			name: "chat: a trusted decision overrides the client's effort with the converged one",
+			name: "chat: a leaf task type overrides the client's effort with the converged one",
 			path: "/v1/chat/completions", taskType: "code.build", wantModel: "reasoner",
 			body:     `{"model":"auto","messages":` + chatMessages + `,"reasoning_effort":"low","tools":[` + chatTool + `]}`,
 			wantBody: `{"model":"reasoner","messages":` + chatMessages + `,"reasoning_effort":"high","tools":[` + chatTool + `]}`,
@@ -763,7 +763,7 @@ func TestDistributeAutoWritesConvergedEffortIntoStoredBody(t *testing.T) {
 			wantBody: `{"model":"no-think","messages":` + chatMessages + `}`,
 		},
 		{
-			name: "chat: without a trusted decision the client's effort is kept",
+			name: "chat: without a decision the client's effort is kept",
 			path: "/v1/chat/completions", wantModel: "reasoner",
 			body:     `{"model":"auto","messages":` + chatMessages + `,"reasoning_effort":"low"}`,
 			wantBody: `{"model":"reasoner","messages":` + chatMessages + `,"reasoning_effort":"low"}`,
@@ -843,7 +843,7 @@ func TestDistributeAutoPicksByQualityAndUserPrice(t *testing.T) {
 	pool := map[int][]string{1: {"opus-x"}, 2: {"sonnet-x"}, 3: {"ghost-x"}}
 	body := `{"model":"auto","messages":[{"role":"user","content":"fix the bug"}]}`
 
-	t.Run("a trusted decision takes the cheaper of the close models and skips the unpriced one", func(t *testing.T) {
+	t.Run("a leaf task type takes the cheaper of the close models and skips the unpriced one", func(t *testing.T) {
 		prepare(t, pool, []string{"opus-x"})
 		t.Setenv("JEV_ENDPOINT", fakeJevFor(t, "code.build"))
 		_, originalModel, recorder := serveAutoRoutingRequest(t, "/v1/chat/completions", 9801, body)

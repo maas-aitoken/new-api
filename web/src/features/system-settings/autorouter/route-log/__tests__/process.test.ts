@@ -22,7 +22,7 @@ import { routeProcessSteps } from '../process'
 import type { RouteLogDetail, RouteTrace } from '../types'
 
 const request = { human_turns: 1, text_runes: 12 }
-const trust = { profiles: ['code.build'] }
+const validity = { profiles: ['code.build'] }
 const ladder = [{ profile: 'code.build', outcome: 'first_available' }]
 const effort = { difficulty: 2, base: 'medium', threshold: 0.5 }
 const continuation = {
@@ -47,29 +47,29 @@ test.each([
   ['no detail at all', null, ['result']],
   ['only the summary the usage log keeps', { result: { model: 'coder' } }, ['result']],
   [
-    'a live classification that was trusted',
-    detailOf({ judgment: 'live', trust, ladder, effort }),
-    ['request', 'judgment', 'trust', 'selection', 'effort', 'result'],
+    'a live classification with a valid answer',
+    detailOf({ judgment: 'live', validity, ladder, effort }),
+    ['request', 'judgment', 'validity', 'selection', 'effort', 'result'],
   ],
   [
     'a cached classification checked against the previous task',
-    detailOf({ judgment: 'cache', trust, continuation, ladder, effort }),
-    ['request', 'judgment', 'trust', 'continuation', 'selection', 'effort', 'result'],
+    detailOf({ judgment: 'cache', validity, continuation, ladder, effort }),
+    ['request', 'judgment', 'validity', 'continuation', 'selection', 'effort', 'result'],
   ],
   [
-    'a classifier failure, whose untrusted answer still decided the route',
+    'a classifier failure, which leaves no decision to route by',
     detailOf({
       judgment: 'live_failed',
-      trust: { reason: 'no_decision' },
+      validity: { error: 'no_decision' },
       ladder,
     }),
-    ['request', 'judgment', 'trust', 'selection', 'result'],
+    ['request', 'judgment', 'validity', 'selection', 'result'],
   ],
   [
-    'a background request, which is never classified and so never trusted',
+    'a background request, which is never classified and so has no validity check',
     detailOf({
       judgment: 'auxiliary',
-      trust: { reason: 'no_decision' },
+      validity: { error: 'no_decision' },
       ladder,
     }),
     ['request', 'judgment', 'selection', 'result'],
@@ -86,23 +86,23 @@ test.each([
   ],
   [
     'an adaptive request that compared quality and price shows how its cost weight was judged, right before the selection',
-    detailOf({ judgment: 'live', trust, mode, continuation, ladder: comparedLadder, effort }),
-    ['request', 'judgment', 'trust', 'continuation', 'mode', 'selection', 'effort', 'result'],
+    detailOf({ judgment: 'live', validity, mode, continuation, ladder: comparedLadder, effort }),
+    ['request', 'judgment', 'validity', 'continuation', 'mode', 'selection', 'effort', 'result'],
   ],
   [
     'an adaptive request that kept the previous model never used its cost weight',
-    detailOf({ judgment: 'cache', trust, mode, continuation, ladder: [{ outcome: 'inherited' }], effort }),
-    ['request', 'judgment', 'trust', 'continuation', 'selection', 'effort', 'result'],
+    detailOf({ judgment: 'cache', validity, mode, continuation, ladder: [{ outcome: 'inherited' }], effort }),
+    ['request', 'judgment', 'validity', 'continuation', 'selection', 'effort', 'result'],
   ],
   [
     'an adaptive request that took the first servable model never used it either',
-    detailOf({ judgment: 'live', trust, mode, ladder, effort }),
-    ['request', 'judgment', 'trust', 'selection', 'effort', 'result'],
+    detailOf({ judgment: 'live', validity, mode, ladder, effort }),
+    ['request', 'judgment', 'validity', 'selection', 'effort', 'result'],
   ],
   [
     'a fixed preference leaves no mode, so none is shown even when it compared',
-    detailOf({ judgment: 'live', trust, ladder: comparedLadder, effort }),
-    ['request', 'judgment', 'trust', 'selection', 'effort', 'result'],
+    detailOf({ judgment: 'live', validity, ladder: comparedLadder, effort }),
+    ['request', 'judgment', 'validity', 'selection', 'effort', 'result'],
   ],
 ])('%s lists exactly the steps it went through', (_name, detail, expected) => {
   expect(routeProcessSteps(detail as RouteLogDetail | null)).toEqual(expected)

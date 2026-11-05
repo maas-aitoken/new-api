@@ -39,9 +39,10 @@ export function EffortStep(props: {
   const { t } = useTranslation()
   const effort = props.effort
   const result = props.result
+  // In the order the router applies them: the previous effort first, then the benefit.
   const adjustments = [
-    effort.upgraded && t('Raised one step by the larger-model benefit'),
     effort.floored && t('Held at the previous effort'),
+    effort.upgraded && t('Raised one step by the larger-model benefit'),
   ].filter((note): note is string => Boolean(note))
   const rows: FactRow[] = [
     [t('Difficulty'), effort.difficulty],
