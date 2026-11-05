@@ -164,6 +164,34 @@ func TestBuildSchedulerCatalogIncludesModelMappingSourceAlias(t *testing.T) {
 	}
 }
 
+// 客户端发带推理后缀的名字、渠道只列了基础名时，原生选路会退到路由名；Catalog 也要有
+// 这个渠道的端点，否则调度器加载不到这个模型。
+func TestBuildSchedulerCatalogServesSuffixedModelsLikeNativeRouting(t *testing.T) {
+	channels := []*model.Channel{
+		{Id: 1, Type: constant.ChannelTypeOpenAI, Key: "k", Status: common.ChannelStatusEnabled, Models: "gpt-5"},
+		{Id: 2, Type: constant.ChannelTypeOpenAI, Key: "k", Status: common.ChannelStatusEnabled, Models: "gpt-5-high"},
+		{Id: 3, Type: constant.ChannelTypeOpenAI, Key: "k", Status: common.ChannelStatusEnabled, Models: "other"},
+	}
+	endpointChannels := func(requested string) []int {
+		catalog, err := BuildSchedulerCatalogFromChannels(requested, channels, nil)
+		require.NoError(t, err, requested)
+		ids := make([]int, 0, len(catalog.Endpoints))
+		for _, endpoint := range catalog.Endpoints {
+			assert.Equal(t, requested, endpoint.Model, "端点模型保持请求名，调度器按它比对")
+			ids = append(ids, endpoint.ChannelID)
+		}
+		return ids
+	}
+
+	assert.Equal(t, []int{1}, endpointChannels("gpt-5-low"))
+	assert.Equal(t, []int{1}, endpointChannels("gpt-5@effort:high"))
+	assert.Equal(t, []int{1}, endpointChannels("gpt-5"))
+	// Catalog 不分分组，列了原名和列了路由名的渠道都放进来，调度器只在 allowed_channel_ids 里选。
+	assert.Equal(t, []int{1, 2}, endpointChannels("gpt-5-high"))
+	_, err := BuildSchedulerCatalogFromChannels("gpt-6-high", channels, nil)
+	assert.Error(t, err)
+}
+
 func TestBuildSchedulerCatalogRejectsUnknownModel(t *testing.T) {
 	channel := &model.Channel{Id: 1, Type: constant.ChannelTypeOpenAI, Key: "secret", Status: common.ChannelStatusEnabled, Models: "other-model"}
 	if _, err := BuildSchedulerCatalogFromChannels("missing-model", []*model.Channel{channel}, nil); err == nil {

@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/QuantumNous/new-api/model"
 	channelcapacity "github.com/QuantumNous/new-api/pkg/channel_capacity"
 	"github.com/QuantumNous/new-api/relaykit/dto"
+	"github.com/QuantumNous/new-api/setting/ratio_setting"
 )
 
 // SchedulerCatalog is the credential-free Catalog contract consumed by the
@@ -143,13 +145,17 @@ func BuildSchedulerCatalogFromChannels(modelName string, channels []*model.Chann
 	return SchedulerCatalog{Version: "new-api-" + hex.EncodeToString(digest[:8]), Model: modelName, Endpoints: endpoints}, nil
 }
 
+// channelSupportsModel 判断渠道能不能服务这个请求模型：列了原名，或者列了路由名
+// （去掉 @ 修饰和推理强度后缀），与原生选路一致。客户端发 gpt-5-high、渠道只列了
+// gpt-5 时也要有端点，否则调度器拿不到这个模型的 Catalog。Catalog 不分分组，
+// 同一模型多列几个渠道无妨，调度器只在 allowed_channel_ids 里选。
 func channelSupportsModel(channel *model.Channel, requested string) bool {
-	for _, candidate := range channelModelNames(channel) {
-		if candidate == requested {
-			return true
-		}
+	names := channelModelNames(channel)
+	if slices.Contains(names, requested) {
+		return true
 	}
-	return false
+	routing := ratio_setting.RoutingMatchModelName(requested)
+	return routing != requested && slices.Contains(names, routing)
 }
 
 func channelModelNames(channel *model.Channel) []string {
