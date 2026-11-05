@@ -141,9 +141,9 @@ type AutoCandidates struct {
 	// Price 返回候选模型的混合用户价（美元/百万 token）；ok 为 false 表示没有价格
 	// 或按次计价，没法按 token 比较。为 nil 时不比价，按榜单顺序取第一个可用的。
 	Price func(name string) (price float64, ok bool)
-	// Costs 给候选带里的模型估算比较成本（用户价 × 首次会落到的渠道的费用倍率），
-	// 见 autorouter.Candidates.Costs。为 nil 时只比较用户价。
-	Costs func(names []string, effort string, ignoreClientReasoning bool) map[string]autorouter.Cost
+	// Costs 给候选带里的模型估算比较成本（用户价 × 首次会落到的渠道的费用倍率），连同这次问调度器
+	// 预览的结果，见 autorouter.Candidates.Costs。为 nil 时只比较用户价。
+	Costs func(names []string, effort string, ignoreClientReasoning bool) (map[string]autorouter.Cost, *autorouter.PreviewOutcome)
 }
 
 // ResolveAutoModel picks the model and reasoning effort for an "auto" request.

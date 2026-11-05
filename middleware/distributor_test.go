@@ -1066,12 +1066,35 @@ func TestDistributeAutoAsksTheSchedulerPreviewWhenItDecides(t *testing.T) {
 		assert.Equal(t, []int{1, 2}, allowed["pick-x"], "the preview gets the same channel scope as the real schedule")
 		assert.Equal(t, []string{"code.build", "code.build"}, workloads, "preview and schedule carry the same workload")
 
+		assert.Equal(t, &autorouter.PreviewOutcome{Status: service.SchedulerPreviewAnswered}, result.Pick.Preview)
+
 		previewChannel["pick-x"] = 2
 		result, _, recorder = serveAutoRoutingResult(t, 9832, body)
 		require.Equal(t, http.StatusNoContent, recorder.Code, recorder.Body.String())
 		pick := pickOf(t, result)
 		assert.Equal(t, 1.0, pick.CostMultiplier, "the scheduler would pick channel 2, which has no discount")
 		assert.Equal(t, 2, pick.ChannelID)
+	})
+
+	t.Run("a channel new-api cannot price at is estimated natively and says why", func(t *testing.T) {
+		prepare(t)
+		// 预览说 ok 却没给 new-api 认得的渠道（previewChannel 没设，回 channel_id 0）。
+		result, _, recorder := serveAutoRoutingResult(t, 9837, body)
+		require.Equal(t, http.StatusNoContent, recorder.Code, recorder.Body.String())
+		pick := pickOf(t, result)
+		assert.Equal(t, autorouter.CostSourceExpected, pick.CostSource)
+		assert.Equal(t, previewUnusableChannel, pick.Preview)
+	})
+
+	t.Run("a model the scheduler has not loaded says so and is estimated natively", func(t *testing.T) {
+		prepare(t)
+		previewStatus["pick-x"] = "not_cached"
+		result, _, recorder := serveAutoRoutingResult(t, 9836, body)
+		require.Equal(t, http.StatusNoContent, recorder.Code, recorder.Body.String())
+		pick := pickOf(t, result)
+		assert.Equal(t, autorouter.CostSourceExpected, pick.CostSource)
+		assert.Equal(t, service.SchedulerPreviewNotCached, pick.Preview)
+		assert.Equal(t, &autorouter.PreviewOutcome{Status: service.SchedulerPreviewAnswered}, result.Pick.Preview)
 	})
 
 	t.Run("a model the scheduler cannot place is never picked", func(t *testing.T) {
@@ -1096,6 +1119,8 @@ func TestDistributeAutoAsksTheSchedulerPreviewWhenItDecides(t *testing.T) {
 		pick := pickOf(t, result)
 		assert.InDelta(t, 0.625, pick.CostMultiplier, 1e-9)
 		assert.Equal(t, autorouter.CostSourceExpected, pick.CostSource)
+		assert.Empty(t, pick.Preview, "the whole preview went unanswered; the reason is on the pick")
+		assert.Equal(t, &autorouter.PreviewOutcome{Status: service.SchedulerPreviewUnsupported}, result.Pick.Preview)
 	})
 }
 

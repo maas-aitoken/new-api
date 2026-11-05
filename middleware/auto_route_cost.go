@@ -46,7 +46,7 @@ type autoCostTarget struct {
 	filters []taskdto.ChannelFilter
 }
 
-func (a autoRouteCost) estimate(names []string, effort string, ignoreClientReasoning bool) map[string]autorouter.Cost {
+func (a autoRouteCost) estimate(names []string, effort string, ignoreClientReasoning bool) (map[string]autorouter.Cost, *autorouter.PreviewOutcome) {
 	serves := func(name string) bool { return a.serves(name, ignoreClientReasoning) }
 	groups := []string{a.usingGroup}
 	if a.usingGroup == "auto" {
@@ -71,36 +71,51 @@ func (a autoRouteCost) estimate(names []string, effort string, ignoreClientReaso
 	previewed := a.previewScheduler(targets)
 	estimates := make(map[string]autorouter.Cost, len(targets))
 	for i, target := range targets {
-		if previewed != nil {
-			switch previewed[i].Status {
+		// note 是调度器回答了、却没用上它给这个模型的答案的原因，跟着原生估算写进留痕。
+		note := ""
+		if previewed.Status == service.SchedulerPreviewAnswered {
+			switch result := previewed.Results[i]; result.Status {
 			case service.SchedulerPreviewOK:
-				if cost, ok := a.costAtChannel(groups, target, previewed[i].ChannelID); ok {
+				if cost, ok := a.costAtChannel(groups, target, result.ChannelID); ok {
 					estimates[target.name] = cost
 					continue
 				}
+				note = previewUnusableChannel
 			case service.SchedulerPreviewNoCandidate:
 				// 正式调度对这个模型一定 503（池耗尽、超额度或容量未知），比较时跳过它。
 				a.exclude(target.serving, autorouter.ReasonSchedulerNoCandidate)
 				estimates[target.name] = autorouter.Cost{Excluded: true, Reason: autorouter.ReasonSchedulerNoCandidate}
 				continue
+			default:
+				note = result.Status
 			}
 		}
 		if cost, ok := a.nativeCost(groups, target); ok {
+			cost.Preview = note
 			estimates[target.name] = cost
 		}
 	}
-	return estimates
+	if previewed.Status == "" {
+		return estimates, nil
+	}
+	return estimates, &autorouter.PreviewOutcome{Status: previewed.Status, HTTPStatus: previewed.HTTPStatus}
 }
 
+// previewUnusableChannel 是调度器给了渠道、new-api 却没法按它报价时记的原因（渠道不在缓存里、
+// 不在任何分组里服务这个模型，或在那个分组里按次计价），这个模型按原生规则估算。
+const previewUnusableChannel = "unusable_channel"
+
 // previewScheduler 问调度器每个候选会落到哪个渠道，参数与正式调度相同（会话亲和的渠道作为
-// preferred_channel_id）。这次请求不由调度器决定渠道、或预览不可用时返回 nil。
-func (a autoRouteCost) previewScheduler(targets []autoCostTarget) []service.SchedulerPreviewResult {
-	if len(targets) == 0 || !service.SchedulerEnforcedForRequest(a.c) {
-		return nil
-	}
+// preferred_channel_id）。问不问、为什么没拿到回答由 service.PreviewScheduler 判断；这次请求
+// 不由调度器决定渠道时它不发请求，这里也就不必先查会话亲和。
+func (a autoRouteCost) previewScheduler(targets []autoCostTarget) service.SchedulerPreview {
+	decided := service.SchedulerEnforcedForRequest(a.c)
 	requests := make([]service.SchedulerPreviewTarget, len(targets))
 	for i, target := range targets {
 		requests[i] = service.SchedulerPreviewTarget{Model: target.serving, AllowedChannelIDs: target.allowed}
+		if !decided {
+			continue
+		}
 		if preferred, found := service.PeekPreferredChannelByAffinity(a.c, target.serving, a.usingGroup); found {
 			requests[i].PreferredChannelID = preferred
 		}
