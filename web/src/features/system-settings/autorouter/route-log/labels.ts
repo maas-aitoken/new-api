@@ -128,6 +128,8 @@ export function skipReasonLabel(t: TFunction, reason: string): string {
       return t("Ruled out by the client's own reasoning settings")
     case 'unavailable':
       return t('Unavailable')
+    case 'scheduler_no_candidate':
+      return t('The scheduler has no channel that can take it right now')
     default:
       return reason
   }
@@ -139,8 +141,8 @@ export function trustReasonLabel(t: TFunction, reason: string): string {
       return t('The classifier gave no answer')
     case 'no_difficulty':
       return t('The answer carries no difficulty')
-    case 'low_confidence':
-      return t('No task type or class is likely enough')
+    case 'unknown_task':
+      return t('The task type is unknown')
     default:
       return reason
   }

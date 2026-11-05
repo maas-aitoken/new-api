@@ -1,9 +1,6 @@
 package autorouter
 
-import (
-	"maps"
-	"slices"
-)
+import "slices"
 
 // AutoModel is the model name a client sends to let the gateway pick one.
 const AutoModel = "auto"
@@ -32,9 +29,6 @@ type Policy struct {
 	// UpgradeBenefit is the larger_model_benefit at or above which the effort
 	// goes up one rung.
 	UpgradeBenefit float64
-	// MinTaskTypeProbability is the task type probability below which the
-	// classification is not trusted and the previous route is inherited.
-	MinTaskTypeProbability float64
 	// ContinuationTaskChange is the task_change below which the request
 	// continues the previous task: the model stays, so the prompt cache
 	// survives, and the effort may go up but never down.
@@ -80,13 +74,13 @@ func (r Route) Fallback() string {
 	}
 }
 
-// trustedProfiles returns the rankings a decision may route by, most specific
-// first: the chosen task type and its class when the task type is trusted,
-// else the most probable class when that is trusted. The class of a task type
-// sums the probabilities of its task types. Nil means the decision is not
-// trusted; trust says how it came out either way.
-func trustedProfiles(decision *Decision, policy Policy) ([]string, Trust) {
-	trust := Trust{Threshold: policy.MinTaskTypeProbability}
+// trustedProfiles returns the rankings a decision routes by, most specific
+// first: the task type jev chose, which is its most probable one, then that
+// task type's class. Nil means the decision is not trusted: jev gave no
+// answer, no difficulty, or a task type outside every class such as unknown.
+// trust says how it came out either way.
+func trustedProfiles(decision *Decision) ([]string, Trust) {
+	var trust Trust
 	if decision == nil {
 		trust.Reason = TrustNoDecision
 		return nil, trust
@@ -95,28 +89,12 @@ func trustedProfiles(decision *Decision, policy Policy) ([]string, Trust) {
 		trust.Reason = TrustNoDifficulty
 		return nil, trust
 	}
-	if class := TaskClass(decision.TaskType); class != "" && decision.TaskTypeProbability >= policy.MinTaskTypeProbability {
-		trust.Profiles = []string{decision.TaskType, class}
-		return trust.Profiles, trust
-	}
-	classes := map[string]float64{}
-	for taskType, probability := range decision.TaskTypeProbabilities {
-		if class := TaskClass(taskType); class != "" {
-			classes[class] += probability
-		}
-	}
-	trust.Classes = classes
-	best, bestProbability := "", 0.0
-	for _, class := range slices.Sorted(maps.Keys(classes)) {
-		if classes[class] > bestProbability {
-			best, bestProbability = class, classes[class]
-		}
-	}
-	if best == "" || bestProbability < policy.MinTaskTypeProbability {
-		trust.Reason = TrustLowConfidence
+	class := TaskClass(decision.TaskType)
+	if class == "" {
+		trust.Reason = TrustUnknownTask
 		return nil, trust
 	}
-	trust.Profiles = []string{best}
+	trust.Profiles = []string{decision.TaskType, class}
 	return trust.Profiles, trust
 }
 
@@ -150,14 +128,14 @@ func SelectRoute(decision *Decision, previous *Route, policy Policy, candidates 
 		trace.Mode = &mode
 	}
 	available, overridable := candidates.Available, candidates.Overridable
-	profiles, trust := trustedProfiles(decision, policy)
+	profiles, trust := trustedProfiles(decision)
 	trace.Trust = &trust
 	if profiles == nil {
 		if previous != nil && ModelAvailable(previous.Model, available) {
 			trace.Ladder = append(trace.Ladder, LadderStep{Profile: previous.Profile, Outcome: OutcomeInherited, Model: previous.Model})
 			return *previous, true, true, nil
 		}
-		model, picked, found := policy.choose(DefaultProfile, policy.DefaultModels, available, candidates, trace)
+		model, picked, found := policy.choose(DefaultProfile, policy.DefaultModels, available, false, policy.DefaultEffort, candidates, trace)
 		return Route{Model: model, Effort: policy.DefaultEffort}, true, found, picked
 	}
 
@@ -186,11 +164,11 @@ func SelectRoute(decision *Decision, previous *Route, policy Policy, candidates 
 	}
 
 	for _, profile := range profiles {
-		if model, picked, found := policy.choose(profile, policy.TaskModels[profile], overridable, candidates, trace); found {
+		if model, picked, found := policy.choose(profile, policy.TaskModels[profile], overridable, true, effort, candidates, trace); found {
 			return Route{Profile: profile, Model: model, Effort: effort}, false, true, picked
 		}
 	}
-	model, picked, found := policy.choose(DefaultProfile, policy.DefaultModels, overridable, candidates, trace)
+	model, picked, found := policy.choose(DefaultProfile, policy.DefaultModels, overridable, true, effort, candidates, trace)
 	return Route{Model: model, Effort: effort}, false, found, picked
 }
 
@@ -198,13 +176,19 @@ func SelectRoute(decision *Decision, previous *Route, policy Policy, candidates 
 // compares quality and price under the policy's preference; otherwise, or when no
 // scored model is servable, it takes the first available model in list order.
 // picked is set only for the comparison. Every call adds a step to trace.
-func (p Policy) choose(profile string, models []string, available func(string) bool, candidates Candidates, trace *Trace) (string, *Pick, bool) {
+// trusted 表示 available 撇开了客户端的推理字段（可信判断走 overridable），effort 是这一步
+// 的期望档位，两者一起交给 Candidates.Costs，让主机按同一口径找出服务请求的模型名和渠道。
+func (p Policy) choose(profile string, models []string, available func(string) bool, trusted bool, effort string, candidates Candidates, trace *Trace) (string, *Pick, bool) {
 	step := LadderStep{Profile: profile, Models: len(models), Outcome: OutcomeNone}
 	var picked *Pick
 	model, found := "", false
 	if scores := p.TaskScores[profile]; len(scores) > 0 && candidates.Price != nil {
 		servable := func(name string) bool { return ModelAvailable(name, available) }
-		pick, ok := pickByQualityCost(models, scores, p.CostWeight, servable, candidates.Price, candidates.Why)
+		var costs func([]string) map[string]Cost
+		if candidates.Costs != nil {
+			costs = func(names []string) map[string]Cost { return candidates.Costs(names, effort, trusted) }
+		}
+		pick, ok := pickByQualityCost(models, scores, p.CostWeight, servable, candidates.Price, costs, candidates.Why)
 		step.Skipped, step.SkippedMore = pick.skipped, pick.skippedMore
 		if ok {
 			picked, model, found = &pick, pick.Chosen, true

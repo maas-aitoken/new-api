@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { getRouteApi } from '@tanstack/react-router'
+import { getRouteApi, Link } from '@tanstack/react-router'
 import type { ColumnDef } from '@tanstack/react-table'
 import type { TFunction } from 'i18next'
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
@@ -62,7 +62,10 @@ import {
 import { getChannelTypeLabel } from '@/features/channels/lib/channel-utils'
 import { useDebounce } from '@/hooks'
 import { useTableUrlState } from '@/hooks/use-table-url-state'
+import { toIntlLocale } from '@/i18n/languages'
+import { formatCompactNumber } from '@/lib/format'
 import { getServerErrorMessage } from '@/lib/server-error-message'
+import { cn } from '@/lib/utils'
 
 import {
   deleteChannelModelCapability,
@@ -72,8 +75,17 @@ import {
   saveChannelModelCostMultiplier,
 } from '../api'
 import { getNameRuleConfig } from '../constants'
+import { useChannelModelCapacity } from '../hooks/use-channel-model-capacity'
 import { capabilityTargetsQueryKeys } from '../lib'
-import type { CapabilityTarget, CapabilityTargetChannel } from '../types'
+import type {
+  CapabilityTarget,
+  CapabilityTargetChannel,
+  ChannelModelCapacity,
+} from '../types'
+import {
+  ChannelModelCapacityLine,
+  ChannelModelLimitInputs,
+} from './channel-model-limits'
 
 const route = getRouteApi('/_authenticated/models/$section')
 
@@ -334,6 +346,14 @@ function CapabilityChannelList(props: {
   onSelect: (channel: CapabilityTargetChannel) => void
 }) {
   const { t } = useTranslation()
+  const channelIds = props.target.channels.map((channel) => channel.id)
+  const capacityQuery = useChannelModelCapacity(
+    props.target.model_name,
+    channelIds
+  )
+  const capacityByChannel = new Map(
+    (capacityQuery.data?.items ?? []).map((item) => [item.channel_id, item])
+  )
   if (props.target.channels.length === 0) {
     return (
       <p className='text-muted-foreground text-sm'>
@@ -350,6 +370,26 @@ function CapabilityChannelList(props: {
           statusLabel = t('No declaration')
         } else if (channel.configured) {
           statusLabel = t('Narrowed')
+        }
+        // 额度按映射后的上游名存（网关控制侧），映射到同一上游的几个模型共用；倍率不共用。
+        const sharedModels = channel.shared_models ?? []
+        let upstreamNote = ''
+        if (sharedModels.length > 0) {
+          upstreamNote = t(
+            'Upstream {{model}}; limits shared with {{models}}',
+            {
+              model: channel.upstream_model,
+              models: sharedModels.join(', '),
+            }
+          )
+        } else if (
+          channel.upstream_model &&
+          channel.upstream_model !== props.target.model_name
+        ) {
+          upstreamNote = t(
+            'Upstream {{model}}; aliases of the same upstream share these limits',
+            { model: channel.upstream_model }
+          )
         }
         return (
           <li
@@ -388,10 +428,90 @@ function CapabilityChannelList(props: {
                 </Button>
               )}
             </div>
+            {channel.capacity_pool_id ? (
+              <CapacityPoolFollowNote
+                channel={channel}
+                capacity={capacityByChannel.get(channel.id)}
+              />
+            ) : (
+              <ChannelModelLimitInputs
+                channel={channel}
+                modelName={props.target.model_name}
+              />
+            )}
+            {upstreamNote ? (
+              <div
+                className='text-muted-foreground truncate text-xs'
+                title={upstreamNote}
+              >
+                {upstreamNote}
+              </div>
+            ) : null}
+            <ChannelModelCapacityLine
+              capacity={capacityByChannel.get(channel.id)}
+            />
           </li>
         )
       })}
+      {capacityQuery.isError ? (
+        <li className='text-muted-foreground text-xs'>
+          {t('Live usage is unavailable right now.')}
+        </li>
+      ) : null}
+      {capacityQuery.data && !capacityQuery.data.shared ? (
+        <li className='text-muted-foreground text-xs'>
+          {t('Redis is not configured, so live usage reflects only this node.')}
+        </li>
+      ) : null}
     </ul>
+  )
+}
+
+/**
+ * 绑在容量池上的 <渠道, 模型>：额度由资源池页的容量池按账号数和余量动态算出，
+ * 这里只读，下面的用量行显示整个池的数，这一行补上成员自己的用量。
+ */
+function CapacityPoolFollowNote(props: {
+  channel: CapabilityTargetChannel
+  capacity?: ChannelModelCapacity
+}) {
+  const { t, i18n } = useTranslation()
+  const locale = toIntlLocale(i18n.resolvedLanguage || i18n.language)
+  const pool = props.capacity?.capacity_pool
+  let sourceLabel = ''
+  if (pool?.exhausted) {
+    sourceLabel = t('Exhausted')
+  } else if (pool?.source === 'dynamic') {
+    sourceLabel = t('Dynamic limit')
+  } else if (pool) {
+    sourceLabel = t('Floor limit')
+  }
+  return (
+    <div className='text-muted-foreground flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-xs'>
+      <span className='truncate'>
+        {t('Follows capacity pool {{name}}', {
+          name:
+            props.channel.capacity_pool_name ||
+            `#${props.channel.capacity_pool_id}`,
+        })}
+      </span>
+      {sourceLabel ? (
+        <span className={cn(pool?.exhausted && 'text-destructive')}>
+          {sourceLabel}
+        </span>
+      ) : null}
+      {pool ? (
+        <span className='tabular-nums'>
+          {t('This channel: RPM {{rpm}}, in flight {{inFlight}}', {
+            rpm: formatCompactNumber(pool.member_rpm_used, locale),
+            inFlight: pool.member_in_flight,
+          })}
+        </span>
+      ) : null}
+      <Link to='/resource-pools' className='text-primary hover:underline'>
+        {t('Manage on the Resource Pools page')}
+      </Link>
+    </div>
   )
 }
 
@@ -481,6 +601,12 @@ function ChannelCostMultiplierInput(props: {
           role='alert'
         >
           {error}
+        </span>
+      ) : null}
+      {/* 倍率按这一行的模型名存（和计费同侧），只有和别的模型共用额度时才需要点明这一点。 */}
+      {!error && (props.channel.shared_models ?? []).length > 0 ? (
+        <span className='truncate' title={props.modelName}>
+          {t('Only for {{model}}', { model: props.modelName })}
         </span>
       ) : null}
     </label>

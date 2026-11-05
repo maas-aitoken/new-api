@@ -814,6 +814,62 @@ func TestChannelSettingsValidateCostMultiplier(t *testing.T) {
 	}
 }
 
+func TestChannelSettingsModelLimits(t *testing.T) {
+	var setting ChannelSettings
+	require.NoError(t, json.Unmarshal([]byte(`{"model_limits":{"gpt-5":{"rpm":60,"tpm":100000,"max_concurrency":8}}}`), &setting))
+	assert.Equal(t, ModelLimit{RPM: 60, TPM: 100000, MaxConcurrency: 8}, setting.ModelLimitFor("gpt-5"))
+	assert.Equal(t, ModelLimit{}, setting.ModelLimitFor("other"), "未配置的模型返回零值，即全不限")
+	assert.True(t, setting.ModelLimitFor("other").IsZero())
+	require.NoError(t, setting.ValidateModelLimits())
+
+	// 没有额度时不输出 model_limits 键，旧渠道的 setting JSON 不变。
+	encoded, err := json.Marshal(ChannelSettings{})
+	require.NoError(t, err)
+	assert.NotContains(t, string(encoded), "model_limits")
+
+	tests := []struct {
+		name    string
+		limits  map[string]ModelLimit
+		wantErr string
+	}{
+		{name: "blank model", limits: map[string]ModelLimit{" ": {RPM: 1}}, wantErr: "blank model name"},
+		{name: "negative rpm", limits: map[string]ModelLimit{"m": {RPM: -1}}, wantErr: "rpm must be between"},
+		{name: "tpm over cap", limits: map[string]ModelLimit{"m": {TPM: MaxModelLimitValue + 1}}, wantErr: "tpm must be between"},
+		{name: "negative concurrency", limits: map[string]ModelLimit{"m": {MaxConcurrency: -2}}, wantErr: "max_concurrency must be between"},
+		{name: "cap is allowed", limits: map[string]ModelLimit{"m": {RPM: MaxModelLimitValue}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := (&ChannelSettings{ModelLimits: tt.limits}).ValidateModelLimits()
+			if tt.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+		})
+	}
+}
+
+func TestChannelSettingsCapacityPools(t *testing.T) {
+	var setting ChannelSettings
+	require.NoError(t, json.Unmarshal([]byte(`{"capacity_pools":{"claude-sonnet-4":3}}`), &setting))
+	assert.Equal(t, 3, setting.CapacityPoolFor("claude-sonnet-4"))
+	assert.Equal(t, 0, setting.CapacityPoolFor("other"), "没绑定的上游模型返回 0")
+	require.NoError(t, setting.ValidateCapacityPools())
+
+	encoded, err := json.Marshal(ChannelSettings{})
+	require.NoError(t, err)
+	assert.NotContains(t, string(encoded), "capacity_pools", "没有绑定时不输出这个键")
+
+	err = (&ChannelSettings{CapacityPools: map[string]int{" ": 1}}).ValidateCapacityPools()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "blank model name")
+	err = (&ChannelSettings{CapacityPools: map[string]int{"m": 0}}).ValidateCapacityPools()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "positive pool id")
+}
+
 func TestChannelOtherSettingsValidateToolLossPolicy(t *testing.T) {
 	require.NoError(t, (*ChannelOtherSettings)(nil).ValidateToolLossPolicy())
 	require.NoError(t, (&ChannelOtherSettings{}).ValidateToolLossPolicy())

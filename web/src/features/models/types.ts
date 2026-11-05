@@ -80,14 +80,76 @@ export interface Vendor {
   updated_time: number
 }
 
+/**
+ * <渠道, 上游模型> 的额度，每项 0 或缺省表示不限。额度按整个渠道合计，
+ * 网关只统计用量，执行准入的是调度器。
+ */
+export interface ChannelModelLimit {
+  rpm?: number
+  tpm?: number
+  max_concurrency?: number
+}
+
 /** 能力设置页的模型 → 渠道清单。 */
 export interface CapabilityTargetChannel {
   id: number
   name: string
   type: number
   configured: boolean
-  /** 渠道对该模型的费用倍率；0 表示未配置（按 1 处理）。 */
+  /**
+   * 渠道对这一行模型名（用户请求的名字，映射之前）的费用倍率；0 表示未配置（按 1 处理）。
+   * 映射到同一上游的别名各配各的，不共用。
+   */
   cost_multiplier: number
+  /** 走完 model_mapping 链后真正发给上游的模型名，额度按它存放。 */
+  upstream_model: string
+  model_limit: ChannelModelLimit
+  /** 这个渠道里映射到同一上游模型的其它模型名：和这一行共用额度，倍率不共用。 */
+  shared_models?: string[]
+  /**
+   * 不为 0 表示这个上游模型绑在资源池页的容量池上：额度由池动态算出，
+   * model_limit 在绑定期间不生效，只能在资源池页移除。池已被删时名字为空。
+   */
+  capacity_pool_id: number
+  capacity_pool_name: string
+}
+
+/** 一个 <渠道, 上游模型> 此刻的用量与剩余量。 */
+export interface ChannelModelCapacity {
+  channel_id: number
+  model: string
+  upstream_model: string
+  pool_id: string
+  limit: ChannelModelLimit
+  rpm_used: number
+  /** 在途请求只含输入估算，完成后才补上输出。 */
+  tpm_used: number
+  in_flight: number
+  /** 每项 = max(额度-用量, 0)；不限时为 null。 */
+  remaining: {
+    rpm: number | null
+    tpm: number | null
+    concurrency: number | null
+  }
+  /** 绑了容量池时，上面的额度、用量和剩余是整个池的；这里是池信息和成员自己的用量。 */
+  capacity_pool?: {
+    id: number
+    name: string
+    /** dynamic：动态额度；floor：还没算出或已过期，用保底额度。 */
+    source: 'dynamic' | 'floor'
+    exhausted: boolean
+    computed_at: number
+    member_rpm_used: number
+    member_tpm_used: number
+    member_in_flight: number
+  }
+}
+
+export interface ChannelModelCapacityResult {
+  items: ChannelModelCapacity[]
+  /** false 表示没配 Redis，用量只反映处理这次查询的节点。 */
+  shared: boolean
+  window_seconds: number
 }
 
 export interface CapabilityTarget {

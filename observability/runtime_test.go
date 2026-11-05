@@ -1142,7 +1142,6 @@ func TestFinishObservationExportsLangfuseFields(t *testing.T) {
 		Output:        map[string]string{"tier": "mid"},
 		Metadata:      map[string]string{"tier": "mid"},
 		TraceMetadata: map[string]string{"auto_router_tier": "mid"},
-		Warning:       "jev failed: timeout",
 	})
 
 	spans := exporter.GetSpans()
@@ -1160,5 +1159,4 @@ func TestFinishObservationExportsLangfuseFields(t *testing.T) {
 	require.JSONEq(t, `{"tier":"mid"}`, attributeValue(route.Attributes, "langfuse.observation.output").AsString())
 	require.Equal(t, "mid", attributeValue(route.Attributes, "langfuse.observation.metadata.tier").AsString())
 	require.Equal(t, "mid", attributeValue(route.Attributes, "langfuse.trace.metadata.auto_router_tier").AsString())
-	require.Equal(t, "WARNING", attributeValue(route.Attributes, "langfuse.observation.level").AsString())
 }

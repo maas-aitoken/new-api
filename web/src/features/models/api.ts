@@ -38,6 +38,7 @@ import type {
   ListDeploymentsResponse,
   CapabilityTargetsPage,
   ChannelModelCapabilityDetail,
+  ChannelModelCapacityResult,
 } from './types'
 
 // ============================================================================
@@ -280,6 +281,34 @@ export async function saveChannelModelCostMultiplier(data: {
       skipErrorHandler: true,
     }
   )
+  return res.data
+}
+
+export async function saveChannelModelLimit(data: {
+  channel_id: number
+  model: string
+  rpm: number
+  tpm: number
+  max_concurrency: number
+}): Promise<{ success: boolean; message?: string }> {
+  const res = await api.put('/api/channel-model-capabilities/limit', data, {
+    skipBusinessError: true,
+    skipErrorHandler: true,
+  })
+  return res.data
+}
+
+export async function getChannelModelCapacity(params: {
+  model: string
+  channel_ids: number[]
+}): Promise<{
+  success: boolean
+  data?: ChannelModelCapacityResult
+  message?: string
+}> {
+  const res = await api.get('/api/channel-model-capabilities/capacity', {
+    params: { model: params.model, channel_ids: params.channel_ids.join(',') },
+  })
   return res.data
 }
 

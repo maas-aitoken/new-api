@@ -76,7 +76,7 @@ const routed: RouteLog = {
     trace: {
       request: { protocol: 'anthropic', human_turns: 2, text_runes: 80 },
       judgment: 'live',
-      trust: { threshold: 0.5, profiles: ['code.build', 'code'] },
+      trust: { profiles: ['code.build', 'code'] },
       effort: { difficulty: 3, base: 'high', threshold: 0.5, benefit: 0.2 },
       ladder: [
         {
@@ -150,6 +150,109 @@ test('the model that was chosen is marked in the comparison, and a better-ranked
   ).toBeVisible()
   expect(screen.getByText('opus')).toBeVisible()
   expect(screen.getByText('and 3 more')).toBeVisible()
+})
+
+test('a comparison by platform cost shows the multiplier of each candidate, where it came from and the compared cost', async () => {
+  mockLog({
+    ...routed,
+    detail: {
+      ...routed.detail,
+      result: {
+        ...routed.detail?.result,
+        pick: {
+          chosen: 'sonnet',
+          weight: 0.07,
+          band: [
+            {
+              model: 'sonnet',
+              score: 0.95,
+              price: 4,
+              cost_multiplier: 0.25,
+              cost: 1,
+              channel_id: 12,
+              channels: 1,
+              cost_source: 'scheduler',
+              discount: 0,
+              utility: 0.95,
+            },
+            {
+              model: 'haiku',
+              score: 0.93,
+              price: 1.5,
+              cost_multiplier: 0.8,
+              cost: 1.2,
+              channels: 2,
+              cost_source: 'expected',
+              discount: 0.07,
+              utility: 0.86,
+            },
+          ],
+        },
+      },
+    },
+  })
+  renderDrawer({})
+
+  expect(
+    await screen.findByRole('columnheader', { name: 'Cost multiplier' })
+  ).toBeVisible()
+  expect(
+    screen.getByRole('columnheader', { name: 'Compared cost' })
+  ).toBeVisible()
+  const chosenRow = screen.getByText('Chosen').closest('tr') as HTMLElement
+  expect(within(chosenRow).getByText('× 0.2500')).toBeVisible()
+  expect(
+    within(chosenRow).getByText('Scheduler picks channel #12')
+  ).toBeVisible()
+  const otherRow = screen.getByText('haiku').closest('tr') as HTMLElement
+  expect(within(otherRow).getByText('Expected over 2 channels')).toBeVisible()
+  expect(
+    screen.getByText(/The multiplier never changes what the user is billed/)
+  ).toBeVisible()
+})
+
+test('a model the scheduler could not place says so in the skipped list', async () => {
+  mockLog({
+    ...routed,
+    detail: {
+      ...routed.detail,
+      trace: {
+        ...routed.detail!.trace!,
+        ladder: [
+          {
+            profile: 'code.build',
+            models: 3,
+            outcome: 'compared',
+            model: 'sonnet',
+            skipped: [
+              { model: 'opus', score: 0.97, reason: 'scheduler_no_candidate' },
+            ],
+          },
+        ],
+      },
+    },
+  })
+  renderDrawer({})
+
+  expect(
+    await screen.findByText(
+      'The scheduler has no channel that can take it right now',
+      { exact: false }
+    )
+  ).toBeVisible()
+})
+
+test('a comparison by user price alone keeps the original columns', async () => {
+  mockLog(routed)
+  renderDrawer({})
+
+  await screen.findByText('Chosen')
+  expect(
+    screen.queryByRole('columnheader', { name: 'Cost multiplier' })
+  ).not.toBeInTheDocument()
+  expect(
+    screen.queryByText(/The multiplier never changes what the user is billed/)
+  ).not.toBeInTheDocument()
 })
 
 test('a request no model could serve shows the failure and the reasons by count', async () => {
@@ -228,7 +331,7 @@ test('a continued request names the previous model and says its effort was held'
       trace: {
         request: { human_turns: 3, text_runes: 20, previous_runes: 30, truncated: true },
         judgment: 'cache',
-        trust: { threshold: 0.5, profiles: ['code.build'] },
+        trust: { profiles: ['code.build'] },
         continuation: { previous: 'coder', task_change: 0.2, threshold: 0.5, continued: true },
         effort: { difficulty: 1, base: 'low', threshold: 0.5, floored: true, benefit: 0.1 },
       },
@@ -328,7 +431,7 @@ test('an untrusted classification says why and that the previous route is kept',
       trace: {
         request: { human_turns: 1, text_runes: 9 },
         judgment: 'live_failed',
-        trust: { reason: 'no_decision', threshold: 0.5 },
+        trust: { reason: 'no_decision' },
         ladder: [{ profile: 'general', models: 2, outcome: 'first_available', model: 'general' }],
       },
     },
@@ -342,6 +445,30 @@ test('an untrusted classification says why and that the previous route is kept',
     screen.getByText('An untrusted answer keeps the previous route, or uses the default models.')
   ).toBeVisible()
   expect(screen.getByText('First servable model in list order')).toBeVisible()
+})
+
+test('an unknown task type says so and keeps the previous route', async () => {
+  mockLog({
+    ...logItem,
+    task_type: 'unknown',
+    source: 'inherit',
+    detail: {
+      result: { resolved_model: 'coder', model: 'coder', effort: 'high', source: 'inherit' },
+      trace: {
+        request: { human_turns: 2, text_runes: 2, previous_runes: 30 },
+        judgment: 'live',
+        trust: { reason: 'unknown_task' },
+        ladder: [{ profile: 'code.build', outcome: 'inherited', model: 'coder' }],
+      },
+    },
+  })
+  renderDrawer({})
+
+  expect(await screen.findByText('The task type is unknown')).toBeVisible()
+  expect(
+    screen.getByText('An untrusted answer keeps the previous route, or uses the default models.')
+  ).toBeVisible()
+  expect(screen.getByText('Kept the previous route')).toBeVisible()
 })
 
 const tiers = { capability: 0, balanced: 0.07, cost: 0.3 }
@@ -369,7 +496,7 @@ function adaptiveLog(mode: RouteTraceMode): RouteLog {
       trace: {
         request: { protocol: 'chat', human_turns: 1, text_runes: 30 },
         judgment: 'live',
-        trust: { threshold: 0.5, profiles: ['code.build'] },
+        trust: { profiles: ['code.build'] },
         mode,
         ladder: [{ profile: 'code.build', models: 2, outcome: 'compared', model: 'haiku' }],
       },

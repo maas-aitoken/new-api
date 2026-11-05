@@ -60,39 +60,33 @@ export interface SchedulerMonitor {
       metric_count?: number
       expired?: boolean
     }
+    // known/stale 是读到 / 没读到计数池用量的端点数。
     runtime?: { known_endpoints?: number; stale_endpoints?: number }
-    health?: {
-      available?: number
-      degraded?: number
-      exhausted?: number
-      error?: number
-    }
     endpoints?: SchedulerMonitorEndpoint[]
   }
 }
 
+// 每个渠道一个端点。用量是 new-api 计数池最近 60 秒的数（按尝试计，含失败和重试），
+// 调度器准入和排序用的也是这组数；同一计数池的端点显示同一组数。
 export interface SchedulerMonitorEndpoint {
   endpoint_id: string
   channel_id: number
-  key_index: number
   provider?: string
   model?: string
   enabled?: boolean
-  health?: string
-  runtime_known?: boolean
-  // rpm_used/tpm_used are success-scoped (real passthrough) and drive load_ratio.
-  // rpm_attempts/tpm_attempts are the attempt-scoped counters used by admission.
-  rpm_used?: number
-  tpm_used?: number
-  rpm_attempts?: number
-  tpm_attempts?: number
+  // 计数池的生效额度（容量池有动态额度时是动态额度），缺省表示不限。
   rpm_capacity?: number
   tpm_capacity?: number
-  inflight?: number
-  success_rate?: number
-  error_rate?: number
+  max_concurrency?: number
+  // 用量对生效额度的比例，取 RPM、TPM、并发里最满的一项；额度全不限时为空。
   load_ratio?: number
-  updated_at?: string
+  capacity_pool_id?: string
+  pool_rpm_used?: number
+  pool_tpm_used?: number
+  pool_inflight?: number
+  // 资源池页容量池（cp-<id>）：额度是 new-api 发布的动态额度；耗尽时调度器不再选它。
+  pool_dynamic_limit?: boolean
+  pool_exhausted?: boolean
   profiles?: Record<string, { score?: number; gate_tier: number }>
 }
 

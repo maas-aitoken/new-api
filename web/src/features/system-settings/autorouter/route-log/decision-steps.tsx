@@ -43,9 +43,6 @@ import type {
 export function TrustStep(props: { trust: RouteTraceTrust }) {
   const { t } = useTranslation()
   const trust = props.trust
-  const classes = Object.entries(trust.classes ?? {})
-    .sort(([, a], [, b]) => b - a)
-    .map(([name, probability]) => `${name} ${formatScore(probability)}`)
   const trusted = !trust.reason
 
   return (
@@ -54,17 +51,6 @@ export function TrustStep(props: { trust: RouteTraceTrust }) {
         tone={trusted ? 'success' : 'warning'}
         label={trusted ? t('Trusted') : trustReasonLabel(t, trust.reason ?? '')}
       />
-      <Facts
-        rows={[[t('Confidence threshold'), formatScore(trust.threshold)]]}
-      />
-      {classes.length > 0 && (
-        <>
-          <p className='text-muted-foreground text-xs'>
-            {t('Probability of each task class')}
-          </p>
-          <Chips items={classes} />
-        </>
-      )}
       {trusted && trust.profiles && (
         <>
           <p className='text-muted-foreground text-xs'>

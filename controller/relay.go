@@ -18,6 +18,7 @@ import (
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/observability"
 	"github.com/QuantumNous/new-api/pkg/attemptlog"
+	channelcapacity "github.com/QuantumNous/new-api/pkg/channel_capacity"
 	channelmetrics "github.com/QuantumNous/new-api/pkg/channel_metrics"
 	pluginruntime "github.com/QuantumNous/new-api/pkg/jsplugin"
 	perfmetrics "github.com/QuantumNous/new-api/pkg/perf_metrics"
@@ -243,9 +244,21 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		}
 		c.Request.Body = io.NopCloser(bodyStorage)
 
-		keyIndex := common.GetContextKeyInt(c, constant.ContextKeyChannelMultiKeyIndex)
-		attemptStart := time.Now()
-		runtimeWindow := service.BeginSchedulerRuntimeWithCapacity(channel.Id, keyIndex, channel.RPM, channel.TPM, channel.MaxConcurrency)
+		// 重试共用一个 gin.Context：先清掉上一次尝试记下的用量，否则这次没报用量
+		// （比如连不上上游）时会把上一次的 token 数当成这次的。
+		service.ResetSchedulerAttemptMetrics(c)
+		// <渠道, 上游模型> 的实时用量只统计不拦截。上游名按 model_mapping 链尾算，
+		// 与 setting.model_limits 的键一致；绑了容量池的再计进容量池。链的起点是选渠道时
+		// 定下的计数名（渠道只列了 gpt-5 时 gpt-5-high 也从 gpt-5 起），与调度器 Catalog
+		// 的池一致。defer 兜底：handler panic 时也会结束这次登记；正常路径下面会带着
+		// 实际用量先结束，defer 就什么也不做。
+		capacityUpstream, _, _ := model.ResolveMappedModel(c.GetString("model_mapping"), common.GetContextKeyString(c, constant.ContextKeyChannelCapacityModel))
+		capacityPoolID := 0
+		if channelSetting, ok := common.GetContextKeyType[dto.ChannelSettings](c, constant.ContextKeyChannelSetting); ok {
+			capacityPoolID = channelSetting.CapacityPoolFor(capacityUpstream)
+		}
+		capacityLease := channelcapacity.Begin(channel.Id, capacityUpstream, capacityPoolID, relayInfo.GetEstimatePromptTokens())
+		defer channelcapacity.Finish(capacityLease, false, 0, 0)
 		priceData := relayInfo.PriceData
 		attempt := attemptScope.BeginAttempt(c, retryParam.GetRetry(), attemptlog.ChannelTarget{
 			ChannelId:         channel.Id,
@@ -294,9 +307,6 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		if !streamStarted {
 			streamStarted = relayInfo.IsStream && relayInfo.HasSendResponse()
 		}
-		if streamStarted && !relayInfo.FirstResponseTime.IsZero() && !relayInfo.StartTime.IsZero() {
-			common.SetContextKey(c, constant.ContextKeySchedulerTTFTMS, int(relayInfo.FirstResponseTime.Sub(relayInfo.StartTime).Milliseconds()))
-		}
 		if otelRuntime != nil {
 			var attemptErr error
 			if newAPIError != nil {
@@ -314,15 +324,11 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 				UpstreamModel: relayInfo.UpstreamModelName,
 			}, attemptStatus, streamStatus, attemptErr)
 		}
-		inputTokens := common.GetContextKeyInt(c, constant.ContextKeySchedulerInputTokens)
-		if inputTokens == 0 {
-			inputTokens = common.GetContextKeyInt(c, constant.ContextKeyPromptTokens)
-		}
-		outputTokens := common.GetContextKeyInt(c, constant.ContextKeySchedulerOutputTokens)
-		if err := service.ReportSchedulerAttemptAsync(c, service.SchedulerEndpointForChannel(c, channel.Id), retryParam.GetRetry()+1, attemptStatus, newAPIError == nil, streamStarted, inputTokens, outputTokens); err != nil {
-			logger.LogDebug(c, "scheduler attempt report skipped: %v", err)
-		}
-		service.FinishSchedulerRuntime(channel.Id, keyIndex, runtimeWindow, attemptStatus, inputTokens, outputTokens, time.Since(attemptStart))
+		// 这里只用上游实际报的用量：没报输入时保留开始时的估算，
+		// 失败且没有任何用量时撤回估算（见 channel_capacity.Finish）。
+		channelcapacity.Finish(capacityLease, newAPIError == nil,
+			common.GetContextKeyInt(c, constant.ContextKeySchedulerInputTokens),
+			common.GetContextKeyInt(c, constant.ContextKeySchedulerOutputTokens))
 
 		attempt.Finish(c, finishInputFor(c, relayInfo, newAPIError))
 
@@ -444,13 +450,12 @@ func finishInputFor(c *gin.Context, info *relaycommon.RelayInfo, apiErr *types.N
 		CostMultiplier:         1,
 	}
 
-	// The cost multiplier is a <channel, model> attribute read from the channel
-	// setting the distributor refreshed for this attempt, keyed by the upstream
-	// (model-mapped) model name — that name is only final here, after the relay
-	// handler has applied the channel's model mapping. It never touches
-	// billing; the attempt log scales cost_actual with it.
-	if channelSetting, ok := common.GetContextKeyType[dto.ChannelSettings](c, constant.ContextKeyChannelSetting); ok {
-		in.CostMultiplier = channelSetting.CostMultiplierForModel(in.UpstreamModelName)
+	// 费用倍率在选定渠道时（SetupContextForSelectedChannel，每次尝试都会经过）按用户请求
+	// 一侧的模型名算好放在上下文里。这里不按 UpstreamModelName 查：那是映射后的上游名，
+	// 流式响应还会把它改成上游回报的模型名（比如带日期的快照名），会查不到。
+	// 倍率不参与计费，只乘 relay_attempts.cost_actual。
+	if multiplier, ok := common.GetContextKeyType[float64](c, constant.ContextKeyChannelCostMultiplier); ok && multiplier > 0 {
+		in.CostMultiplier = multiplier
 	}
 
 	if info.StreamStatus != nil {

@@ -241,6 +241,20 @@ func TestGetPreferredChannelByAffinity_RequestHeaderKeySource(t *testing.T) {
 	require.Equal(t, "X-Affinity-Key", meta.KeySourceKey)
 	// KeyHint 保留完整原始值，不再脱敏,request_header 来源即外部平台终端用户邮箱
 	require.Equal(t, affinityValue, meta.KeyHint)
+
+	// 只读查询：同一个请求拿到同一个渠道，但不写亲和上下文和请求策略，auto 对多个候选各查一次不会互相覆盖。
+	peekCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	peekCtx.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	peekCtx.Request.Header.Set("X-Affinity-Key", affinityValue)
+	channelID, found = PeekPreferredChannelByAffinity(peekCtx, "gpt-5", "default")
+	require.True(t, found)
+	require.Equal(t, 9528, channelID)
+	_, ok = getChannelAffinityMeta(peekCtx)
+	require.False(t, ok)
+	_, ok = peekCtx.Get(requestPolicyContextKey)
+	require.False(t, ok)
+	_, found = PeekPreferredChannelByAffinity(peekCtx, "claude-sonnet-5", "default")
+	require.False(t, found, "a model no rule matches has no binding")
 }
 
 func TestClearCurrentChannelAffinityCache(t *testing.T) {

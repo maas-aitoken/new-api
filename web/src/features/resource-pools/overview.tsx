@@ -58,7 +58,7 @@ export type PoolQueryState = {
   error: Error | null;
 };
 
-export type PoolDetailTab = "channels" | "accounts" | "sources";
+export type PoolDetailTab = "channels" | "accounts" | "sources" | "capacity";
 
 /** Water-level overview of every provider's pool on one screen. */
 export function ResourcePoolOverview(props: {

@@ -16,6 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+import type { TFunction } from 'i18next'
 import { ListOrdered } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
@@ -31,9 +32,60 @@ import { formatScore, ladderOutcomeLabel, skipReasonLabel } from './labels'
 import { StepFrame, ToneBadge } from './route-process-parts'
 import type { RoutePick, RoutePickCandidate, RouteTraceStep } from './types'
 
+const priceFormat = { digitsLarge: 4, digitsSmall: 6, abbreviate: false }
+
+/** 倍率从哪来：调度器预览、会话亲和绑定的渠道，或按原生选渠道规则的命中概率取的期望。 */
+function costSourceLabel(t: TFunction, row: RoutePickCandidate): string {
+  switch (row.cost_source) {
+    case 'scheduler':
+      return t('Scheduler picks channel #{{id}}', { id: row.channel_id })
+    case 'affinity':
+      return t('Session bound to channel #{{id}}', { id: row.channel_id })
+    default:
+      if (row.channel_id) {
+        return t('Only channel #{{id}}', { id: row.channel_id })
+      }
+      return t('Expected over {{count}} channels', { count: row.channels ?? 0 })
+  }
+}
+
 /** The candidates the quality and price comparison weighed, the chosen one marked. */
 export function PickTable(props: { pick: RoutePick }) {
   const { t } = useTranslation()
+  // 有估算时比较的是"用户价 × 首次会落到的渠道的费用倍率"，多出两列；旧日志没有这两列。
+  const comparesCost = props.pick.band.some(
+    (row) => (row.cost_multiplier ?? 0) > 0
+  )
+  const costColumns: StaticDataTableColumn<RoutePickCandidate>[] = [
+    {
+      id: 'cost_multiplier',
+      header: t('Cost multiplier'),
+      className: 'h-9 text-right',
+      cellClassName: tableStyles.topNumericCell,
+      cell: (row) =>
+        row.cost_multiplier ? (
+          <div className='flex flex-col items-end'>
+            <span>× {formatScore(row.cost_multiplier)}</span>
+            <span className='text-muted-foreground text-xs font-normal'>
+              {costSourceLabel(t, row)}
+            </span>
+          </div>
+        ) : (
+          '-'
+        ),
+    },
+    {
+      id: 'cost',
+      header: t('Compared cost'),
+      className: 'h-9 text-right',
+      cellClassName: tableStyles.topNumericCell,
+      cell: (row) =>
+        formatBillingCurrencyFromUSD(
+          row.cost_multiplier ? (row.cost ?? 0) : row.price,
+          priceFormat
+        ),
+    },
+  ]
   const columns: StaticDataTableColumn<RoutePickCandidate>[] = [
     {
       id: 'model',
@@ -61,13 +113,9 @@ export function PickTable(props: { pick: RoutePick }) {
       header: t('Price per million tokens'),
       className: 'h-9 text-right',
       cellClassName: tableStyles.topNumericCell,
-      cell: (row) =>
-        formatBillingCurrencyFromUSD(row.price, {
-          digitsLarge: 4,
-          digitsSmall: 6,
-          abbreviate: false,
-        }),
+      cell: (row) => formatBillingCurrencyFromUSD(row.price, priceFormat),
     },
+    ...(comparesCost ? costColumns : []),
     {
       id: 'discount',
       header: t('Price discount'),
@@ -91,6 +139,9 @@ export function PickTable(props: { pick: RoutePick }) {
           'Candidates within {{weight}} of the best score, ranked by score after the price discount.',
           { weight: formatScore(props.pick.weight) }
         )}
+        {comparesCost
+          ? ` ${t('The discount uses the compared cost: the user price times the cost multiplier of the channel the first attempt lands on. The multiplier never changes what the user is billed.')}`
+          : null}
       </p>
       <StaticDataTable
         className={tableStyles.sectionContainer}

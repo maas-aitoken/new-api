@@ -88,6 +88,52 @@ func TestChannelModelDisableOnlyRemovesMatchingRoute(t *testing.T) {
 	}
 }
 
+// 原生选路先找列了请求原名的渠道，扣掉熔断后一个不剩才退到路由名（去掉推理强度后缀）。
+// GetRoutableChannelIDsForGroupModel 是发给调度器的渠道范围，必须与它一致。
+func TestRoutableChannelIDsFollowNativeRouting(t *testing.T) {
+	for _, memoryCacheEnabled := range []bool{false, true} {
+		t.Run(fmt.Sprintf("memory_cache_%t", memoryCacheEnabled), func(t *testing.T) {
+			setupChannelModelStatusTest(t, memoryCacheEnabled)
+			weight, priority := uint(100), int64(0)
+			for id, models := range map[int]string{1: "gpt-5", 2: "gpt-5-high", 3: "other"} {
+				channel := Channel{Id: id, Type: constant.ChannelTypeOpenAI, Key: fmt.Sprintf("key-%d", id), Status: common.ChannelStatusEnabled,
+					Name: fmt.Sprintf("channel-%d", id), Weight: &weight, Models: models, Group: "default", Priority: &priority}
+				require.NoError(t, DB.Create(&channel).Error)
+				require.NoError(t, channel.AddAbilities(nil))
+			}
+			if memoryCacheEnabled {
+				InitChannelCache()
+			}
+			native := func(requested string) int {
+				selected, err := GetRandomSatisfiedChannel("default", requested, 0, nil)
+				require.NoError(t, err)
+				require.NotNil(t, selected, requested)
+				return selected.Id
+			}
+
+			for _, requested := range []string{"gpt-5-low", "gpt-5@effort:high", "gpt-5"} {
+				assert.Equal(t, []int{1}, GetRoutableChannelIDsForGroupModel("default", requested), "渠道只列了 gpt-5 时 %s 退到路由名", requested)
+				assert.Equal(t, 1, native(requested), requested)
+			}
+			assert.Equal(t, []int{2}, GetRoutableChannelIDsForGroupModel("default", "gpt-5-high"), "列了原名的渠道优先，不再退到路由名")
+			assert.Equal(t, 2, native("gpt-5-high"))
+			assert.Empty(t, GetRoutableChannelIDsForGroupModel("default", "gpt-6-high"), "原名和路由名都没有渠道列")
+			assert.Empty(t, GetRoutableChannelIDsForGroupModel("vip", "gpt-5-low"))
+
+			// 列了原名的渠道全被熔断时退到路由名；熔断按请求原名记，gpt-5 本身不受影响。
+			changed, err := DisableChannelModel(2, "gpt-5-high", "upstream returned 429")
+			require.NoError(t, err)
+			require.True(t, changed)
+			assert.Equal(t, []int{1}, GetRoutableChannelIDsForGroupModel("default", "gpt-5-high"))
+			assert.Equal(t, 1, native("gpt-5-high"))
+			_, err = DisableChannelModel(1, "gpt-5-high", "upstream returned 429")
+			require.NoError(t, err)
+			assert.Empty(t, GetRoutableChannelIDsForGroupModel("default", "gpt-5-high"), "退到路由名时也按请求原名扣熔断")
+			assert.Equal(t, []int{1}, GetRoutableChannelIDsForGroupModel("default", "gpt-5"))
+		})
+	}
+}
+
 func TestDisableChannelModelIsIdempotentAndPreservesOriginalReason(t *testing.T) {
 	setupChannelModelStatusTest(t, false)
 	insertChannelModelStatusFixture(t)

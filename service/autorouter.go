@@ -141,6 +141,9 @@ type AutoCandidates struct {
 	// Price 返回候选模型的混合用户价（美元/百万 token）；ok 为 false 表示没有价格
 	// 或按次计价，没法按 token 比较。为 nil 时不比价，按榜单顺序取第一个可用的。
 	Price func(name string) (price float64, ok bool)
+	// Costs 给候选带里的模型估算比较成本（用户价 × 首次会落到的渠道的费用倍率），
+	// 见 autorouter.Candidates.Costs。为 nil 时只比较用户价。
+	Costs func(names []string, effort string, ignoreClientReasoning bool) map[string]autorouter.Cost
 }
 
 // ResolveAutoModel picks the model and reasoning effort for an "auto" request.
@@ -155,7 +158,7 @@ func ResolveAutoModel(c *gin.Context, candidates AutoCandidates) (*autorouter.Re
 	result := &autorouter.Result{Source: autorouter.SourceDefault, Preference: policy.Preference}
 	available := func(name string) bool { return candidates.Serves(name, false) }
 	overridable := func(name string) bool { return candidates.Serves(name, true) }
-	routing := autorouter.Candidates{Available: available, Overridable: overridable, Price: candidates.Price, Why: candidates.Why}
+	routing := autorouter.Candidates{Available: available, Overridable: overridable, Price: candidates.Price, Why: candidates.Why, Costs: candidates.Costs}
 	trace := &autorouter.Trace{Judgment: autorouter.JudgmentNoInstruction}
 	result.Trace = trace
 
@@ -235,7 +238,6 @@ func ResolveAutoModel(c *gin.Context, candidates AutoCandidates) (*autorouter.Re
 			trace.Judgment = autorouter.JudgmentCache
 			if entry.Failed {
 				trace.Judgment = autorouter.JudgmentRecentFailure
-				route.Warning = "jev failed recently, not retried"
 			}
 		} else {
 			connections := setting.Connections()
@@ -261,7 +263,6 @@ func ResolveAutoModel(c *gin.Context, candidates AutoCandidates) (*autorouter.Re
 			if err != nil {
 				trace.Judgment = autorouter.JudgmentLiveFailed
 				result.Jev.Error = err.Error()
-				route.Warning = "jev failed: " + err.Error()
 				_ = cache.SetWithTTL(decisionKey, autoRouterEntry{Failed: true}, autoRouterFailureTTL)
 			} else {
 				trace.Judgment = autorouter.JudgmentLive
@@ -282,11 +283,14 @@ func ResolveAutoModel(c *gin.Context, candidates AutoCandidates) (*autorouter.Re
 		// 路由每次按本次请求自己的可用集合重新算，缓存里只有 jev 的判断。
 		var inherited bool
 		result.Decision = decision
+		// 调度器的 workload 在选路前就定下来：比价时的调度器预览和选定后的正式调度用同一个值，
+		// 两边按同一份评分排序。客户端自己带了 workload 时以客户端为准。
+		if decision != nil && decision.TaskType != autorouter.TaskTypeUnknown &&
+			common.GetContextKeyString(c, constant.ContextKeySchedulerWorkload) == "" {
+			common.SetContextKey(c, constant.ContextKeySchedulerWorkload, decision.TaskType)
+		}
 		result.Route, inherited, ok, result.Pick = autorouter.SelectRoute(decision, previous, policy, routing, trace)
 		result.EffortOverride = !inherited
-		if inherited && decision != nil {
-			route.Warning = "jev decision untrusted"
-		}
 		switch {
 		case !inherited && fromCache:
 			result.Source = autorouter.SourceCache
@@ -321,8 +325,8 @@ func ResolveAutoModel(c *gin.Context, candidates AutoCandidates) (*autorouter.Re
 		if result.EffortOverride {
 			serves = overridable
 		}
-		if spec, declared := model.ResolveModelCapability(capabilityBaseModel(result.Model)); declared && spec.Reasoning.Declared() && serves(result.Model) {
-			result.ResolvedModel, result.EffortInBody = result.Model, true
+		result.ResolvedModel, result.EffortInBody, ok = AutoServingModel(result.Model, result.Effort, serves)
+		if result.EffortInBody {
 			// 只有可信的判断才改客户端的推理字段；兜底路径保持原样。
 			result.EffortAction = autorouter.EffortKeep
 			if result.EffortOverride {
@@ -331,8 +335,6 @@ func ResolveAutoModel(c *gin.Context, candidates AutoCandidates) (*autorouter.Re
 				result.AppliedEffort, result.EffortAction = support.Clamp(result.Effort)
 				gate.OverrideReasoning(result.EffortAction, result.AppliedEffort)
 			}
-		} else {
-			result.ResolvedModel, ok = autorouter.ResolveVariant(result.Model, result.Effort, serves)
 		}
 	}
 	if !ok {
@@ -363,11 +365,19 @@ func ResolveAutoModel(c *gin.Context, candidates AutoCandidates) (*autorouter.Re
 	}
 	c.Set(ginKeyAutoRouterResult, result)
 	common.SetContextKey(c, constant.ContextKeyAutoRouted, true)
-	if result.Decision != nil && result.Decision.TaskType != autorouter.TaskTypeUnknown &&
-		common.GetContextKeyString(c, constant.ContextKeySchedulerWorkload) == "" {
-		common.SetContextKey(c, constant.ContextKeySchedulerWorkload, result.Decision.TaskType)
-	}
 	return result, nil
+}
+
+// AutoServingModel 返回 auto 选中一个模型后真正用来服务请求的模型名：模型声明了推理维度
+// 且裸名可用时用裸名，档位写进请求体（effortInBody 为 true）；否则取最接近期望档位的可用
+// 变体，档位拼在名字后缀上。选路的最终解析和比价时估算候选落到哪个渠道共用这一条规则，
+// 两边按同一个名字找渠道。serves 判定一个名字能不能服务这个请求。
+func AutoServingModel(name, effort string, serves func(string) bool) (resolved string, effortInBody bool, ok bool) {
+	if spec, declared := model.ResolveModelCapability(capabilityBaseModel(name)); declared && spec.Reasoning.Declared() && serves(name) {
+		return name, true, true
+	}
+	resolved, ok = autorouter.ResolveVariant(name, effort, serves)
+	return resolved, false, ok
 }
 
 // GetAutoRouterResult returns the routing outcome stored by ResolveAutoModel.

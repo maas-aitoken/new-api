@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/service/capability"
 	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
@@ -19,7 +20,7 @@ func setupCapabilityModelTest(t *testing.T) *gorm.DB {
 	dsn := fmt.Sprintf("file:%s?mode=memory&cache=shared", strings.ReplaceAll(t.Name(), "/", "_"))
 	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{})
 	require.NoError(t, err)
-	require.NoError(t, db.AutoMigrate(&Model{}, &Channel{}, &Ability{}, &ChannelModelStatus{}, &ChannelModelCapability{}))
+	require.NoError(t, db.AutoMigrate(&Model{}, &Channel{}, &Ability{}, &ChannelModelStatus{}, &ChannelModelCapability{}, &ResourcePoolSource{}, &CapacityPool{}, &Option{}))
 	DB = db
 	t.Cleanup(func() {
 		DB = previousDB
@@ -269,36 +270,341 @@ func TestCapabilityTargetsListUndeclaredChannelModelsForCostMultiplier(t *testin
 	assert.Equal(t, 0.0, targets[0].Channels[0].CostMultiplier)
 }
 
-func TestChannelCostMultiplierFollowsModelMapping(t *testing.T) {
+// 倍率按用户请求的模型名（映射之前）存和查：映射到同一上游的两个别名各存各的，
+// 额度却按上游名共用一份。
+func TestChannelCostMultiplierKeysByRequestModel(t *testing.T) {
 	db := setupCapabilityModelTest(t)
-	mapping := `{"public-model":"upstream-model"}`
+	mapping := `{"gpt-4o":"gpt-4o-2024-08-06","gpt-4o-latest":"gpt-4o-2024-08-06"}`
 	require.NoError(t, db.Create(&Channel{
-		Id: 5, Name: "mapped", Group: "default", Models: "public-model",
+		Id: 5, Name: "mapped", Group: "default", Models: "gpt-4o,gpt-4o-latest",
 		ModelMapping: &mapping, Status: common.ChannelStatusEnabled,
 	}).Error)
-	require.NoError(t, db.Create(&Ability{Group: "default", Model: "public-model", ChannelId: 5, Enabled: true}).Error)
+	require.NoError(t, db.Create(&[]Ability{
+		{Group: "default", Model: "gpt-4o", ChannelId: 5, Enabled: true},
+		{Group: "default", Model: "gpt-4o-latest", ChannelId: 5, Enabled: true},
+	}).Error)
 	require.NoError(t, InitCapabilityCache())
 
-	assert.Equal(t, 0.0, ChannelCostMultiplier("", mapping, "public-model"))
+	assert.Equal(t, 0.0, ChannelCostMultiplier("", "gpt-4o"))
 
-	require.NoError(t, SetChannelModelCostMultiplier(5, "public-model", 1.25))
+	require.NoError(t, SetChannelModelCostMultiplier(5, "gpt-4o", 0.8))
+	require.NoError(t, SetChannelModelCostMultiplier(5, "gpt-4o-latest", 0.5))
+	require.NoError(t, SetChannelModelLimit(5, "gpt-4o", dto.ModelLimit{RPM: 100}))
 	var channel Channel
 	require.NoError(t, db.First(&channel, "id = ?", 5).Error)
-	assert.Equal(t, map[string]float64{"upstream-model": 1.25}, channel.GetSetting().CostMultiplierMap)
-	assert.Equal(t, 1.25, ChannelCostMultiplier(*channel.Setting, mapping, "public-model"))
+	setting := channel.GetSetting()
+	assert.Equal(t, map[string]float64{"gpt-4o": 0.8, "gpt-4o-latest": 0.5}, setting.CostMultiplierMap)
+	assert.Equal(t, map[string]dto.ModelLimit{"gpt-4o-2024-08-06": {RPM: 100}}, setting.ModelLimits)
 
 	targets, _, err := GetCapabilityTargets(CapabilityTargetQuery{})
 	require.NoError(t, err)
-	require.Len(t, targets, 1)
-	require.Len(t, targets[0].Channels, 1)
-	assert.Equal(t, 1.25, targets[0].Channels[0].CostMultiplier)
+	require.Len(t, targets, 2)
+	byModel := map[string]CapabilityTargetChannel{}
+	for _, target := range targets {
+		require.Len(t, target.Channels, 1)
+		byModel[target.ModelName] = target.Channels[0]
+	}
+	assert.Equal(t, 0.8, byModel["gpt-4o"].CostMultiplier)
+	assert.Equal(t, 0.5, byModel["gpt-4o-latest"].CostMultiplier)
+	assert.Equal(t, 100, byModel["gpt-4o-latest"].ModelLimit.RPM, "aliases of one upstream share its limits")
+	assert.Equal(t, []string{"gpt-4o-latest"}, byModel["gpt-4o"].SharedModels)
+	assert.Equal(t, []string{"gpt-4o"}, byModel["gpt-4o-latest"].SharedModels)
 
-	// 0 表示清除倍率，回到按 1 处理。
-	require.NoError(t, SetChannelModelCostMultiplier(5, "public-model", 0))
+	// 0 表示清除倍率，只清这一行，另一个别名不受影响。
+	require.NoError(t, SetChannelModelCostMultiplier(5, "gpt-4o", 0))
 	require.NoError(t, db.First(&channel, "id = ?", 5).Error)
-	assert.Empty(t, channel.GetSetting().CostMultiplierMap)
+	assert.Equal(t, map[string]float64{"gpt-4o-latest": 0.5}, channel.GetSetting().CostMultiplierMap)
 
 	err = SetChannelModelCostMultiplier(5, "other-model", 2)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "does not serve model")
+}
+
+// 升级时把旧的上游名键换成请求名：每个请求名拿到能力页升级前显示的值，只跑一次。
+func TestMigrateCostMultiplierKeysToRequestModel(t *testing.T) {
+	db := setupCapabilityModelTest(t)
+	strPtr := func(value string) *string { return &value }
+	require.NoError(t, db.Create(&[]Channel{
+		// 两个别名映射到同一上游：都继承原来共用的值；对不上任何请求名的旧键丢弃；其它字段保留。
+		{Id: 1, Name: "aliases", Models: "gpt-4o,gpt-4o-latest,gpt-4o-mini",
+			ModelMapping: strPtr(`{"gpt-4o":"gpt-4o-2024-08-06","gpt-4o-latest":"gpt-4o-2024-08-06"}`),
+			Setting:      strPtr(`{"cost_multiplier":{"gpt-4o-2024-08-06":0.8,"gpt-4o-mini":1.2,"removed-model":3},"model_limits":{"gpt-4o-2024-08-06":{"rpm":100}},"x_unknown":true}`)},
+		// 旧版渠道抽屉按链尾名填的倍率：页面看不到，但记录时一直生效，转换时保留。
+		{Id: 2, Name: "chain", Models: "a", ModelMapping: strPtr(`{"a":"b","b":"c"}`),
+			Setting: strPtr(`{"cost_multiplier":{"c":1.5}}`)},
+		// 一跳名和链尾名都有值时，取能力页显示的一跳名的值。
+		{Id: 5, Name: "chain-shown", Models: "x", ModelMapping: strPtr(`{"x":"y","y":"z"}`),
+			Setting: strPtr(`{"cost_multiplier":{"y":2,"z":9}}`)},
+		// 没有映射时键本来就是请求名，不改写。
+		{Id: 3, Name: "plain", Models: "claude-sonnet-4-5", Setting: strPtr(`{"cost_multiplier":{"claude-sonnet-4-5":0.6}}`)},
+		// 坏数据跳过，不挡住其它渠道。
+		{Id: 4, Name: "broken", Models: "m", Setting: strPtr(`{"cost_multiplier":"not-a-map"}`)},
+	}).Error)
+
+	require.NoError(t, MigrateCostMultiplierKeysToRequestModel())
+
+	settingOf := func(id int) string {
+		var channel Channel
+		require.NoError(t, db.First(&channel, "id = ?", id).Error)
+		return *channel.Setting
+	}
+	var aliases map[string]any
+	require.NoError(t, common.UnmarshalJsonStr(settingOf(1), &aliases))
+	assert.Equal(t, map[string]any{"gpt-4o": 0.8, "gpt-4o-latest": 0.8, "gpt-4o-mini": 1.2}, aliases["cost_multiplier"])
+	assert.Equal(t, map[string]any{"gpt-4o-2024-08-06": map[string]any{"rpm": float64(100)}}, aliases["model_limits"], "limits stay keyed by the upstream name")
+	assert.Equal(t, true, aliases["x_unknown"])
+	assert.JSONEq(t, `{"cost_multiplier":{"a":1.5}}`, settingOf(2))
+	assert.JSONEq(t, `{"cost_multiplier":{"x":2}}`, settingOf(5))
+	assert.Equal(t, `{"cost_multiplier":{"claude-sonnet-4-5":0.6}}`, settingOf(3))
+	assert.Equal(t, `{"cost_multiplier":"not-a-map"}`, settingOf(4))
+
+	// 第二次启动不再转换：转换后的键按旧规则会被当成上游名，重跑会把 gpt-4o-latest 的值弄丢。
+	require.NoError(t, db.Model(&Channel{}).Where("id = ?", 1).Update("setting", `{"cost_multiplier":{"gpt-4o":0.8,"gpt-4o-latest":0.5}}`).Error)
+	require.NoError(t, MigrateCostMultiplierKeysToRequestModel())
+	assert.Equal(t, `{"cost_multiplier":{"gpt-4o":0.8,"gpt-4o-latest":0.5}}`, settingOf(1))
+
+	// 完成标记由服务端管理：选项接口不能写它，也不出现在选项表里。
+	require.ErrorIs(t, UpdateOption(costMultiplierKeyMigratedKey, "1"), errCostMultiplierKeyMigratedReadOnly)
+	common.OptionMapRWMutex.Lock()
+	previousOptions := common.OptionMap
+	common.OptionMap = map[string]string{costMultiplierKeyMigratedKey: "1"}
+	common.OptionMapRWMutex.Unlock()
+	t.Cleanup(func() {
+		common.OptionMapRWMutex.Lock()
+		common.OptionMap = previousOptions
+		common.OptionMapRWMutex.Unlock()
+	})
+	require.NoError(t, updateOptionMap(costMultiplierKeyMigratedKey, "1"))
+	common.OptionMapRWMutex.RLock()
+	_, listed := common.OptionMap[costMultiplierKeyMigratedKey]
+	common.OptionMapRWMutex.RUnlock()
+	assert.False(t, listed)
+}
+
+func TestCostMultiplierModel(t *testing.T) {
+	tests := []struct {
+		name          string
+		channelModels []string
+		requestModel  string
+		want          string
+	}{
+		{name: "listed request name", channelModels: []string{"gpt-4o", "gpt-4o-latest"}, requestModel: "gpt-4o-latest", want: "gpt-4o-latest"},
+		{name: "effort variant matched through its base name", channelModels: []string{"gpt-5"}, requestModel: "gpt-5-high", want: "gpt-5"},
+		{name: "listed variant is preferred over its base name", channelModels: []string{"gpt-5", "gpt-5-high"}, requestModel: "gpt-5-high", want: "gpt-5-high"},
+		{name: "unlisted name stays as requested", channelModels: []string{"gpt-4o"}, requestModel: "claude-sonnet-4-5", want: "claude-sonnet-4-5"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, CostMultiplierModel(tt.channelModels, tt.requestModel))
+		})
+	}
+}
+
+func TestResolveMappedModel(t *testing.T) {
+	tests := []struct {
+		name       string
+		mapping    string
+		origin     string
+		upstream   string
+		mapped     bool
+		wantErrMsg string
+	}{
+		{name: "no mapping", mapping: "", origin: "a", upstream: "a"},
+		{name: "empty object", mapping: "{}", origin: "a", upstream: "a"},
+		{name: "not matched", mapping: `{"x":"y"}`, origin: "a", upstream: "a"},
+		{name: "single hop", mapping: `{"a":"b"}`, origin: "a", upstream: "b", mapped: true},
+		{name: "chain goes to the tail", mapping: `{"a":"b","b":"c"}`, origin: "a", upstream: "c", mapped: true},
+		{name: "self mapping at origin is not a redirect", mapping: `{"a":"a"}`, origin: "a", upstream: "a"},
+		{name: "self mapping at the tail stops there", mapping: `{"a":"b","b":"b"}`, origin: "a", upstream: "b", mapped: true},
+		{name: "empty target is ignored", mapping: `{"a":""}`, origin: "a", upstream: "a"},
+		{name: "modifier suffix falls back to base name", mapping: `{"m":"up"}`, origin: "m@thinking:on", upstream: "up", mapped: true},
+		{name: "cycle", mapping: `{"a":"b","b":"a"}`, origin: "a", upstream: "a", wantErrMsg: "model_mapping_contains_cycle"},
+		{name: "invalid json", mapping: `not-json`, origin: "a", upstream: "a", wantErrMsg: "unmarshal_model_mapping_failed"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			upstream, mapped, err := ResolveMappedModel(tt.mapping, tt.origin)
+			if tt.wantErrMsg != "" {
+				require.Error(t, err)
+				assert.Equal(t, tt.wantErrMsg, err.Error())
+			} else {
+				require.NoError(t, err)
+			}
+			assert.Equal(t, tt.upstream, upstream)
+			assert.Equal(t, tt.mapped, mapped)
+		})
+	}
+}
+
+// 额度和计数从哪个公开名起算：渠道没列请求名、靠原生选路退到路由名服务时，按基础名算，
+// 与能力页上那一行的额度一致。
+func TestChannelCapacityModel(t *testing.T) {
+	tests := []struct {
+		name     string
+		models   []string
+		mapping  string
+		request  string
+		want     string
+		upstream string
+	}{
+		{name: "listed", models: []string{"gpt-5"}, request: "gpt-5", want: "gpt-5", upstream: "gpt-5"},
+		{name: "suffix falls back to the listed base", models: []string{"gpt-5"}, request: "gpt-5-high", want: "gpt-5", upstream: "gpt-5"},
+		{name: "explicit modifier falls back too", models: []string{"gpt-5"}, request: "gpt-5@effort:high", want: "gpt-5", upstream: "gpt-5"},
+		{name: "a listed variant keeps its own name", models: []string{"gpt-5", "gpt-5-high"}, request: "gpt-5-high", want: "gpt-5-high", upstream: "gpt-5-high"},
+		{name: "a mapping source keeps its own name", models: []string{"gpt-5"}, mapping: `{"gpt-5-high":"gpt-5-pro"}`, request: "gpt-5-high", want: "gpt-5-high", upstream: "gpt-5-pro"},
+		{name: "a mapped base gives the same upstream", models: []string{"gpt-5"}, mapping: `{"gpt-5":"gpt-5-2025"}`, request: "gpt-5-high", want: "gpt-5-high", upstream: "gpt-5-2025"},
+		{name: "not served at all keeps the request name", models: []string{"other"}, request: "gpt-5-high", want: "gpt-5-high", upstream: "gpt-5-high"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ChannelCapacityModel(tt.models, tt.mapping, tt.request)
+			assert.Equal(t, tt.want, got)
+			upstream, _, _ := ResolveMappedModel(tt.mapping, got)
+			assert.Equal(t, tt.upstream, upstream)
+		})
+	}
+}
+
+func TestSetChannelModelLimitKeysByMappedUpstream(t *testing.T) {
+	db := setupCapabilityModelTest(t)
+	// 两个公开名经映射链指向同一个上游，应当共用一份额度。
+	mapping := `{"alias-a":"mid","mid":"upstream-x","alias-b":"upstream-x"}`
+	setting := `{"cost_multiplier":{"upstream-x":1.5}}`
+	require.NoError(t, db.Create(&Channel{
+		Id: 7, Name: "pooled", Group: "default", Models: "alias-a,alias-b",
+		ModelMapping: &mapping, Setting: &setting, Status: common.ChannelStatusEnabled,
+	}).Error)
+	require.NoError(t, db.Create(&Ability{Group: "default", Model: "alias-a", ChannelId: 7, Enabled: true}).Error)
+	require.NoError(t, db.Create(&Ability{Group: "default", Model: "alias-b", ChannelId: 7, Enabled: true}).Error)
+	require.NoError(t, InitCapabilityCache())
+
+	limit := dto.ModelLimit{RPM: 60, TPM: 90000, MaxConcurrency: 4}
+	require.NoError(t, SetChannelModelLimit(7, "alias-a", limit))
+
+	var channel Channel
+	require.NoError(t, db.First(&channel, "id = ?", 7).Error)
+	stored := channel.GetSetting()
+	assert.Equal(t, map[string]dto.ModelLimit{"upstream-x": limit}, stored.ModelLimits)
+	assert.Equal(t, map[string]float64{"upstream-x": 1.5}, stored.CostMultiplierMap, "写额度不能冲掉同一 setting 里的其它字段")
+
+	capacity := ChannelModelCapacityOf(*channel.Setting, mapping, "alias-b")
+	assert.Equal(t, "upstream-x", capacity.UpstreamModel)
+	assert.Equal(t, limit, capacity.Limit, "alias-b 指向同一上游，读到同一份额度")
+	assert.Zero(t, capacity.CapacityPoolId)
+
+	targets, _, err := GetCapabilityTargets(CapabilityTargetQuery{})
+	require.NoError(t, err)
+	require.Len(t, targets, 2)
+	for _, target := range targets {
+		require.Len(t, target.Channels, 1)
+		assert.Equal(t, "upstream-x", target.Channels[0].UpstreamModel)
+		assert.Equal(t, limit, target.Channels[0].ModelLimit)
+	}
+
+	// 三项全 0 表示清除。
+	require.NoError(t, SetChannelModelLimit(7, "alias-b", dto.ModelLimit{}))
+	require.NoError(t, db.First(&channel, "id = ?", 7).Error)
+	assert.Empty(t, channel.GetSetting().ModelLimits)
+	assert.NotContains(t, *channel.Setting, "model_limits")
+
+	err = SetChannelModelLimit(7, "not-served", limit)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "does not serve model")
+
+	err = SetChannelModelLimit(7, "alias-a", dto.ModelLimit{RPM: -1})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "rpm must be between")
+
+	// setting 不是合法 JSON 时按未配置处理，不报错也不改库。
+	assert.Equal(t, ChannelModelCapacity{UpstreamModel: "upstream-x"}, ChannelModelCapacityOf("{broken", mapping, "alias-a"))
+}
+
+func TestCapacityPoolMembersBindByUpstreamAndClearOnDelete(t *testing.T) {
+	db := setupCapabilityModelTest(t)
+	require.NoError(t, db.Create(&ResourcePoolSource{Id: 1, Provider: ResourcePoolClaude, Name: "kiro-a", Endpoint: "https://a.example.com"}).Error)
+	require.NoError(t, db.Create(&ResourcePoolSource{Id: 2, Provider: ResourcePoolClaude, Name: "kiro-b", Endpoint: "https://b.example.com"}).Error)
+	require.NoError(t, db.Create(&ResourcePoolSource{Id: 3, Provider: ResourcePoolGPT, Name: "codex", Endpoint: "https://c.example.com"}).Error)
+
+	// 保存时的校验：来源必须属于 provider，同 provider 的池账号范围不能重叠。
+	require.ErrorContains(t, SaveCapacityPool(&CapacityPool{Name: " ", Provider: ResourcePoolClaude}, CapacityPoolConfig{SourceIds: []int64{1}}), "name is required")
+	require.ErrorContains(t, SaveCapacityPool(&CapacityPool{Name: "x", Provider: ResourcePoolClaude}, CapacityPoolConfig{SourceIds: []int64{3}}), "does not belong")
+	require.ErrorContains(t, SaveCapacityPool(&CapacityPool{Name: "x", Provider: ResourcePoolClaude}, CapacityPoolConfig{SourceIds: []int64{1}, ThresholdPercent: 120}), "threshold_percent")
+	poolA := &CapacityPool{Name: "aws1", Provider: ResourcePoolClaude}
+	require.NoError(t, SaveCapacityPool(poolA, CapacityPoolConfig{SourceIds: []int64{1}, Groups: []string{" aws1 ", "aws1"}}))
+	require.ErrorContains(t, SaveCapacityPool(&CapacityPool{Name: "dup", Provider: ResourcePoolClaude}, CapacityPoolConfig{SourceIds: []int64{1}}), "overlap")
+	require.NoError(t, SaveCapacityPool(&CapacityPool{Name: "aws2", Provider: ResourcePoolClaude}, CapacityPoolConfig{SourceIds: []int64{1}, Groups: []string{"aws2"}}), "同一来源的不同分组不算重叠")
+	floor := dto.ModelLimit{RPM: 30}
+	poolB := &CapacityPool{Name: "kiro-b", Provider: ResourcePoolClaude}
+	require.NoError(t, SaveCapacityPool(poolB, CapacityPoolConfig{SourceIds: []int64{2}, Floor: floor}))
+	storedA, err := GetCapacityPoolById(poolA.Id)
+	require.NoError(t, err)
+	configA, err := storedA.ParseConfig()
+	require.NoError(t, err)
+	assert.Equal(t, []string{"aws1"}, configA.Groups)
+	assert.Equal(t, float64(95), configA.ThresholdPercent, "没填的参数补默认值")
+	assert.Equal(t, 600, configA.GraceSeconds)
+	poolA.Provider = ResourcePoolGPT
+	require.ErrorContains(t, SaveCapacityPool(poolA, CapacityPoolConfig{SourceIds: []int64{3}}), "cannot be changed")
+
+	mapping := `{"alias-a":"mid","mid":"upstream-x","alias-b":"upstream-x"}`
+	setting := `{"model_limits":{"upstream-x":{"rpm":60}}}`
+	require.NoError(t, db.Create(&Channel{
+		Id: 7, Name: "kiro", Group: "default", Models: "alias-a,alias-b,direct",
+		ModelMapping: &mapping, Setting: &setting, Status: common.ChannelStatusEnabled,
+	}).Error)
+	for _, name := range []string{"alias-a", "alias-b", "direct"} {
+		require.NoError(t, db.Create(&Ability{Group: "default", Model: name, ChannelId: 7, Enabled: true}).Error)
+	}
+	require.NoError(t, InitCapabilityCache())
+
+	added, err := AddCapacityPoolMembers(poolA.Id, 7, []string{"alias-a"})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"upstream-x"}, added, "按映射链尾的上游名绑定")
+	added, err = AddCapacityPoolMembers(poolA.Id, 7, nil)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"direct"}, added, "空表示全部模型；指向已绑上游的别名跳过")
+	_, err = AddCapacityPoolMembers(poolB.Id, 7, []string{"alias-b"})
+	require.ErrorContains(t, err, "already in capacity pool")
+	_, err = AddCapacityPoolMembers(poolA.Id, 7, []string{"not-served"})
+	require.ErrorContains(t, err, "does not serve model")
+
+	var channel Channel
+	require.NoError(t, db.First(&channel, "id = ?", 7).Error)
+	assert.Equal(t, map[string]int{"upstream-x": poolA.Id, "direct": poolA.Id}, channel.GetSetting().CapacityPools)
+	assert.Equal(t, map[string]dto.ModelLimit{"upstream-x": {RPM: 60}}, channel.GetSetting().ModelLimits, "绑定不动成员自己的额度")
+	assert.Equal(t, poolA.Id, ChannelModelCapacityOf(*channel.Setting, mapping, "alias-b").CapacityPoolId)
+	require.ErrorIs(t, SetChannelModelLimit(7, "alias-b", dto.ModelLimit{RPM: 5}), ErrModelLimitManagedByCapacityPool)
+
+	members, err := GetCapacityPoolMembers()
+	require.NoError(t, err)
+	assert.Equal(t, []CapacityPoolMember{
+		{ChannelId: 7, ChannelName: "kiro", UpstreamModel: "direct", Models: []string{"direct"}},
+		{ChannelId: 7, ChannelName: "kiro", UpstreamModel: "upstream-x", Models: []string{"alias-a", "alias-b"}},
+	}, members[poolA.Id])
+	targets, _, err := GetCapabilityTargets(CapabilityTargetQuery{Keyword: "alias-a"})
+	require.NoError(t, err)
+	require.Len(t, targets, 1)
+	assert.Equal(t, poolA.Id, targets[0].Channels[0].CapacityPoolId)
+	assert.Equal(t, "aws1", targets[0].Channels[0].CapacityPoolName)
+
+	// 改了模型列表后没有公开名再指向的绑定标为失效。
+	require.NoError(t, db.Model(&Channel{}).Where("id = ?", 7).Update("models", "alias-a,alias-b").Error)
+	members, err = GetCapacityPoolMembers()
+	require.NoError(t, err)
+	assert.True(t, members[poolA.Id][0].Stale)
+	require.NoError(t, RemoveCapacityPoolMember(poolA.Id, 7, "direct"))
+	require.ErrorContains(t, RemoveCapacityPoolMember(poolA.Id, 7, "direct"), "is not in capacity pool")
+
+	floors, err := GetCapacityPoolFloors()
+	require.NoError(t, err)
+	assert.Equal(t, floor, floors[poolB.Id])
+
+	// 删池时一并清掉绑定，成员回到自己的 model_limits。
+	require.NoError(t, DeleteCapacityPool(poolA.Id))
+	require.ErrorIs(t, DeleteCapacityPool(poolA.Id), ErrCapacityPoolNotFound)
+	require.NoError(t, db.First(&channel, "id = ?", 7).Error)
+	assert.Empty(t, channel.GetSetting().CapacityPools)
+	assert.NotContains(t, *channel.Setting, "capacity_pools")
+	assert.Equal(t, map[string]dto.ModelLimit{"upstream-x": {RPM: 60}}, channel.GetSetting().ModelLimits)
+	require.NoError(t, SetChannelModelLimit(7, "alias-b", dto.ModelLimit{RPM: 5}), "解绑后又能改自己的额度")
 }

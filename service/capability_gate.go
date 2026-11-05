@@ -74,6 +74,8 @@ type capabilityRejection struct {
 
 type capabilityVerdict struct {
 	satisfied bool
+	// kept 是通过判定的渠道，auto 估算首次落到哪个渠道时用。
+	kept []int
 }
 
 // CapabilityGateSummary 是写进日志的门控摘要。
@@ -163,7 +165,7 @@ func (g *CapabilityGate) AllowsAnyChannel(modelName string, channelIDs []int, ig
 	verdict, seen := g.modelVerdicts[memoKey]
 	if !seen {
 		judgement := g.judgeChannels(modelName, channelIDs, needs)
-		verdict = capabilityVerdict{satisfied: len(judgement.kept) > 0}
+		verdict = capabilityVerdict{satisfied: len(judgement.kept) > 0, kept: judgement.kept}
 		g.modelVerdicts[memoKey] = verdict
 		g.evaluated++
 		if !verdict.satisfied {
@@ -184,6 +186,23 @@ func (g *CapabilityGate) AllowsAnyChannel(modelName string, channelIDs []int, ig
 	}
 	g.rejected = append(g.rejected, capabilityBaseModel(modelName))
 	return false
+}
+
+// KeptChannels 返回这个模型的候选渠道里，能力门控在选定模型后会留下的那些：enforce 模式下
+// 是通过判定的渠道（与 AllowsAnyChannel 同一个口径、同一个备忘），其余模式不收窄，原样返回。
+// 只读：不写门控事件、不计入评估次数。auto 估算候选模型首次落到哪个渠道时用它。
+func (g *CapabilityGate) KeptChannels(modelName string, channelIDs []int, ignoreClientReasoning bool) []int {
+	if g == nil || g.mode != CapabilityGateEnforce {
+		return channelIDs
+	}
+	needs, memoKey := g.needs, modelName
+	if ignoreClientReasoning {
+		needs, memoKey = g.withoutClientReasoning(), modelName+"|auto-reasoning"
+	}
+	if verdict, seen := g.modelVerdicts[memoKey]; seen {
+		return verdict.kept
+	}
+	return g.judgeChannels(modelName, channelIDs, needs).kept
 }
 
 // withoutClientReasoning 返回撇开客户端推理字段的诉求副本，推理维度不参与判定。

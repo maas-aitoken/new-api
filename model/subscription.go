@@ -1488,11 +1488,16 @@ type SubscriptionPlanInfo struct {
 	PlanTitle string
 }
 
+// A plan switch must drop this key.
+func subscriptionPlanInfoCacheKey(userSubscriptionId int) string {
+	return fmt.Sprintf("sub:%d", userSubscriptionId)
+}
+
 func GetSubscriptionPlanInfoByUserSubscriptionId(userSubscriptionId int) (*SubscriptionPlanInfo, error) {
 	if userSubscriptionId <= 0 {
 		return nil, errors.New("invalid userSubscriptionId")
 	}
-	cacheKey := fmt.Sprintf("sub:%d", userSubscriptionId)
+	cacheKey := subscriptionPlanInfoCacheKey(userSubscriptionId)
 	if cached, found, err := getSubscriptionPlanInfoCache().Get(cacheKey); err == nil && found {
 		return &cached, nil
 	}

@@ -161,6 +161,8 @@ func main() {
 	service.StartCapabilityGateEventWriter()
 	// Routing logs of auto requests go through the same kind of batched writer.
 	service.StartAutoRouteLogWriter()
+	// 资源池页的容量池：主节点每分钟按账号数与余量重算动态额度。
+	service.StartCapacityPoolPoller()
 
 	// Wire task polling adaptor factory (breaks service -> relay import cycle).
 	// Must run before the system task runner starts: the async_task_poll handler
@@ -367,6 +369,10 @@ func InitResources() error {
 	if common.IsMasterNode {
 		if err := model.MigrateRetiredFrontendOptions(); err != nil {
 			common.SysError(common.LogText("failed to migrate retired frontend options: %s", err.Error()))
+		}
+		// 在 InitChannelCache 之前跑，渠道缓存读到的就是转换后的倍率键。失败不阻断启动，下次启动重试。
+		if err := model.MigrateCostMultiplierKeysToRequestModel(); err != nil {
+			common.SysError(common.LogText("failed to migrate cost multiplier keys: %s", err.Error()))
 		}
 	}
 	model.InitOptionMap()

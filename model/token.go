@@ -42,6 +42,9 @@ type Token struct {
 	Scene       common.TokenScene       `json:"scene" gorm:"type:varchar(16);default:'office'"`
 	Description string                  `json:"description" gorm:"type:varchar(255);default:''"`
 	RoutingMode common.TokenRoutingMode `json:"routing_mode" gorm:"type:varchar(16);default:'smart'"`
+	// RPM 为该令牌每分钟允许的请求数：0 继承平台级配置（TokenRequestRateLimitCount），
+	// -1 表示该令牌不限流，正数为该令牌自己的上限
+	RPM int `json:"rpm" gorm:"default:0"`
 }
 
 func (token *Token) GetAutoGroups() ([]string, error) {
@@ -116,6 +119,13 @@ func (token *Token) UpdateRoutingPreference() error {
 	return DB.Model(token).Select("routing_preference").Updates(token).Error
 }
 
+func (token *Token) UpdateRateLimit() error {
+	if cacheErr := invalidateTokenCacheForMutation(token.Key); cacheErr != nil {
+		common.SysLog("failed to invalidate token cache before rate limit update: " + cacheErr.Error())
+	}
+	return DB.Model(token).Select("rpm").Updates(token).Error
+}
+
 func (token *Token) Clean() {
 	token.Key = ""
 }
@@ -163,11 +173,52 @@ func (token *Token) GetIpLimits() []string {
 	return ipLimits
 }
 
-func GetAllUserTokens(userId int, startIdx int, num int) ([]*Token, error) {
-	var tokens []*Token
-	var err error
-	err = DB.Where("user_id = ?", userId).Order("id desc").Limit(num).Offset(startIdx).Find(&tokens).Error
-	return tokens, err
+// TokenFilter 描述令牌列表的过滤条件
+type TokenFilter struct {
+	UserId      int
+	Scene       common.TokenScene
+	RoutingMode common.TokenRoutingMode
+	Status      int
+}
+
+// apply 把过滤条件叠加到查询上
+func (f TokenFilter) apply(query *gorm.DB) *gorm.DB {
+	if f.UserId <= 0 {
+		return query.Where("1 = 0")
+	}
+	query = query.Where("user_id = ?", f.UserId)
+	switch f.Scene {
+	case common.TokenSceneBusiness:
+		query = query.Where("scene = ?", string(common.TokenSceneBusiness))
+	case common.TokenSceneOffice:
+		query = query.Where("(scene IS NULL OR scene <> ?)", string(common.TokenSceneBusiness))
+	}
+	switch f.RoutingMode {
+	case common.TokenRoutingModeFixed:
+		query = query.Where("routing_mode = ?", string(common.TokenRoutingModeFixed))
+	case common.TokenRoutingModeSmart:
+		query = query.Where("(routing_mode IS NULL OR routing_mode <> ?)", string(common.TokenRoutingModeFixed))
+	}
+	if f.Status != 0 {
+		query = query.Where("status = ?", f.Status)
+	}
+	return query
+}
+
+// ListTokens 按过滤条件分页取令牌，并返回同一过滤条件下的总数，
+func ListTokens(filter TokenFilter, offset int, limit int) (tokens []*Token, total int64, err error) {
+	baseQuery := filter.apply(DB.Model(&Token{}))
+
+	if err = baseQuery.Count(&total).Error; err != nil {
+		common.SysError(common.LogText("failed to count tokens: %s", err.Error()))
+		return nil, 0, common.NewMessage("Failed to get the token count")
+	}
+
+	if err = baseQuery.Order("id desc").Offset(offset).Limit(limit).Find(&tokens).Error; err != nil {
+		common.SysError(common.LogText("failed to list tokens: %s", err.Error()))
+		return nil, 0, common.NewMessage("Failed to get the token list")
+	}
+	return tokens, total, nil
 }
 
 // sanitizeLikePattern 校验并清洗用户输入的 LIKE 搜索模式。
@@ -216,7 +267,7 @@ func validateLikePattern(input string) error {
 
 const searchHardLimit = 100
 
-func SearchUserTokens(userId int, keyword string, token string, offset int, limit int) (tokens []*Token, total int64, err error) {
+func SearchUserTokens(filter TokenFilter, keyword string, token string, offset int, limit int) (tokens []*Token, total int64, err error) {
 	// model 层强制截断
 	if limit <= 0 || limit > searchHardLimit {
 		limit = searchHardLimit
@@ -233,7 +284,7 @@ func SearchUserTokens(userId int, keyword string, token string, offset int, limi
 	maxTokens := operation_setting.GetMaxUserTokens()
 	hasFuzzy := strings.Contains(keyword, "%") || strings.Contains(token, "%")
 	if hasFuzzy {
-		count, err := CountUserTokens(userId)
+		count, err := CountUserTokens(filter.UserId)
 		if err != nil {
 			common.SysLog(common.LogText("failed to count user tokens: %s", err.Error()))
 			return nil, 0, common.NewMessage("Failed to get the token count")
@@ -243,7 +294,7 @@ func SearchUserTokens(userId int, keyword string, token string, offset int, limi
 		}
 	}
 
-	baseQuery := DB.Model(&Token{}).Where("user_id = ?", userId)
+	baseQuery := filter.apply(DB.Model(&Token{}))
 
 	// 非空才加 LIKE 条件，空则跳过（不过滤该字段）
 	if keyword != "" {

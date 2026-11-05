@@ -35,14 +35,28 @@ type ChannelSettings struct {
 	HTTP2ConnectionShards int `json:"http2_connection_shards,omitempty"`
 	// SendMaasUserId forwards the end user's internal id upstream as the X-Maas-User-Id header
 	SendMaasUserId bool `json:"send_maas_user_id,omitempty"`
-	// CostMultiplierMap maps model name to a per <channel, model> cost multiplier.
-	// Keys are the names the channel actually serves upstream: the target of a
-	// model mapping entry, or a channel model that no mapping entry redirects
-	// away — not the client-facing name when model mapping renames it. It is an
-	// attribute only: it never participates in billing. It is read when
-	// relay_attempts rows are written and scales the recorded cost_actual, so a
-	// channel's recorded cost can reflect its real upstream cost factor.
+	// CostMultiplierMap 是 <渠道, 模型> 的费用倍率，键是**用户请求里的模型名**，
+	// 也就是渠道模型列表里的名字（model_mapping 映射之前）。倍率是相对计费额说的
+	// （relay_attempts.cost_actual = 计费额 × 倍率），计费按用户请求的模型名算，
+	// 所以倍率和计费站在用户调用这一侧：同一渠道里 gpt-4o 和 gpt-4o-latest 即使
+	// 映射到同一个上游模型，也各配各的倍率。
+	// 它只是属性，不参与计费：只乘 relay_attempts 记录的成本，以及 auto 选模型时
+	// 比较的成本。
 	CostMultiplierMap map[string]float64 `json:"cost_multiplier,omitempty"`
+
+	// ModelLimits 是 <渠道, 上游模型> 的容量额度，键是请求走完 model_mapping
+	// 整条链之后**真正发给上游的模型名**。额度管的是网关对上游的流量，所以站在
+	// 上游这一侧，和 CostMultiplierMap 的键不在同一侧：映射到同一个上游模型的几个
+	// 请求名共用一份额度。
+	// 额度按整个渠道合计，不按 key 拆分：多个 key 来自不同账号时由管理员自己
+	// 乘以 key 数再填。网关只统计用量、不据此拦截，执行准入的是调度器。
+	ModelLimits map[string]ModelLimit `json:"model_limits,omitempty"`
+
+	// CapacityPools 把 <渠道, 上游模型> 绑到资源池页的容量池，值是容量池 id，键与
+	// ModelLimits 相同（model_mapping 链尾的上游模型名）。绑定后这个上游模型与池里
+	// 其它成员共用一个计数桶，额度由容量池按账号数和余量动态算出，自己的
+	// ModelLimits 在绑定期间不生效。成员只能在资源池页增删。
+	CapacityPools map[string]int `json:"capacity_pools,omitempty"`
 
 	// TLSInsecureSkipVerify accepts upstream certificates that fail
 	// verification, such as self-signed ones, for this channel only.
@@ -103,8 +117,10 @@ func (s *ChannelSettings) ValidateHTTPTransport() error {
 }
 
 // CostMultiplierForModel returns the cost multiplier configured for the model
-// on this channel, or 1 when the model is not listed. It never affects
-// billing; callers use it to scale the cost recorded in relay_attempts.
+// on this channel, or 1 when the model is not listed. model is the
+// request-side name (see CostMultiplierMap), never the mapped upstream name.
+// It never affects billing; callers use it to scale the cost recorded in
+// relay_attempts.
 func (s *ChannelSettings) CostMultiplierForModel(model string) float64 {
 	if s == nil || len(s.CostMultiplierMap) == 0 {
 		return 1
@@ -131,6 +147,80 @@ func (s *ChannelSettings) ValidateCostMultiplier() error {
 		}
 		if multiplier <= 0 {
 			return fmt.Errorf("cost_multiplier for model %s must be positive, got %g", model, multiplier)
+		}
+	}
+	return nil
+}
+
+// ModelLimit 是一个 <渠道, 上游模型> 的三项额度，0 表示这一项不限。
+type ModelLimit struct {
+	RPM            int `json:"rpm,omitempty"`
+	TPM            int `json:"tpm,omitempty"`
+	MaxConcurrency int `json:"max_concurrency,omitempty"`
+}
+
+// MaxModelLimitValue 是单项额度的上限，挡住误填的超大数，
+// 免得调度器那边的计数与比较溢出。
+const MaxModelLimitValue = 1_000_000_000
+
+// IsZero 表示三项都没设，等价于没有配置这条额度。
+func (l ModelLimit) IsZero() bool {
+	return l.RPM == 0 && l.TPM == 0 && l.MaxConcurrency == 0
+}
+
+// Validate 拒绝负数和超过 MaxModelLimitValue 的值。
+func (l ModelLimit) Validate() error {
+	fields := []struct {
+		name  string
+		value int
+	}{{"rpm", l.RPM}, {"tpm", l.TPM}, {"max_concurrency", l.MaxConcurrency}}
+	for _, field := range fields {
+		if field.value < 0 || field.value > MaxModelLimitValue {
+			return fmt.Errorf("%s must be between 0 and %d, got %d", field.name, MaxModelLimitValue, field.value)
+		}
+	}
+	return nil
+}
+
+// ModelLimitFor 返回渠道对某个上游模型配置的额度，没配时返回零值（全不限）。
+func (s ChannelSettings) ModelLimitFor(upstreamModel string) ModelLimit {
+	return s.ModelLimits[upstreamModel]
+}
+
+// ValidateModelLimits 在保存渠道时校验 model_limits：模型名不能为空，
+// 每一项都在 [0, MaxModelLimitValue] 内。
+func (s *ChannelSettings) ValidateModelLimits() error {
+	if s == nil {
+		return nil
+	}
+	for model, limit := range s.ModelLimits {
+		if strings.TrimSpace(model) == "" {
+			return fmt.Errorf("model_limits has a blank model name")
+		}
+		if err := limit.Validate(); err != nil {
+			return fmt.Errorf("model_limits for model %s: %w", model, err)
+		}
+	}
+	return nil
+}
+
+// CapacityPoolFor 返回上游模型绑定的容量池 id，没绑定时返回 0。
+func (s ChannelSettings) CapacityPoolFor(upstreamModel string) int {
+	return s.CapacityPools[upstreamModel]
+}
+
+// ValidateCapacityPools 在保存渠道时校验 capacity_pools：模型名不能为空，池 id 为正数。
+// 不检查池是否存在：池被删时会顺带清掉绑定，残留的 id 按未绑定处理。
+func (s *ChannelSettings) ValidateCapacityPools() error {
+	if s == nil {
+		return nil
+	}
+	for model, poolID := range s.CapacityPools {
+		if strings.TrimSpace(model) == "" {
+			return fmt.Errorf("capacity_pools has a blank model name")
+		}
+		if poolID <= 0 {
+			return fmt.Errorf("capacity_pools for model %s must be a positive pool id, got %d", model, poolID)
 		}
 	}
 	return nil

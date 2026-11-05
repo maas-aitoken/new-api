@@ -4,61 +4,70 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/QuantumNous/new-api/common"
-	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/middleware"
+	"github.com/QuantumNous/new-api/model"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
-// TestFinishInputForCostMultiplierKeysByUpstreamModel pins the <channel, model>
-// cost multiplier contract at the collection point: the multiplier is read at
-// Finish time from the channel setting the distributor refreshed for this
-// attempt, keyed by the upstream (model-mapped) model name rather than the
-// client-facing one.
-func TestFinishInputForCostMultiplierKeysByUpstreamModel(t *testing.T) {
+// TestFinishInputForCostMultiplierKeysByRequestModel pins where the
+// <channel, model> cost multiplier recorded into cost_actual comes from: it is
+// looked up by the request-side model name when the channel is selected
+// (same side as billing), never by the upstream model name the relay ends up
+// with after model mapping or after a streaming response reports its own model.
+func TestFinishInputForCostMultiplierKeysByRequestModel(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	tests := []struct {
 		name           string
+		channelModels  string
 		costMultiplier map[string]float64
+		requestModel   string
 		upstreamModel  string
 		want           float64
 	}{
 		{
-			name:           "keyed by mapped upstream model name",
-			costMultiplier: map[string]float64{"gpt-4o-2024-08": 2.5, "gpt-4o": 9},
-			upstreamModel:  "gpt-4o-2024-08",
-			want:           2.5,
+			name:           "aliases mapped to one upstream keep their own multiplier",
+			channelModels:  "gpt-4o,gpt-4o-latest",
+			costMultiplier: map[string]float64{"gpt-4o": 0.8, "gpt-4o-latest": 0.5, "gpt-4o-2024-08-06": 9},
+			requestModel:   "gpt-4o-latest",
+			upstreamModel:  "gpt-4o-2024-08-06",
+			want:           0.5,
 		},
 		{
-			name:           "client model name alone does not match when mapping renamed it",
-			costMultiplier: map[string]float64{"gpt-4o": 9},
-			upstreamModel:  "gpt-4o-2024-08",
-			want:           1,
+			name:           "upstream name reported by a streaming response does not matter",
+			channelModels:  "claude-sonnet-4-5",
+			costMultiplier: map[string]float64{"claude-sonnet-4-5": 0.6},
+			requestModel:   "claude-sonnet-4-5",
+			upstreamModel:  "claude-sonnet-4-5-20250929",
+			want:           0.6,
 		},
 		{
-			name:           "unmapped model matches its own name",
-			costMultiplier: map[string]float64{"gpt-4o": 1.5},
-			upstreamModel:  "gpt-4o",
-			want:           1.5,
+			name:           "effort variant falls back to the channel model it matched",
+			channelModels:  "gpt-5",
+			costMultiplier: map[string]float64{"gpt-5": 0.7},
+			requestModel:   "gpt-5-high",
+			upstreamModel:  "gpt-5",
+			want:           0.7,
 		},
 		{
-			name:           "no channel setting in context defaults to one",
-			upstreamModel:  "gpt-4o",
-			want:           1,
+			name:          "unconfigured multiplier records exactly what was billed",
+			channelModels: "gpt-4o",
+			requestModel:  "gpt-4o",
+			upstreamModel: "gpt-4o",
+			want:          1,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			channel := &model.Channel{Id: 7, Models: tt.channelModels}
+			channel.SetSetting(dto.ChannelSettings{CostMultiplierMap: tt.costMultiplier})
 			c, _ := gin.CreateTestContext(httptest.NewRecorder())
-			if tt.costMultiplier != nil {
-				common.SetContextKey(c, constant.ContextKeyChannelSetting, dto.ChannelSettings{
-					CostMultiplierMap: tt.costMultiplier,
-				})
-			}
+			require.Nil(t, middleware.SetupContextForSelectedChannel(c, channel, tt.requestModel))
 			info := &relaycommon.RelayInfo{
 				ChannelMeta: &relaycommon.ChannelMeta{UpstreamModelName: tt.upstreamModel},
 			}

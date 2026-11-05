@@ -348,6 +348,7 @@ func migrateDB() error {
 	err := DB.AutoMigrate(
 		&Channel{},
 		&ResourcePoolSource{},
+		&CapacityPool{},
 		&Token{},
 		&User{},
 		&UserSession{},
@@ -389,6 +390,7 @@ func migrateDB() error {
 		&AuthzRole{},
 		&RelayAttempt{},
 		&UserAccessToken{},
+		&UserDataScope{},
 	)
 	if err != nil {
 		return err
@@ -459,6 +461,7 @@ func migrateDBFast() error {
 		{&SystemTask{}, "SystemTask"},
 		{&SystemTaskLock{}, "SystemTaskLock"},
 		{&RelayAttempt{}, "RelayAttempt"},
+		{&UserDataScope{}, "UserDataScope"},
 	}
 	// 动态计算migration数量，确保errChan缓冲区足够大
 	errChan := make(chan error, len(migrations))

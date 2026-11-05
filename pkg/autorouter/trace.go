@@ -16,6 +16,9 @@ const (
 	ReasonPerCall         = "per_call"         // billed per call, which cannot be compared with per-token prices
 	ReasonClientReasoning = "client_reasoning" // the client's own reasoning settings rule it out
 	ReasonUnavailable     = "unavailable"      // not servable, the reason is not known
+	// the scheduler's preview admits none of its channels right now (pool exhausted,
+	// over its limits, capacity unknown), so the real schedule would fail with 503
+	ReasonSchedulerNoCandidate = "scheduler_no_candidate"
 )
 
 // How the classification of a request was obtained.
@@ -32,9 +35,9 @@ const (
 
 // Why a decision is not trusted.
 const (
-	TrustNoDecision    = "no_decision"
-	TrustNoDifficulty  = "no_difficulty"
-	TrustLowConfidence = "low_confidence"
+	TrustNoDecision   = "no_decision"
+	TrustNoDifficulty = "no_difficulty"
+	TrustUnknownTask  = "unknown_task" // the task type belongs to no class, such as unknown
 )
 
 // Why an adaptive request has no judged weight.
@@ -113,11 +116,7 @@ type ReasonCount struct {
 // Trust says whether the classification could pick a ranking, and from what.
 type Trust struct {
 	// Reason is empty when the decision is trusted.
-	Reason    string  `json:"reason,omitempty"`
-	Threshold float64 `json:"threshold"`
-	// Classes is the probability of each class, summed over its task types; set only
-	// when the task type alone was not enough.
-	Classes map[string]float64 `json:"classes,omitempty"`
+	Reason string `json:"reason,omitempty"`
 	// Profiles are the rankings tried, most specific first.
 	Profiles []string `json:"profiles,omitempty"`
 }

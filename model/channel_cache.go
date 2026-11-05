@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -138,61 +139,16 @@ func GetRandomSatisfiedChannel(group string, model string, retry int, filters []
 	channelSyncLock.RLock()
 	defer channelSyncLock.RUnlock()
 
-	// First, try to find channels with the exact model name.
-	channels, _ := filterCandidateIDs(group2model2channels[group][model], model, filters)
-
-	// If no channels found, try to find channels with the normalized model name.
-	if len(channels) == 0 {
-		normalizedModel := ratio_setting.RoutingMatchModelName(model)
-		channels, _ = filterCandidateIDs(group2model2channels[group][normalizedModel], model, filters)
+	targetChannels, err := retryTierLocked(group, model, retry, filters)
+	if err != nil || len(targetChannels) == 0 {
+		return nil, err
 	}
-
-	if len(channels) == 0 {
-		return nil, nil
+	if len(targetChannels) == 1 {
+		return targetChannels[0], nil
 	}
-
-	if len(channels) == 1 {
-		if channel, ok := channelsIDM[channels[0]]; ok {
-			return channel, nil
-		}
-		return nil, fmt.Errorf("database consistency error: channel #%d does not exist, please contact the administrator", channels[0])
-	}
-
-	uniquePriorities := make(map[int]bool)
-	for _, channelId := range channels {
-		if channel, ok := channelsIDM[channelId]; ok {
-			uniquePriorities[int(channel.GetPriority())] = true
-		} else {
-			return nil, fmt.Errorf("database consistency error: channel #%d does not exist, please contact the administrator", channelId)
-		}
-	}
-	var sortedUniquePriorities []int
-	for priority := range uniquePriorities {
-		sortedUniquePriorities = append(sortedUniquePriorities, priority)
-	}
-	sort.Sort(sort.Reverse(sort.IntSlice(sortedUniquePriorities)))
-
-	if retry >= len(uniquePriorities) {
-		retry = len(uniquePriorities) - 1
-	}
-	targetPriority := int64(sortedUniquePriorities[retry])
-
-	// get the priority for the given retry number
-	var sumWeight = 0
-	var targetChannels []*Channel
-	for _, channelId := range channels {
-		if channel, ok := channelsIDM[channelId]; ok {
-			if channel.GetPriority() == targetPriority {
-				sumWeight += channel.GetWeight()
-				targetChannels = append(targetChannels, channel)
-			}
-		} else {
-			return nil, fmt.Errorf("database consistency error: channel #%d does not exist, please contact the administrator", channelId)
-		}
-	}
-
-	if len(targetChannels) == 0 {
-		return nil, errors.New(fmt.Sprintf("no channel found, group: %s, model: %s, priority: %d", group, model, targetPriority))
+	sumWeight := 0
+	for _, channel := range targetChannels {
+		sumWeight += channel.GetWeight()
 	}
 
 	// smoothing factor and adjustment
@@ -224,6 +180,111 @@ func GetRandomSatisfiedChannel(group string, model string, retry int, filters []
 	}
 	// return null if no channel is not found
 	return nil, errors.New("channel not found")
+}
+
+// retryTierLocked 返回第 retry 次尝试要从中抽签的那一档渠道：按过滤条件筛出该分组下服务
+// 这个模型的渠道（精确名没有时退到去掉 @ 修饰等后缀的路由名），再取第 retry 高的优先级，
+// 超出档数时取最低一档。实际抽签（GetRandomSatisfiedChannel）和首次渠道分布估算
+// （FirstAttemptChannelShares）共用它，两边的选渠道规则不会走散。调用方持有 channelSyncLock。
+func retryTierLocked(group string, model string, retry int, filters []dto.ChannelFilter) ([]*Channel, error) {
+	channelIDs, _ := filterCandidateIDs(group2model2channels[group][model], model, filters)
+	if len(channelIDs) == 0 {
+		normalizedModel := ratio_setting.RoutingMatchModelName(model)
+		channelIDs, _ = filterCandidateIDs(group2model2channels[group][normalizedModel], model, filters)
+	}
+	if len(channelIDs) == 0 {
+		return nil, nil
+	}
+	candidates := make([]*Channel, 0, len(channelIDs))
+	seen := make(map[int64]bool)
+	priorities := make([]int64, 0, len(channelIDs))
+	for _, channelId := range channelIDs {
+		channel, ok := channelsIDM[channelId]
+		if !ok {
+			return nil, fmt.Errorf("database consistency error: channel #%d does not exist, please contact the administrator", channelId)
+		}
+		candidates = append(candidates, channel)
+		if priority := channel.GetPriority(); !seen[priority] {
+			seen[priority] = true
+			priorities = append(priorities, priority)
+		}
+	}
+	slices.Sort(priorities)
+	slices.Reverse(priorities)
+	targetPriority := priorities[min(retry, len(priorities)-1)]
+	tier := make([]*Channel, 0, len(candidates))
+	for _, channel := range candidates {
+		if channel.GetPriority() == targetPriority {
+			tier = append(tier, channel)
+		}
+	}
+	return tier, nil
+}
+
+// ChannelShare 是一次请求的首次尝试落到某个渠道的概率。
+type ChannelShare struct {
+	Channel     *Channel
+	Probability float64
+}
+
+// FirstAttemptChannelShares 估算一次请求的首次尝试会按什么概率落到哪些渠道，只读、不抽签。
+// 规则与实际选渠道一致：groups 按顺序取第一个筛选后还有渠道的分组，在它最高优先级那一档里
+// 按权重分配，权重全为 0 时平均分；没有内存缓存时按数据库路径的权重（权重 + 10）分配。
+// 不含会话亲和：亲和命中时首次必落亲和渠道，由调用方先判断。返回命中的分组；
+// 没有任何分组有可用渠道时返回空串和 nil。
+func FirstAttemptChannelShares(groups []string, model string, filters []dto.ChannelFilter) (string, []ChannelShare) {
+	if !common.MemoryCacheEnabled {
+		for _, group := range groups {
+			abilities, err := databaseRetryTier(group, model, 0, filters)
+			if err != nil {
+				continue
+			}
+			tier := make([]*Channel, 0, len(abilities))
+			weights := make([]float64, 0, len(abilities))
+			for _, ability := range abilities {
+				if channel, err := CacheGetChannel(ability.ChannelId); err == nil && channel != nil {
+					tier = append(tier, channel)
+					weights = append(weights, float64(ability.Weight)+10)
+				}
+			}
+			if len(tier) > 0 {
+				return group, sharesByWeight(tier, weights)
+			}
+		}
+		return "", nil
+	}
+
+	channelSyncLock.RLock()
+	defer channelSyncLock.RUnlock()
+	for _, group := range groups {
+		tier, err := retryTierLocked(group, model, 0, filters)
+		if err != nil || len(tier) == 0 {
+			continue
+		}
+		weights := make([]float64, len(tier))
+		for i, channel := range tier {
+			weights[i] = float64(channel.GetWeight())
+		}
+		return group, sharesByWeight(tier, weights)
+	}
+	return "", nil
+}
+
+// sharesByWeight 按权重把概率分给这一档的渠道，权重全为 0 时平均分。
+func sharesByWeight(tier []*Channel, weights []float64) []ChannelShare {
+	total := 0.0
+	for _, weight := range weights {
+		total += weight
+	}
+	shares := make([]ChannelShare, len(tier))
+	for i, channel := range tier {
+		probability := 1 / float64(len(tier))
+		if total > 0 {
+			probability = weights[i] / total
+		}
+		shares[i] = ChannelShare{Channel: channel, Probability: probability}
+	}
+	return shares
 }
 
 // filterChannelsByRequestPathAndModel restricts candidates by request path and

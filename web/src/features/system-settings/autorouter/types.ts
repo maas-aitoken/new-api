@@ -34,7 +34,6 @@ export type AutoRouterSettings = {
   'autorouter_setting.default_preference': string
   /** JSON object: preference -> weight. */
   'autorouter_setting.cost_weights': string
-  'autorouter_setting.min_task_type_probability': number
   'autorouter_setting.continuation_task_change': number
   'autorouter_setting.upgrade_benefit': number
   'autorouter_setting.default_effort': string

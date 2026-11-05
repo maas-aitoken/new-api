@@ -94,6 +94,18 @@ func TestChannelHasSensitiveChanges(t *testing.T) {
 			"response_time": updated.ResponseTime,
 		}))
 	})
+
+	// 渠道级额度已停用，旧前端仍可能带着这三个键；只有 ChannelWrite 的管理员
+	// 不能因此被当成敏感改动拦下。
+	t.Run("retired channel limit fields from old clients are ignored", func(t *testing.T) {
+		updated := PatchChannel{Channel: *origin}
+
+		assert.False(t, channelHasSensitiveChanges(&updated, origin, map[string]any{
+			"rpm":             60,
+			"tpm":             90000,
+			"max_concurrency": 4,
+		}))
+	})
 }
 
 func TestClearChannelReadOnlyFields(t *testing.T) {
