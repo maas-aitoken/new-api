@@ -523,12 +523,18 @@ func TestDistributeEnforcedSchedulerScopesSuffixedModelsLikeNativeRouting(t *tes
 
 	for index, requested := range []string{"gpt-5-low", "gpt-5@effort:high", "gpt-5"} {
 		allowed = nil
-		_, originalModel, recorder := serveAutoRoutingRequest(t, "/v1/chat/completions", 9650+index,
-			fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":"hello"}]}`, requested))
+		capacityModel := ""
+		_, originalModel, recorder := serveAutoRoutingRequestIn(t, "/v1/chat/completions", "default", 9650+index,
+			fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":"hello"}]}`, requested), func(c *gin.Context) {
+				c.Next()
+				capacityModel = common.GetContextKeyString(c, constant.ContextKeyChannelCapacityModel)
+			})
 
 		require.Equal(t, http.StatusNoContent, recorder.Code, "%s: %s", requested, recorder.Body.String())
 		assert.Equal(t, requested, originalModel)
 		assert.Equal(t, []int{1}, allowed, requested)
+		// 中继按它算 <渠道, 上游模型> 计数池，与 Catalog 里这个渠道的池一致。
+		assert.Equal(t, "gpt-5", capacityModel, requested)
 	}
 }
 

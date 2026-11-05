@@ -107,7 +107,10 @@ func BuildSchedulerCatalogFromChannels(modelName string, channels []*model.Chann
 		if channel.Setting != nil {
 			settingRaw = *channel.Setting
 		}
-		capacity := model.ChannelModelCapacityOf(settingRaw, channel.GetModelMapping(), modelName)
+		// 按中继计数用的同一个公开名找额度和池：退到路由名服务的请求（如 gpt-5-high）
+		// 计进基础名 gpt-5 的池，准入看的也是 gpt-5 的额度。
+		capacityModel := model.ChannelCapacityModel(channel.GetModels(), channel.GetModelMapping(), modelName)
+		capacity := model.ChannelModelCapacityOf(settingRaw, channel.GetModelMapping(), capacityModel)
 		limit := capacity.Limit
 		poolID := channelcapacity.PoolID(channel.Id, capacity.UpstreamModel)
 		if floor, bound := capacityPoolFloors[capacity.CapacityPoolId]; bound && capacity.CapacityPoolId != 0 {

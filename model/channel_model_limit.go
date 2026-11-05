@@ -8,6 +8,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/relaykit/dto"
+	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	hostreasoning "github.com/QuantumNous/new-api/setting/reasoning"
 
 	"gorm.io/gorm"
@@ -156,4 +157,22 @@ func ChannelModelCapacityOf(settingRaw, modelMappingRaw, publicModel string) Cha
 	capacity.Limit = setting.ModelLimitFor(upstream)
 	capacity.CapacityPoolId = setting.CapacityPoolFor(upstream)
 	return capacity
+}
+
+// ChannelCapacityModel 返回请求在这个渠道上按哪个公开名算额度和计数：渠道列了请求名、
+// 或 model_mapping 认这个名字时就是请求名；否则是原生选路退到的路由名（去掉 @ 修饰和
+// 推理强度后缀）。所以渠道只列了 gpt-5 时，gpt-5-high 与 gpt-5 计进同一个池、受同一份
+// model_limits 约束，不会多出一个能力页上看不到、也没配额度的池。结果再交给
+// ChannelModelCapacityOf / ResolveMappedModel 走映射链。
+func ChannelCapacityModel(channelModels []string, modelMappingRaw, requestModel string) string {
+	if slices.Contains(channelModels, requestModel) {
+		return requestModel
+	}
+	if _, mapped, _ := ResolveMappedModel(modelMappingRaw, requestModel); mapped {
+		return requestModel
+	}
+	if routing := ratio_setting.RoutingMatchModelName(requestModel); slices.Contains(channelModels, routing) {
+		return routing
+	}
+	return requestModel
 }

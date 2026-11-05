@@ -167,8 +167,9 @@ func TestBuildSchedulerCatalogIncludesModelMappingSourceAlias(t *testing.T) {
 // 客户端发带推理后缀的名字、渠道只列了基础名时，原生选路会退到路由名；Catalog 也要有
 // 这个渠道的端点，否则调度器加载不到这个模型。
 func TestBuildSchedulerCatalogServesSuffixedModelsLikeNativeRouting(t *testing.T) {
+	limited := `{"model_limits":{"gpt-5":{"rpm":30}}}`
 	channels := []*model.Channel{
-		{Id: 1, Type: constant.ChannelTypeOpenAI, Key: "k", Status: common.ChannelStatusEnabled, Models: "gpt-5"},
+		{Id: 1, Type: constant.ChannelTypeOpenAI, Key: "k", Status: common.ChannelStatusEnabled, Models: "gpt-5", Setting: &limited},
 		{Id: 2, Type: constant.ChannelTypeOpenAI, Key: "k", Status: common.ChannelStatusEnabled, Models: "gpt-5-high"},
 		{Id: 3, Type: constant.ChannelTypeOpenAI, Key: "k", Status: common.ChannelStatusEnabled, Models: "other"},
 	}
@@ -190,6 +191,16 @@ func TestBuildSchedulerCatalogServesSuffixedModelsLikeNativeRouting(t *testing.T
 	assert.Equal(t, []int{1, 2}, endpointChannels("gpt-5-high"))
 	_, err := BuildSchedulerCatalogFromChannels("gpt-6-high", channels, nil)
 	assert.Error(t, err)
+
+	// 退到基础名服务的请求计进基础名的池、受基础名的额度约束，与中继计数同一个池；
+	// 列了原名的渠道仍按自己的名字算。
+	suffixed, err := BuildSchedulerCatalogFromChannels("gpt-5-high", channels, nil)
+	require.NoError(t, err)
+	require.Len(t, suffixed.Endpoints, 2)
+	assert.Equal(t, channelcapacity.PoolID(1, "gpt-5"), suffixed.Endpoints[0].CapacityPoolID)
+	assert.Equal(t, SchedulerLimits{RPM: 30}, suffixed.Endpoints[0].Limits)
+	assert.Equal(t, channelcapacity.PoolID(2, "gpt-5-high"), suffixed.Endpoints[1].CapacityPoolID)
+	assert.Equal(t, SchedulerLimits{}, suffixed.Endpoints[1].Limits)
 }
 
 func TestBuildSchedulerCatalogRejectsUnknownModel(t *testing.T) {
