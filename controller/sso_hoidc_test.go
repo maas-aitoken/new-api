@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/system_setting"
 	"github.com/gin-gonic/gin"
@@ -89,4 +90,7 @@ func TestSsoHoidcCallbackRedirectsWithoutAccessToken(t *testing.T) {
 			assert.Contains(t, strings.Join(response.Header().Values("Set-Cookie"), "\n"), service.RefreshCookieName+"=")
 		})
 	}
+	stored, err := model.GetUserById(user.Id, false)
+	require.NoError(t, err)
+	assert.Positive(t, stored.LastLoginAt, "an SSO login records the last login time like other logins")
 }

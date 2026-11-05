@@ -9,6 +9,7 @@ import (
 	"unicode"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/system_setting"
 	"github.com/gin-gonic/gin"
@@ -89,6 +90,7 @@ func SsoHoidcCallback(c *gin.Context) {
 	service.WriteRefreshCookie(c, bundle.RefreshToken)
 
 	c.Set("login_method", "sso_hoidc")
+	model.UpdateUserLastLoginAt(user.Id)
 	recordLoginAudit(user, c)
 
 	// The frontends restore the session from the refresh cookie, so the access
