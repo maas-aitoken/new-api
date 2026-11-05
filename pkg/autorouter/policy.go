@@ -27,7 +27,9 @@ type Policy struct {
 	DifficultyEfforts []string
 	DefaultEffort     string
 	// UpgradeBenefit is the larger_model_benefit at or above which the effort
-	// goes up one rung.
+	// goes one rung up: above the effort of a kept previous model, else above the
+	// difficulty's effort. A difficulty whose effort already reaches that rung
+	// counts as the raise. It applies even when the task type is unknown.
 	UpgradeBenefit float64
 	// ContinuationTaskChange is the task_change below which the request
 	// continues the previous task: the model stays, so the prompt cache
@@ -107,7 +109,10 @@ func validateDecision(decision *Decision) (profiles []string, validity Validity)
 //
 // A valid decision whose task type is unknown routes by no ranking, so it
 // keeps the previous route or takes the defaults, like a request without a
-// valid decision.
+// valid decision. A larger model benefit at or above UpgradeBenefit still
+// sets its effort: the model is chosen that way, the effort goes one rung up
+// as UpgradeBenefit describes, and inherited is false because the effort came
+// from the decision.
 //
 // candidates.Available judges a model against the request exactly as the client
 // sent it; the inherited fallbacks use it because they leave the client's
@@ -136,7 +141,11 @@ func SelectRoute(decision *Decision, previous *Route, policy Policy, candidates 
 	available, overridable := candidates.Available, candidates.Overridable
 	profiles, validity := validateDecision(decision)
 	trace.Validity = &validity
-	if profiles == nil {
+	upgrade := decision != nil && decision.LargerModelBenefit != nil && *decision.LargerModelBenefit >= policy.UpgradeBenefit
+	// 任务类型是 unknown 时没有榜单可选，但大模型收益够高说明这条消息本身需要更强的推理
+	// （多是对上一轮结果不满、要求重做），档位仍由这次判断来定。
+	effortOnly := validity.Error == "" && decision.TaskType == TaskTypeUnknown && upgrade
+	if profiles == nil && !effortOnly {
 		if previous != nil && ModelAvailable(previous.Model, available) {
 			trace.Ladder = append(trace.Ladder, LadderStep{Profile: previous.Profile, Outcome: OutcomeInherited, Model: previous.Model})
 			return *previous, true, true, nil
@@ -150,23 +159,39 @@ func SelectRoute(decision *Decision, previous *Route, policy Policy, candidates 
 		effort = policy.DifficultyEfforts[min(decision.Difficulty, len(policy.DifficultyEfforts))-1]
 	}
 	trace.Effort = &EffortTrace{Difficulty: decision.Difficulty, Base: effort, Benefit: decision.LargerModelBenefit, Threshold: policy.UpgradeBenefit}
-	if decision.LargerModelBenefit != nil && *decision.LargerModelBenefit >= policy.UpgradeBenefit {
-		if rank := slices.Index(effortLadder, effort); rank >= 0 && rank < len(effortLadder)-1 {
+
+	// 沿用上一轮的模型：任务类型是 unknown 时只要上一轮的模型还能用；任务类型是二级类时还要求同任务延续。
+	keep := false
+	if previous != nil {
+		switch {
+		case effortOnly:
+			keep = ModelAvailable(previous.Model, overridable)
+			if keep {
+				trace.Ladder = append(trace.Ladder, LadderStep{Profile: previous.Profile, Outcome: OutcomeInherited, Model: previous.Model})
+			}
+		case decision.TaskChange != nil:
+			keep = *decision.TaskChange < policy.ContinuationTaskChange && ModelAvailable(previous.Model, overridable)
+			trace.Continuation = &Continuation{Previous: previous.Model, TaskChange: *decision.TaskChange, Threshold: policy.ContinuationTaskChange, Continued: keep}
+		}
+	}
+	if keep && slices.Index(effortLadder, previous.Effort) > slices.Index(effortLadder, effort) {
+		effort = previous.Effort
+		trace.Effort.Floored = true
+	}
+	// 提升按上一轮算：沿用上一轮的模型时要比上一轮的档位高一档，难度给的档位已经到了就不再加；
+	// 没有沿用时比难度给的档位高一档。
+	if upgrade {
+		raiseFrom := effort
+		if keep {
+			raiseFrom = previous.Effort
+		}
+		if rank := slices.Index(effortLadder, raiseFrom); rank >= 0 && rank < len(effortLadder)-1 && rank+1 > slices.Index(effortLadder, effort) {
 			effort = effortLadder[rank+1]
 			trace.Effort.Upgraded = true
 		}
 	}
-
-	if previous != nil && decision.TaskChange != nil {
-		continued := *decision.TaskChange < policy.ContinuationTaskChange && ModelAvailable(previous.Model, overridable)
-		trace.Continuation = &Continuation{Previous: previous.Model, TaskChange: *decision.TaskChange, Threshold: policy.ContinuationTaskChange, Continued: continued}
-		if continued {
-			if slices.Index(effortLadder, previous.Effort) > slices.Index(effortLadder, effort) {
-				effort = previous.Effort
-				trace.Effort.Floored = true
-			}
-			return Route{Profile: previous.Profile, Model: previous.Model, Effort: effort}, false, true, nil
-		}
+	if keep {
+		return Route{Profile: previous.Profile, Model: previous.Model, Effort: effort}, false, true, nil
 	}
 
 	for _, profile := range profiles {
@@ -276,7 +301,7 @@ func ResolveVariant(model, effort string, available func(model string) bool) (st
 
 // Where a route came from.
 const (
-	SourceJev     = "jev"     // jev ran and its decision set the route
+	SourceJev     = "jev"     // jev ran and its decision set the route, or at least its effort
 	SourceCache   = "cache"   // that decision came from the cache; the route is recomputed
 	SourceInherit = "inherit" // the task type was unknown, or there was no valid decision; previous route kept
 	SourceDefault = "default" // the same, with no previous route
@@ -295,8 +320,8 @@ type Result struct {
 	// 推理维度，并且裸模型名本身可用时才这样做，其余沿用后缀。
 	EffortInBody bool `json:"effort_in_body,omitempty"`
 	// EffortOverride 表示这条路由的档位由 jev 的判断定下，可以覆盖客户端自己写的推理字段：
-	// 任务类型是二级类。其余情况（任务类型是 unknown、没有合法判断、辅助请求）为 false，
-	// 不碰客户端字段。
+	// 任务类型是二级类，或任务类型是 unknown 但大模型收益达到提档阈值。其余情况（任务类型
+	// 是 unknown、没有合法判断、辅助请求）为 false，不碰客户端字段。
 	EffortOverride bool `json:"effort_override,omitempty"`
 	// Pick 是模型按质量和价格在多个候选里选出时的比较过程；沿用上一轮模型、
 	// 兜底和按榜单顺序取第一个时为 nil。

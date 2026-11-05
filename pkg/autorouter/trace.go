@@ -141,8 +141,12 @@ type EffortTrace struct {
 	Base       string   `json:"base"`
 	Benefit    *float64 `json:"benefit,omitempty"`
 	Threshold  float64  `json:"threshold"`
-	Upgraded   bool     `json:"upgraded,omitempty"`
-	// Floored means the previous effort was higher, so a continuation kept it.
+	// Upgraded means the larger model benefit raised the effort one rung above the
+	// kept previous model's effort, else above the difficulty's effort. A
+	// difficulty whose effort already reached that rung leaves it false.
+	Upgraded bool `json:"upgraded,omitempty"`
+	// Floored means the previous effort was higher, so keeping the previous model
+	// kept it too.
 	Floored bool `json:"floored,omitempty"`
 }
 

@@ -33,7 +33,8 @@ const (
 
 // fakeJev answers by the current task: "hard" is a very difficult coding task,
 // "careful" and "frugal" the same task from a user who stresses capability or
-// cost, "ok" is unclassifiable, "split" spreads the task type over several leaves
+// cost, "ok" is unclassifiable, "still broken" is unclassifiable too but would
+// gain from a larger model, "split" spreads the task type over several leaves
 // so that the most probable one stays well below half, anything else is a
 // simple question. Every answer continues the previous task and leans balanced
 // unless the task says otherwise. It expects the key and model that
@@ -61,7 +62,7 @@ func fakeJev(t *testing.T, calls *atomic.Int32, delay time.Duration) *httptest.S
 			assert.Contains(t, criteria, preference)
 		}
 		taskType, difficulty, mode := "general.chat", "0", autorouter.PreferenceBalanced
-		probabilities := ""
+		probabilities, benefit := "", "0.1"
 		switch payload.State["current_task"] {
 		case "hard":
 			taskType, difficulty = "code.build", "3"
@@ -71,6 +72,8 @@ func fakeJev(t *testing.T, calls *atomic.Int32, delay time.Duration) *httptest.S
 			taskType, difficulty, mode = "code.build", "3", autorouter.PreferenceCost
 		case "ok":
 			taskType = autorouter.TaskTypeUnknown
+		case "still broken":
+			taskType, benefit = autorouter.TaskTypeUnknown, "0.8"
 		case "split":
 			// 概率最高的叶子是 general.chat，但只有 0.4；code 下的两个叶子加起来 0.6。
 			difficulty = "3"
@@ -92,7 +95,7 @@ func fakeJev(t *testing.T, calls *atomic.Int32, delay time.Duration) *httptest.S
 			"mode":{"type":"choice","choice":"` + mode + `","probabilities":{` + strings.Join(modeShares, ",") + `}},
 			"difficulty":{"type":"score","probabilities":{"` + difficulty + `":0.8}},
 			"task_change":{"type":"noul","noul":0.1},
-			"larger_model_benefit":{"type":"noul","noul":0.1}}}`))
+			"larger_model_benefit":{"type":"noul","noul":` + benefit + `}}}`))
 	}))
 	t.Cleanup(server.Close)
 	return server
@@ -194,6 +197,14 @@ func TestResolveAutoModelFollowsPreviousRoute(t *testing.T) {
 	assert.Equal(t, "general.chat", continued.Decision.TaskType)
 	assert.True(t, continued.EffortOverride)
 
+	retried, err := ResolveAutoModel(newAutoRouterContext(9201, `{"messages":[
+		{"role":"user","content":"hard"},{"role":"assistant","content":"done"},{"role":"user","content":"still broken"}]}`), allModelsAvailable)
+	require.NoError(t, err)
+	assert.Equal(t, autorouter.Route{Profile: "code.build", Model: "coder", Effort: "max"}, retried.Route,
+		"任务类型是 unknown 但大模型收益够高：沿用上一轮的模型，档位比上一轮高一档")
+	assert.Equal(t, "coder-max", retried.ResolvedModel)
+	assert.Equal(t, autorouter.SourceJev, retried.Source)
+	assert.True(t, retried.EffortOverride, "档位由这次判断定下，覆盖客户端的推理字段")
 }
 
 // 概率最高的叶子哪怕只有 0.4，也按它的榜单选模型，code 下两个叶子加起来更高也不改走大类。

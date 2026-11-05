@@ -63,6 +63,11 @@ func TestSelectRoute(t *testing.T) {
 		{"unknown without previous uses defaults", spread(map[string]float64{"unknown": 0.9, "code.build": 0.1}), nil, nil, Route{Model: "general", Effort: "medium"}, true, true},
 		{"continuation keeps model and effort", decide("general.chat", 1, 0.1, 0.1), coderHigh, nil, *coderHigh, false, true},
 		{"continuation may raise effort", decide("code.ops", 4, 0.1, 0.1), coderHigh, nil, Route{Profile: "code.build", Model: "coder", Effort: "xhigh"}, false, true},
+		{"larger model benefit raises a continuation above the previous effort", decide("general.chat", 1, 0.1, 0.7), coderHigh, nil, Route{Profile: "code.build", Model: "coder", Effort: "xhigh"}, false, true},
+		{"repeated dissatisfaction keeps raising above the previous effort", decide("general.chat", 1, 0.1, 0.7), &Route{Profile: "code.build", Model: "coder", Effort: "xhigh"}, nil, Route{Profile: "code.build", Model: "coder", Effort: "max"}, false, true},
+		{"a difficulty already above the previous effort is not raised again", decide("code.build", 4, 0.1, 0.7), &Route{Profile: "code.build", Model: "coder", Effort: "medium"}, nil, Route{Profile: "code.build", Model: "coder", Effort: "xhigh"}, false, true},
+		{"larger model benefit raises an unknown task above the previous effort", decide(TaskTypeUnknown, 1, 0.1, 0.7), coderHigh, nil, Route{Profile: "code.build", Model: "coder", Effort: "xhigh"}, false, true},
+		{"larger model benefit raises an unknown task without previous on the defaults", decide(TaskTypeUnknown, 2, 1, 0.7), nil, nil, Route{Model: "general", Effort: "high"}, false, true},
 		{"new task switches model", decide("general.chat", 1, 0.9, 0.1), coderHigh, nil, Route{Profile: "general.chat", Model: "chat", Effort: "low"}, false, true},
 		{"continuation leaves an unavailable model", decide("general.chat", 1, 0.1, 0.1), coderHigh, []string{"chat"}, Route{Profile: "general.chat", Model: "chat", Effort: "low"}, false, true},
 		{"unknown inherits previous", decide(TaskTypeUnknown, 1, 0.1, 0.1), coderHigh, nil, *coderHigh, true, true},
@@ -114,6 +119,16 @@ func TestSelectRouteJudgesOverridingAndFallbackCandidatesSeparately(t *testing.T
 	assert.True(t, inherited)
 	assert.Equal(t, "general-b", route.Model, "没有判断时按客户端原样的请求选模，跳过 general")
 
+	// 任务类型是 unknown 但大模型收益够高时档位由 auto 定，同样撇开客户端的推理字段判定候选。
+	strong := 0.7
+	unknown := &Decision{TaskType: TaskTypeUnknown, TaskTypeProbability: 0.9, Difficulty: 2, TaskChange: &one, LargerModelBenefit: &strong}
+	route, inherited, ok, _ = SelectRoute(unknown, &Route{Model: "coder", Effort: "medium"}, policy, candidates, nil)
+	assert.True(t, ok)
+	assert.False(t, inherited)
+	assert.Equal(t, Route{Model: "coder", Effort: "high"}, route, "上一轮的 coder 只在 overridable 下可用，仍沿用它")
+	route, _, ok, _ = SelectRoute(unknown, nil, policy, candidates, nil)
+	assert.True(t, ok)
+	assert.Equal(t, Route{Model: "general", Effort: "high"}, route, "没有上一轮时按 overridable 取默认模型")
 }
 
 // pickEntry 描述质量/成本选择里的一个候选。
@@ -662,6 +677,23 @@ func TestSelectRouteTrace(t *testing.T) {
 		route, trace := run(decide("code.build", 2, 1, 0.7), nil, candidates)
 		assert.Equal(t, "high", route.Effort)
 		assert.Equal(t, &EffortTrace{Difficulty: 2, Base: "medium", Benefit: ptr(0.7), Threshold: 0.5, Upgraded: true}, trace.Effort)
+	})
+
+	t.Run("a difficulty one rung above the previous effort counts as the raise", func(t *testing.T) {
+		previous := &Route{Profile: "code.build", Model: "top", Effort: "medium"}
+		route, trace := run(decide("code.build", 3, 0.1, 0.7), previous, candidates)
+		assert.Equal(t, Route{Profile: "code.build", Model: "top", Effort: "high"}, route, "比上一轮高一档的 high 由难度给出，收益不再加到 xhigh")
+		assert.Equal(t, &EffortTrace{Difficulty: 3, Base: "high", Benefit: ptr(0.7), Threshold: 0.5}, trace.Effort)
+	})
+
+	t.Run("an unknown task with a large benefit keeps the previous model one rung above its effort", func(t *testing.T) {
+		previous := &Route{Profile: "code.build", Model: "top", Effort: "high"}
+		route, trace := run(decide(TaskTypeUnknown, 1, 0.1, 0.7), previous, candidates)
+		assert.Equal(t, Route{Profile: "code.build", Model: "top", Effort: "xhigh"}, route)
+		assert.Equal(t, &Validity{}, trace.Validity, "unknown 是合法的判断，只是没有榜单")
+		assert.Equal(t, &EffortTrace{Difficulty: 1, Base: "low", Benefit: ptr(0.7), Threshold: 0.5, Floored: true, Upgraded: true}, trace.Effort)
+		assert.Nil(t, trace.Continuation, "任务类型是 unknown 时不看任务变化")
+		assert.Equal(t, []LadderStep{{Profile: "code.build", Outcome: OutcomeInherited, Model: "top"}}, trace.Ladder)
 	})
 
 	t.Run("without a decision the previous route is kept", func(t *testing.T) {
