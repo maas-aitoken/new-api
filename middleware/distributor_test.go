@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
@@ -494,6 +495,60 @@ func TestDistributeNonAutoRequestKeepsStoredBody(t *testing.T) {
 	require.Equal(t, http.StatusNoContent, recorder.Code, recorder.Body.String())
 	assert.Equal(t, "general", originalModel)
 	assert.Equal(t, body, stored)
+}
+
+// 调度器决定渠道时，客户端发带推理后缀的名字、渠道只列了基础名，allowed_channel_ids
+// 也要有这个渠道（原生选路能选到它）；以前这里是空的，调度器只能回"无候选"，请求 503。
+func TestDistributeEnforcedSchedulerScopesSuffixedModelsLikeNativeRouting(t *testing.T) {
+	setupAutoRoutingDistribute(t, []string{"gpt-5"}, map[int][]string{1: {"gpt-5"}, 2: {"other"}})
+	var allowed []int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			Model             string `json:"model"`
+			AllowedChannelIDs []int  `json:"allowed_channel_ids"`
+		}
+		assert.NoError(t, common.DecodeJson(r.Body, &request))
+		allowed = request.AllowedChannelIDs
+		if len(allowed) == 0 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{"error":"no candidate endpoint"}`))
+			return
+		}
+		_, _ = fmt.Fprintf(w, `{"decision_id":"d","catalog_version":"v","candidates":[{"endpoint_id":"new-api-ch-%d","channel_id":%d,"model":%q,"reason":["available"]}]}`,
+			allowed[0], allowed[0], request.Model)
+	}))
+	defer server.Close()
+	service.ConfigureSchedulerClientForTest(service.SchedulerClientConfig{Enabled: true, Mode: "enforced", BaseURL: server.URL, Token: "scheduler-test", Timeout: time.Second})
+	t.Cleanup(func() { service.ConfigureSchedulerClientForTest(service.SchedulerClientConfig{}) })
+
+	for index, requested := range []string{"gpt-5-low", "gpt-5@effort:high", "gpt-5"} {
+		allowed = nil
+		capacityModel := ""
+		_, originalModel, recorder := serveAutoRoutingRequestIn(t, "/v1/chat/completions", "default", 9650+index,
+			fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":"hello"}]}`, requested), func(c *gin.Context) {
+				c.Next()
+				capacityModel = common.GetContextKeyString(c, constant.ContextKeyChannelCapacityModel)
+			})
+
+		require.Equal(t, http.StatusNoContent, recorder.Code, "%s: %s", requested, recorder.Body.String())
+		assert.Equal(t, requested, originalModel)
+		assert.Equal(t, []int{1}, allowed, requested)
+		// 中继按它算 <渠道, 上游模型> 计数池，与 Catalog 里这个渠道的池一致。
+		assert.Equal(t, "gpt-5", capacityModel, requested)
+	}
+}
+
+// auto 判断候选时强度变体只有渠道真的列了才算可用：渠道只列了 gpt-5 时选 gpt-5，
+// 不会选 gpt-5-medium 再借后缀往上游加推理强度（模型不一定支持）。
+func TestDistributeAutoOnlyResolvesListedEffortVariants(t *testing.T) {
+	setupAutoRoutingDistribute(t, []string{"gpt-5"}, map[int][]string{1: {"gpt-5"}})
+	useModelPrices(t, map[string]float64{"gpt-5": 1, "gpt-5-medium": 1})
+
+	_, originalModel, recorder := serveAutoRoutingRequest(t, "/v1/chat/completions", 9660,
+		`{"model":"auto","messages":[{"role":"user","content":"hello"}]}`)
+
+	require.Equal(t, http.StatusNoContent, recorder.Code, recorder.Body.String())
+	assert.Equal(t, "gpt-5", originalModel)
 }
 
 // useEnforcedToolCapabilities 给 models 里每个模型声明"支持 tools"，并把门控切到 enforce。

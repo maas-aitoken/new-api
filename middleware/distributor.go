@@ -186,7 +186,7 @@ func Distribute() func(c *gin.Context) {
 					channelsOf := func(candidate string) []int {
 						channelIDs, seen := channels[candidate]
 						if !seen {
-							channelIDs = usableChannelIDs(c, candidate, usingGroup, c.Request.URL.Path)
+							channelIDs = usableChannelIDs(c, candidate, usingGroup, c.Request.URL.Path, model.GetEnabledChannelIDsForGroupModel)
 							channels[candidate] = channelIDs
 						}
 						return channelIDs
@@ -259,7 +259,7 @@ func Distribute() func(c *gin.Context) {
 		if !pinned && shouldSelectChannel {
 			usingGroup := common.GetContextKeyString(c, constant.ContextKeyUsingGroup)
 			var selectGroup string
-			allowedChannels := usableChannelIDs(c, modelRequest.Model, usingGroup, c.Request.URL.Path)
+			allowedChannels := usableChannelIDs(c, modelRequest.Model, usingGroup, c.Request.URL.Path, model.GetRoutableChannelIDsForGroupModel)
 			if capabilityGate != nil {
 				narrowed := capabilityGate.FilterChannels(c, modelRequest.Model, allowedChannels)
 				if len(allowedChannels) > 0 && len(narrowed) == 0 {
@@ -379,14 +379,18 @@ func Distribute() func(c *gin.Context) {
 // enabled channels of the group (or auto groups) that serve the model on this
 // request path. Scheduler must never rank a channel outside it, and the auto
 // router only picks models that have one.
-func usableChannelIDs(c *gin.Context, modelName, usingGroup, requestPath string) []int {
+// lookup 决定按什么口径找分组里的渠道：选定模型后的请求范围用
+// model.GetRoutableChannelIDsForGroupModel，与原生选路一致（带推理后缀的名字退到
+// 路由名）；auto 判断候选用 model.GetEnabledChannelIDsForGroupModel，强度变体只有
+// 渠道真的列了才算可用。
+func usableChannelIDs(c *gin.Context, modelName, usingGroup, requestPath string, lookup func(group, modelName string) []int) []int {
 	groups := []string{usingGroup}
 	if usingGroup == "auto" {
 		groups = service.GetRequestAutoGroups(c, common.GetContextKeyString(c, constant.ContextKeyUserGroup))
 	}
 	allowed := make(map[int]struct{})
 	for _, group := range groups {
-		for _, channelID := range model.GetEnabledChannelIDsForGroupModel(group, modelName) {
+		for _, channelID := range lookup(group, modelName) {
 			channel, err := model.CacheGetChannel(channelID)
 			if err != nil || channel == nil || channel.Status != common.ChannelStatusEnabled ||
 				!channelSupportsRequestPath(channel, requestPath, modelName) {
@@ -958,6 +962,7 @@ func SetupContextForSelectedChannel(c *gin.Context, channel *model.Channel, mode
 	}
 	common.SetContextKey(c, constant.ContextKeyChannelAutoBan, channel.GetAutoBan())
 	common.SetContextKey(c, constant.ContextKeyChannelModelMapping, channel.GetModelMapping())
+	common.SetContextKey(c, constant.ContextKeyChannelCapacityModel, model.ChannelCapacityModel(channel.GetModels(), channel.GetModelMapping(), modelName))
 	common.SetContextKey(c, constant.ContextKeyChannelStatusCodeMapping, channel.GetStatusCodeMapping())
 
 	key, index, newAPIError := channel.GetNextEnabledKey()

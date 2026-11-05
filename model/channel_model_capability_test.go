@@ -436,6 +436,35 @@ func TestResolveMappedModel(t *testing.T) {
 	}
 }
 
+// 额度和计数从哪个公开名起算：渠道没列请求名、靠原生选路退到路由名服务时，按基础名算，
+// 与能力页上那一行的额度一致。
+func TestChannelCapacityModel(t *testing.T) {
+	tests := []struct {
+		name     string
+		models   []string
+		mapping  string
+		request  string
+		want     string
+		upstream string
+	}{
+		{name: "listed", models: []string{"gpt-5"}, request: "gpt-5", want: "gpt-5", upstream: "gpt-5"},
+		{name: "suffix falls back to the listed base", models: []string{"gpt-5"}, request: "gpt-5-high", want: "gpt-5", upstream: "gpt-5"},
+		{name: "explicit modifier falls back too", models: []string{"gpt-5"}, request: "gpt-5@effort:high", want: "gpt-5", upstream: "gpt-5"},
+		{name: "a listed variant keeps its own name", models: []string{"gpt-5", "gpt-5-high"}, request: "gpt-5-high", want: "gpt-5-high", upstream: "gpt-5-high"},
+		{name: "a mapping source keeps its own name", models: []string{"gpt-5"}, mapping: `{"gpt-5-high":"gpt-5-pro"}`, request: "gpt-5-high", want: "gpt-5-high", upstream: "gpt-5-pro"},
+		{name: "a mapped base gives the same upstream", models: []string{"gpt-5"}, mapping: `{"gpt-5":"gpt-5-2025"}`, request: "gpt-5-high", want: "gpt-5-high", upstream: "gpt-5-2025"},
+		{name: "not served at all keeps the request name", models: []string{"other"}, request: "gpt-5-high", want: "gpt-5-high", upstream: "gpt-5-high"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ChannelCapacityModel(tt.models, tt.mapping, tt.request)
+			assert.Equal(t, tt.want, got)
+			upstream, _, _ := ResolveMappedModel(tt.mapping, got)
+			assert.Equal(t, tt.upstream, upstream)
+		})
+	}
+}
+
 func TestSetChannelModelLimitKeysByMappedUpstream(t *testing.T) {
 	db := setupCapabilityModelTest(t)
 	// 两个公开名经映射链指向同一个上游，应当共用一份额度。

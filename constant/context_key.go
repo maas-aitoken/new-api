@@ -60,6 +60,11 @@ const (
 	// 选定渠道时按用户请求一侧的模型名算好，结束时乘进 relay_attempts.cost_actual。
 	ContextKeyChannelCostMultiplier ContextKey = "channel_cost_multiplier"
 
+	// ContextKeyChannelCapacityModel 是请求在所选渠道上算额度和计数用的公开名
+	// （model.ChannelCapacityModel）：渠道只列了 gpt-5 时，gpt-5-high 也记成 gpt-5。
+	// 选渠道时写入，中继按它走 model_mapping 链找 <渠道, 上游模型> 计数池。
+	ContextKeyChannelCapacityModel ContextKey = "channel_capacity_model"
+
 	// ContextKeyRelayAttempt stores the in-progress relay attempt telemetry
 	// record, so the upstream request layer and the billing layer can annotate
 	// the attempt they are part of without threading a parameter through every
