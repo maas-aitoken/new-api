@@ -11,6 +11,25 @@ import (
 
 const SubscriptionSourceQuotaIncrease = "quota_increase"
 
+// userQuotaUsedSince sums quota billed to the account, without iSelf attribution or
+// business-scene keys. quota_data lags by the dashboard flush interval.
+func userQuotaUsedSince(db *gorm.DB, userId int, since int64) (int64, error) {
+	businessTokens := db.Unscoped().Model(&Token{}).Select("id").
+		Where("user_id = ? AND scene = ?", userId, string(common.TokenSceneBusiness))
+	var used int64
+	err := db.Model(&QuotaData{}).
+		Where("user_id = ? AND created_at >= ? AND token_id NOT IN (?)", userId, since, businessTokens).
+		Select("COALESCE(SUM(quota), 0)").
+		Scan(&used).Error
+	return used, err
+}
+
+// GetUserMonthQuotaUsed is the quota billed since the 1st of this month.
+func GetUserMonthQuotaUsed(userId int) (int64, error) {
+	now := time.Unix(GetDBTimestamp(), 0)
+	return userQuotaUsedSince(DB, userId, time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location()).Unix())
+}
+
 // quotaTierAbove treats 0 as unlimited, the highest tier.
 func quotaTierAbove(amount int64, than int64) bool {
 	if than == 0 {
@@ -39,8 +58,7 @@ func IncreaseUserSubscriptionQuota(userId int) (*SubscriptionPlan, error) {
 			return err
 		}
 		var subs []UserSubscription
-		if err := lockForUpdate(tx).
-			Where("user_id = ? AND status = ? AND end_time > ?", userId, "active", GetDBTimestamp()).
+		if err := activeUserSubscriptions(lockForUpdate(tx), userId, GetDBTimestamp()).
 			Order("id asc").
 			Find(&subs).Error; err != nil {
 			return err
@@ -76,7 +94,8 @@ func IncreaseUserSubscriptionQuota(userId int) (*SubscriptionPlan, error) {
 				return err
 			}
 			groupChanged = sub.PrevUserGroup != ""
-			return nil
+			// The first increase only raises the limit; this period's spend carries over.
+			return carryOverPeriodUsageTx(tx, sub, &next)
 		}
 
 		upgradedId = current.Id
@@ -132,6 +151,7 @@ func IncreaseUserSubscriptionQuota(userId int) (*SubscriptionPlan, error) {
 	if groupChanged {
 		refreshSubscriptionUserGroupCache(userId, common.LogText("subscription quota increase"))
 	}
-	RecordLog(userId, LogTypeSystem, common.NewMessage("Subscription quota increased, plan: {{plan}}", map[string]any{"plan": next.Title}))
+	// amount (0 = unlimited) is for the console notice.
+	RecordLog(userId, LogTypeSystem, common.NewMessage("Subscription quota increased, plan: {{plan}}", map[string]any{"plan": next.Title, "amount": next.TotalAmount}))
 	return &next, nil
 }

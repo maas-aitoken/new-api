@@ -17,6 +17,8 @@ import (
 	"github.com/QuantumNous/new-api/pkg/billingexpr"
 	"github.com/QuantumNous/new-api/pkg/jsplugin"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	"github.com/QuantumNous/new-api/relaykit/dto"
+	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	"github.com/QuantumNous/new-api/types"
 	"github.com/gin-gonic/gin"
@@ -953,6 +955,43 @@ func TestRefundTaskQuota_Subscription(t *testing.T) {
 	require.NotNil(t, log)
 	assert.Equal(t, model.LogTypeRefund, log.Type)
 	assert.Zero(t, getTaskQuota(t, task.ID))
+}
+
+// Under quota tiers only the key's own quota moves; off, it is a wallet charge.
+func TestBusinessSceneKeyChargesNeitherWalletNorQuotaUnderQuotaTiers(t *testing.T) {
+	truncate(t)
+	operation_setting.SetQuotaTierEnabled(true)
+	t.Cleanup(func() { operation_setting.SetQuotaTierEnabled(false) })
+	const userID, tokenID, subID = 31, 31, 31
+	seedUser(t, userID, 10000)
+	seedToken(t, tokenID, userID, "sk-business-key", 5000)
+	seedSubscription(t, subID, userID, 100, 100)
+	newRequest := func(requestID string) (*gin.Context, *relaycommon.RelayInfo) {
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+		return c, &relaycommon.RelayInfo{RequestId: requestID, UserId: userID, TokenId: tokenID, TokenKey: "sk-business-key",
+			TokenScene: common.TokenSceneBusiness, UserSetting: dto.UserSetting{BillingPreference: "wallet_only"}}
+	}
+
+	c, info := newRequest("business-1")
+	require.Nil(t, PreConsumeBilling(c, 300, info))
+	assert.Equal(t, BillingSourceBusiness, info.BillingSource)
+	require.NoError(t, SettleBilling(c, info, 800))
+	assert.Equal(t, 10000, getUserQuota(t, userID))
+	assert.EqualValues(t, 100, getSubscriptionUsed(t, subID))
+	assert.Equal(t, 5000-800, getTokenRemainQuota(t, tokenID))
+
+	task := makeTask(userID, 0, 800, tokenID, BillingSourceBusiness, 0)
+	require.NoError(t, model.DB.Create(task).Error)
+	assert.True(t, RefundTaskQuota(context.Background(), task, "task failed"))
+	assert.Equal(t, 10000, getUserQuota(t, userID))
+	assert.Equal(t, 5000, getTokenRemainQuota(t, tokenID))
+
+	operation_setting.SetQuotaTierEnabled(false)
+	c, info = newRequest("business-2")
+	require.Nil(t, PreConsumeBilling(c, 300, info))
+	assert.Equal(t, BillingSourceWallet, info.BillingSource)
+	assert.Equal(t, 10000-300, getUserQuota(t, userID))
 }
 
 func TestRefundTaskQuota_ZeroQuota(t *testing.T) {

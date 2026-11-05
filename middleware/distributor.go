@@ -80,8 +80,23 @@ func Distribute() func(c *gin.Context) {
 		// 能力门控在模型确定前构建：auto 用它筛候选模型，选定模型后再做渠道级收窄。
 		// 未配置、请求体不可用或没有任何模型级声明时返回 nil，行为与改动前一致。
 		capabilityGate := service.BuildCapabilityGate(c)
-		autoRouting := shouldSelectChannel && service.IsAutoRouterRequest(c, modelRequest.Model)
 		_, pinned, _ := constraints.ResolvedPin()
+		// 额度档位用完后，支持 auto 的请求改走 auto，忽略令牌模型池和路由偏好；
+		// 其他接口由计费拦截。业务场景的 key 不受限。
+		scene, _ := common.GetContextKeyType[common.TokenScene](c, constant.ContextKeyTokenScene)
+		businessKey := scene == common.TokenSceneBusiness
+		if shouldSelectChannel && !pinned && !businessKey && service.IsAutoRouterRequest(c, autorouter.AutoModel) {
+			exhausted, err := model.UserQuotaTierExhausted(c.GetInt("id"))
+			if err != nil {
+				logger.LogError(c, common.LogText("failed to check the quota tier of user %d: %s", c.GetInt("id"), err.Error()))
+			} else if exhausted {
+				modelRequest.Model = autorouter.AutoModel
+				common.SetContextKey(c, constant.ContextKeyTokenModelLimitEnabled, false)
+				common.SetContextKey(c, constant.ContextKeyTokenAutoPreference, "")
+				common.SetContextKey(c, constant.ContextKeyTokenRoutingPreference, nil)
+			}
+		}
+		autoRouting := shouldSelectChannel && service.IsAutoRouterRequest(c, modelRequest.Model)
 		if pinned && autoRouting {
 			abortWithOpenAiMessage(c, http.StatusBadRequest, "model auto is not supported for a token pinned to a channel")
 			return

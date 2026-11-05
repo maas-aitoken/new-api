@@ -485,6 +485,46 @@ func TestDistributeAutoRewritesStoredBodyModel(t *testing.T) {
 		"透传渠道原样转发存储的请求体，里面的 model 必须是解析后的模型而不是 auto")
 }
 
+// 额度档位用完后，指定模型的对话请求改走 auto，令牌的模型池也不再限制候选。
+func TestDistributeRoutesUsedUpQuotaTierThroughAuto(t *testing.T) {
+	db := setupAutoRoutingDistribute(t, []string{"general"}, map[int][]string{1: {"general", "fixed"}})
+	useModelPrices(t, map[string]float64{"general": 1, "fixed": 1})
+	require.NoError(t, db.AutoMigrate(&model.User{}, &model.SubscriptionPlan{}, &model.UserSubscription{}, &model.QuotaData{}))
+	operation_setting.SetQuotaTierEnabled(true)
+	t.Cleanup(func() { operation_setting.SetQuotaTierEnabled(false) })
+	user := model.User{Username: "tier-user", Password: "unused-password-hash", Status: common.UserStatusEnabled, Group: "default"}
+	require.NoError(t, db.Create(&user).Error)
+	plan := model.SubscriptionPlan{Title: "v1", TotalAmount: 100, DurationUnit: model.SubscriptionDurationYear, DurationValue: 1, Enabled: true}
+	require.NoError(t, db.Create(&plan).Error)
+	sub := model.UserSubscription{UserId: user.Id, PlanId: plan.Id, AmountTotal: 100, AmountUsed: 40, StartTime: 1, EndTime: 1 << 40, Status: "active", Source: model.SubscriptionSourceQuotaTier}
+	require.NoError(t, db.Create(&sub).Error)
+	asTierUser := func(c *gin.Context) {
+		c.Set("id", user.Id)
+		common.SetContextKey(c, constant.ContextKeyTokenModelLimitEnabled, true)
+		common.SetContextKey(c, constant.ContextKeyTokenModelLimit, map[string]bool{"fixed": true})
+	}
+	body := `{"model":"fixed","messages":[{"role":"user","content":"hello"}]}`
+
+	stored, originalModel, recorder := serveAutoRoutingRequestIn(t, "/v1/chat/completions", "default", 9611, body, asTierUser)
+	require.Equal(t, http.StatusNoContent, recorder.Code, recorder.Body.String())
+	assert.Equal(t, "fixed", originalModel)
+	assert.Equal(t, body, stored)
+
+	require.NoError(t, db.Model(&sub).Update("amount_used", 130).Error)
+	stored, originalModel, recorder = serveAutoRoutingRequestIn(t, "/v1/chat/completions", "default", 9611, body, asTierUser)
+	require.Equal(t, http.StatusNoContent, recorder.Code, recorder.Body.String())
+	assert.Equal(t, "general", originalModel)
+	assert.JSONEq(t, `{"model":"general","messages":[{"role":"user","content":"hello"}]}`, stored)
+
+	// A business-scene key does not use the quota, so it keeps its model.
+	stored, originalModel, recorder = serveAutoRoutingRequestIn(t, "/v1/chat/completions", "default", 9612, body, asTierUser, func(c *gin.Context) {
+		common.SetContextKey(c, constant.ContextKeyTokenScene, common.TokenSceneBusiness)
+	})
+	require.Equal(t, http.StatusNoContent, recorder.Code, recorder.Body.String())
+	assert.Equal(t, "fixed", originalModel)
+	assert.Equal(t, body, stored)
+}
+
 func TestDistributeNonAutoRequestKeepsStoredBody(t *testing.T) {
 	setupAutoRoutingDistribute(t, []string{"general"}, map[int][]string{1: {"general"}})
 	body := `{"model":"general","messages":[{"role":"user","content":"hello"}]}`

@@ -573,6 +573,7 @@
   "failed to serialize VideoUrls: %v": "序列化 VideoUrls 失败: %v",
   "failed to start HTTP server: %s": "HTTP 服务启动失败: %s",
   "failed to start pprof: %s": "启动pprof失败 %s",
+  "failed to sum monthly quota: %s": "汇总本月已用额度失败: %s",
   "failed to sync %s credit to user quota cache: %s": "把到账额度同步到用户额度缓存失败（操作: %s）: %s",
   "failed to sync manual quota adjustment for user %d: %s": "把用户 %d 的手动调额同步到缓存失败: %s",
   "failed to synchronously populate user cache: %s": "同步写入用户缓存失败: %s",

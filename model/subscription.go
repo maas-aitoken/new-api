@@ -10,6 +10,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/pkg/cachex"
+	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/samber/hot"
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
@@ -140,6 +141,21 @@ func InvalidateSubscriptionPlanCache(planId int) {
 	_, _ = cache.DeleteMany([]string{subscriptionPlanCacheKey(planId)})
 	infoCache := getSubscriptionPlanInfoCache()
 	_ = infoCache.Purge()
+}
+
+// CreateSubscriptionPlan writes Enabled=false explicitly: gorm:"default:true" omits it from the INSERT.
+func CreateSubscriptionPlan(plan *SubscriptionPlan) error {
+	return DB.Transaction(func(tx *gorm.DB) error {
+		enabled := plan.Enabled
+		if err := tx.Create(plan).Error; err != nil {
+			return err
+		}
+		if enabled {
+			return nil
+		}
+		plan.Enabled = false
+		return tx.Model(plan).Update("enabled", false).Error
+	})
 }
 
 // Subscription plan
@@ -857,7 +873,7 @@ func GetAllActiveUserSubscriptions(userId int) ([]SubscriptionSummary, error) {
 	}
 	now := common.GetTimestamp()
 	var subs []UserSubscription
-	err := DB.Where("user_id = ? AND status = ? AND end_time > ?", userId, "active", now).
+	err := activeUserSubscriptions(DB, userId, now).
 		Order("end_time desc, id desc").
 		Find(&subs).Error
 	if err != nil {
@@ -874,8 +890,7 @@ func HasActiveUserSubscription(userId int) (bool, error) {
 	}
 	now := common.GetTimestamp()
 	var count int64
-	if err := DB.Model(&UserSubscription{}).
-		Where("user_id = ? AND status = ? AND end_time > ?", userId, "active", now).
+	if err := activeUserSubscriptions(DB.Model(&UserSubscription{}), userId, now).
 		Count(&count).Error; err != nil {
 		return false, err
 	}
@@ -891,9 +906,8 @@ func UserActiveSubscriptionsAllowWalletOverflow(userId int) (bool, error) {
 	}
 	now := common.GetTimestamp()
 	var strictCount int64
-	if err := DB.Model(&UserSubscription{}).
-		Where("user_id = ? AND status = ? AND end_time > ? AND allow_wallet_overflow = ?",
-			userId, "active", now, false).
+	if err := activeUserSubscriptions(DB.Model(&UserSubscription{}), userId, now).
+		Where("allow_wallet_overflow = ?", false).
 		Count(&strictCount).Error; err != nil {
 		return false, err
 	}
@@ -1301,7 +1315,8 @@ func maybeResetUserSubscriptionWithPlanTx(tx *gorm.DB, sub *UserSubscription, pl
 }
 
 // PreConsumeUserSubscription pre-consumes from any active subscription total quota.
-func PreConsumeUserSubscription(requestId string, userId int, modelName string, quotaType int, amount int64) (*SubscriptionPreConsumeResult, error) {
+// autoRouted requests still run once quota tiers are used up.
+func PreConsumeUserSubscription(requestId string, userId int, modelName string, quotaType int, amount int64, autoRouted bool) (*SubscriptionPreConsumeResult, error) {
 	if userId <= 0 {
 		return nil, errors.New("invalid userId")
 	}
@@ -1338,8 +1353,7 @@ func PreConsumeUserSubscription(requestId string, userId int, modelName string, 
 		}
 
 		var subs []UserSubscription
-		if err := lockForUpdate(tx).
-			Where("user_id = ? AND status = ? AND end_time > ?", userId, "active", now).
+		if err := activeUserSubscriptions(lockForUpdate(tx), userId, now).
 			Order("end_time asc, id asc").
 			Find(&subs).Error; err != nil {
 			return errors.New("no active subscription")
@@ -1347,56 +1361,73 @@ func PreConsumeUserSubscription(requestId string, userId int, modelName string, 
 		if len(subs) == 0 {
 			return errors.New("no active subscription")
 		}
-		for _, candidate := range subs {
-			sub := candidate
-			plan, err := getSubscriptionPlanByIdTx(tx, sub.PlanId)
+		// The first subscription covering the amount bills it. With tiers, else one with
+		// quota left, else the first one for "auto" requests.
+		tiers := operation_setting.IsQuotaTierEnabled()
+		var chosen, crossing *UserSubscription
+		for i := range subs {
+			plan, err := getSubscriptionPlanByIdTx(tx, subs[i].PlanId)
 			if err != nil {
 				return err
 			}
-			if err := maybeResetUserSubscriptionWithPlanTx(tx, &sub, plan, now); err != nil {
+			if err := maybeResetUserSubscriptionWithPlanTx(tx, &subs[i], plan, now); err != nil {
 				return err
 			}
-			usedBefore := sub.AmountUsed
-			if sub.AmountTotal > 0 {
-				remain := sub.AmountTotal - usedBefore
-				if remain < amount {
-					continue
-				}
+			remain := subs[i].AmountTotal - subs[i].AmountUsed
+			if subs[i].AmountTotal <= 0 || remain >= amount {
+				chosen = &subs[i]
+				break
 			}
-			record := &SubscriptionPreConsumeRecord{
-				RequestId:          requestId,
-				UserId:             userId,
-				UserSubscriptionId: sub.Id,
-				PreConsumed:        amount,
-				Status:             "consumed",
+			if crossing == nil && remain > 0 {
+				crossing = &subs[i]
 			}
-			if err := tx.Create(record).Error; err != nil {
-				var dup SubscriptionPreConsumeRecord
-				if err2 := tx.Where("request_id = ?", requestId).First(&dup).Error; err2 == nil {
-					if dup.Status == "refunded" {
-						return errors.New("subscription pre-consume already refunded")
-					}
-					returnValue.UserSubscriptionId = sub.Id
-					returnValue.PreConsumed = dup.PreConsumed
-					returnValue.AmountTotal = sub.AmountTotal
-					returnValue.AmountUsedBefore = sub.AmountUsed
-					returnValue.AmountUsedAfter = sub.AmountUsed
-					return nil
-				}
-				return err
-			}
-			sub.AmountUsed += amount
-			if err := tx.Save(&sub).Error; err != nil {
-				return err
-			}
-			returnValue.UserSubscriptionId = sub.Id
-			returnValue.PreConsumed = amount
-			returnValue.AmountTotal = sub.AmountTotal
-			returnValue.AmountUsedBefore = usedBefore
-			returnValue.AmountUsedAfter = sub.AmountUsed
-			return nil
 		}
-		return fmt.Errorf("subscription quota insufficient, need=%d", amount)
+		if chosen == nil && tiers {
+			chosen = crossing
+			if chosen == nil && autoRouted {
+				chosen = &subs[0]
+			}
+			if chosen == nil {
+				return ErrSubscriptionTierExhausted
+			}
+		}
+		if chosen == nil {
+			return fmt.Errorf("subscription quota insufficient, need=%d", amount)
+		}
+		sub := *chosen
+		usedBefore := sub.AmountUsed
+		record := &SubscriptionPreConsumeRecord{
+			RequestId:          requestId,
+			UserId:             userId,
+			UserSubscriptionId: sub.Id,
+			PreConsumed:        amount,
+			Status:             "consumed",
+		}
+		if err := tx.Create(record).Error; err != nil {
+			var dup SubscriptionPreConsumeRecord
+			if err2 := tx.Where("request_id = ?", requestId).First(&dup).Error; err2 == nil {
+				if dup.Status == "refunded" {
+					return errors.New("subscription pre-consume already refunded")
+				}
+				returnValue.UserSubscriptionId = sub.Id
+				returnValue.PreConsumed = dup.PreConsumed
+				returnValue.AmountTotal = sub.AmountTotal
+				returnValue.AmountUsedBefore = sub.AmountUsed
+				returnValue.AmountUsedAfter = sub.AmountUsed
+				return nil
+			}
+			return err
+		}
+		sub.AmountUsed += amount
+		if err := tx.Save(&sub).Error; err != nil {
+			return err
+		}
+		returnValue.UserSubscriptionId = sub.Id
+		returnValue.PreConsumed = amount
+		returnValue.AmountTotal = sub.AmountTotal
+		returnValue.AmountUsedBefore = usedBefore
+		returnValue.AmountUsedAfter = sub.AmountUsed
+		return nil
 	})
 	if err != nil {
 		return nil, err
@@ -1533,7 +1564,8 @@ func PostConsumeUserSubscriptionDelta(userSubscriptionId int, delta int64) error
 			return err
 		}
 		newUsed := max(sub.AmountUsed+delta, 0)
-		if sub.AmountTotal > 0 && newUsed > sub.AmountTotal {
+		// Quota tiers may pass the quota: smart routing keeps billing.
+		if sub.AmountTotal > 0 && newUsed > sub.AmountTotal && !operation_setting.IsQuotaTierEnabled() {
 			return fmt.Errorf("subscription used exceeds total, used=%d total=%d", newUsed, sub.AmountTotal)
 		}
 		sub.AmountUsed = newUsed
