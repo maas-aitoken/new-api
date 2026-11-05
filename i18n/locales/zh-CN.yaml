@@ -57,6 +57,8 @@ email.binding.old_intro: "您的账户正在申请更换邮箱地址，请确认
 email.binding.code: "验证码：<strong>{{.Code}}</strong>"
 email.binding.new_validity: "验证码 {{.Minutes}} 分钟内有效。如果不是您本人操作，请勿把验证码告诉任何人。"
 email.binding.old_validity: "验证码 {{.Minutes}} 分钟内有效。如果不是您本人操作，请勿把验证码告诉任何人，并联系管理员。"
+email.step_up.subject: "{{.SystemName}}安全验证码"
+email.step_up.intro: "您正在进行一项需要安全验证的操作，请在页面中输入以下验证码。"
 email.security_notice.subject: "{{.SystemName}}账户安全提醒"
 email.security_notice.changed: "您的账户安全设置有变动：{{.Event}}。"
 email.security_notice.advice: "如果不是您本人操作，请打开账户安全设置，退出其他会话，并联系管理员。"

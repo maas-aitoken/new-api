@@ -279,6 +279,240 @@ func TestSecurityEnrollmentAccessTokenMethodPolicy(t *testing.T) {
 	}
 }
 
+// useHoidcEmailAccount turns the test user into an HOIDC account with a bound
+// email address and no password, the accounts that verify by email code.
+func useHoidcEmailAccount(t *testing.T, user *model.User) {
+	t.Helper()
+	require.NoError(t, model.DB.Model(user).Updates(map[string]any{"password": "", "hoidc_id": "10001", "email": "hoidc-user@example.com"}).Error)
+}
+
+func startHoidcEmailVerification(t *testing.T, identity service.AuthIdentity, operation service.VerificationOperation) *httptest.ResponseRecorder {
+	t.Helper()
+	request, err := common.Marshal(operation)
+	require.NoError(t, err)
+	return securityEnrollmentRequest(http.MethodPost, "/api/user/email/verify/start", string(request), "", identity, EmailVerifyStart)
+}
+
+func finishHoidcEmailVerification(t *testing.T, identity service.AuthIdentity, flowToken, code string) *httptest.ResponseRecorder {
+	t.Helper()
+	request, err := common.Marshal(map[string]string{"flow_token": flowToken, "code": code})
+	require.NoError(t, err)
+	return securityEnrollmentRequest(http.MethodPost, "/api/user/email/verify/finish", string(request), "", identity, EmailVerifyFinish)
+}
+
+func decodeEmailVerificationData(t *testing.T, response *httptest.ResponseRecorder) service.EmailVerificationData {
+	t.Helper()
+	body := decodeSecurityEnrollmentResponse(t, response)
+	require.True(t, body.Success, response.Body.String())
+	var data service.EmailVerificationData
+	require.NoError(t, common.Unmarshal(body.Data, &data))
+	require.NotEmpty(t, data.FlowToken)
+	return data
+}
+
+func TestSecurityEnrollmentHoidcEmailMethodPolicy(t *testing.T) {
+	for _, test := range []struct {
+		name, method, reason string
+		noEmail, twoFA       bool
+		available            bool
+	}{
+		{name: "hoidc account verifies by email", method: "email", available: true},
+		{name: "hoidc account without email", method: "email", noEmail: true, reason: "No email address is linked to this account."},
+		{name: "enrolled twofa wins over email", method: "2fa", twoFA: true, available: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			user, identity := setupSecurityEnrollmentTest(t)
+			useHoidcEmailAccount(t, user)
+			if test.noEmail {
+				require.NoError(t, model.DB.Model(user).Update("email", "").Error)
+			}
+			scopes := []string{service.VerificationScopeAccessTokenGenerate, service.VerificationScopeAccountDelete}
+			if test.twoFA {
+				require.NoError(t, model.DB.Create(&model.TwoFA{UserId: user.Id, Secret: "JBSWY3DPEHPK3PXP", IsEnabled: true}).Error)
+			} else {
+				// Email is also how an HOIDC account bootstraps a stronger factor.
+				scopes = append(scopes, service.VerificationScopeTwoFASetup, service.VerificationScopePasskeyRegister)
+			}
+			for _, scope := range scopes {
+				requirements, err := service.GetVerificationRequirements(identity, scope)
+				require.NoError(t, err)
+				assert.Equal(t, []service.VerificationMethodOption{{Method: test.method, Available: test.available, Reason: test.reason}}, requirements.Methods, scope)
+			}
+		})
+	}
+	t.Run("access token session cannot use email", func(t *testing.T) {
+		user, _ := setupSecurityEnrollmentTest(t)
+		useHoidcEmailAccount(t, user)
+		raw, _ := createScopedAccessToken(t, user.Id, 0, "account_security:write")
+		response := accessTokenRequest(newAccessTokenTestRouter(), http.MethodGet, "/api/verify/methods?scope=2fa.setup", raw, "", "")
+		body := decodeSecurityEnrollmentResponse(t, response)
+		require.True(t, body.Success, body.Message)
+		var requirements service.VerificationRequirements
+		require.NoError(t, common.Unmarshal(body.Data, &requirements))
+		assert.Equal(t, []service.VerificationMethodOption{{Method: "email", Reason: "Email verification requires a browser sign-in. Enable two-factor authentication or a Passkey to continue."}}, requirements.Methods)
+	})
+}
+
+var hoidcEmailOperation = service.VerificationOperation{
+	Scope: service.VerificationScopeAccessTokenGenerate, Context: []byte(`{"scopes":["profile:read"],"expires_at":0}`),
+}
+
+type hoidcEmailFlow struct {
+	user     *model.User
+	identity service.AuthIdentity
+	mailbox  *securityMailbox
+	data     service.EmailVerificationData
+}
+
+// startHoidcEmailFlow starts an email verification for hoidcEmailOperation on a
+// fresh HOIDC account backed by a local mailbox.
+func startHoidcEmailFlow(t *testing.T) hoidcEmailFlow {
+	t.Helper()
+	user, identity := setupSecurityEnrollmentTest(t)
+	useHoidcEmailAccount(t, user)
+	mailbox := newSecurityMailbox(t)
+	data := decodeEmailVerificationData(t, startHoidcEmailVerification(t, identity, hoidcEmailOperation))
+	return hoidcEmailFlow{user: user, identity: identity, mailbox: mailbox, data: data}
+}
+
+func (flow hoidcEmailFlow) code(t *testing.T) string {
+	t.Helper()
+	return flow.mailbox.code(t, "hoidc-user@example.com")
+}
+
+func TestSecurityEnrollmentHoidcEmailVerificationCreatesAccessToken(t *testing.T) {
+	flow := startHoidcEmailFlow(t)
+	assert.Equal(t, "***@example.com", flow.data.Email, "the response only carries the masked address")
+	assert.Greater(t, flow.data.ExpiresAt, flow.data.ResendAt)
+	code := flow.code(t)
+
+	body := decodeSecurityEnrollmentResponse(t, finishHoidcEmailVerification(t, flow.identity, flow.data.FlowToken, code))
+	require.True(t, body.Success, body.Message)
+	var proof service.SecurityProof
+	require.NoError(t, common.Unmarshal(body.Data, &proof))
+	assert.Equal(t, service.VerificationMethodEmail, proof.Method)
+	assert.Equal(t, service.VerificationScopeAccessTokenGenerate, proof.Scope)
+
+	response := securityEnrollmentRequest(http.MethodPost, "/api/user/access_tokens", `{"name":"ci","scopes":["profile:read"],"expires_at":0}`, proof.ProofToken, flow.identity, CreateAccessToken)
+	require.True(t, decodeSecurityEnrollmentResponse(t, response).Success, response.Body.String())
+	tokens, err := model.ListUserAccessTokens(flow.user.Id)
+	require.NoError(t, err)
+	assert.Len(t, tokens, 1)
+
+	replayed := decodeSecurityEnrollmentResponse(t, finishHoidcEmailVerification(t, flow.identity, flow.data.FlowToken, code))
+	assert.Equal(t, "AUTH_FLOW_INVALID", replayed.Code, "a code completes one verification")
+
+	var audits []model.AuditLog
+	require.NoError(t, model.LOG_DB.Where("action = ?", "user.security_verify").Find(&audits).Error)
+	require.Len(t, audits, 1)
+	encoded, err := common.Marshal(audits)
+	require.NoError(t, err)
+	for _, secret := range []string{code, proof.ProofToken, flow.data.FlowToken} {
+		assert.NotContains(t, string(encoded), secret)
+	}
+}
+
+func TestSecurityEnrollmentHoidcEmailVerificationRejectsMisuse(t *testing.T) {
+	t.Run("wrong codes lock the flow", func(t *testing.T) {
+		flow := startHoidcEmailFlow(t)
+		code := flow.code(t)
+		wrong := "000000"
+		if code == wrong {
+			wrong = "111111"
+		}
+		for attempt := range model.EmailBindingMaxAttempts {
+			want := "EMAIL_BINDING_CODE_INVALID"
+			if attempt == model.EmailBindingMaxAttempts-1 {
+				want = "EMAIL_BINDING_LOCKED"
+			}
+			assert.Equal(t, want, decodeSecurityEnrollmentResponse(t, finishHoidcEmailVerification(t, flow.identity, flow.data.FlowToken, wrong)).Code)
+		}
+		assert.Equal(t, "EMAIL_BINDING_LOCKED", decodeSecurityEnrollmentResponse(t, finishHoidcEmailVerification(t, flow.identity, flow.data.FlowToken, code)).Code)
+	})
+	t.Run("expired flow", func(t *testing.T) {
+		flow := startHoidcEmailFlow(t)
+		code := flow.code(t)
+		require.NoError(t, model.DB.Model(&model.AuthFlow{}).Where("purpose = ?", model.AuthFlowPurposeEmailStepUp).Update("expires_at", time.Now().Add(-time.Minute)).Error)
+		assert.Equal(t, "AUTH_FLOW_INVALID", decodeSecurityEnrollmentResponse(t, finishHoidcEmailVerification(t, flow.identity, flow.data.FlowToken, code)).Code)
+	})
+	t.Run("other session", func(t *testing.T) {
+		flow := startHoidcEmailFlow(t)
+		code := flow.code(t)
+		bundle, err := service.CreateLoginSession(flow.user.Id, "sso_hoidc", "127.0.0.1", "other-session")
+		require.NoError(t, err)
+		other, err := service.ParseAccessToken(bundle.AccessToken)
+		require.NoError(t, err)
+		assert.Equal(t, "AUTH_FLOW_INVALID", decodeSecurityEnrollmentResponse(t, finishHoidcEmailVerification(t, other, flow.data.FlowToken, code)).Code)
+		assert.True(t, decodeSecurityEnrollmentResponse(t, finishHoidcEmailVerification(t, flow.identity, flow.data.FlowToken, code)).Success, "a foreign attempt leaves the flow usable")
+	})
+	t.Run("email changed during verification", func(t *testing.T) {
+		flow := startHoidcEmailFlow(t)
+		code := flow.code(t)
+		require.NoError(t, model.DB.Model(flow.user).Update("email", "changed@example.com").Error)
+		response := finishHoidcEmailVerification(t, flow.identity, flow.data.FlowToken, code)
+		assert.Equal(t, http.StatusConflict, response.Code)
+		assert.Equal(t, "ACCOUNT_SECURITY_STATE_CHANGED", decodeSecurityEnrollmentResponse(t, response).Code)
+	})
+	t.Run("resend waits and keeps the deadline", func(t *testing.T) {
+		flow := startHoidcEmailFlow(t)
+		first := flow.code(t)
+		resendBody := `{"flow_token":"` + flow.data.FlowToken + `"}`
+		early := securityEnrollmentRequest(http.MethodPost, "/api/user/email/verify/resend", resendBody, "", flow.identity, EmailVerifyResend)
+		assert.Equal(t, http.StatusTooManyRequests, early.Code)
+		assert.Equal(t, "EMAIL_BINDING_RESEND_WAIT", decodeSecurityEnrollmentResponse(t, early).Code)
+		var stored model.AuthFlow
+		require.NoError(t, model.DB.Where("purpose = ?", model.AuthFlowPurposeEmailStepUp).First(&stored).Error)
+		var state model.EmailStepUpState
+		require.NoError(t, common.UnmarshalJsonStr(stored.Payload, &state))
+		state.ResendAt = time.Now().Add(-time.Second).Unix()
+		payload, err := common.Marshal(state)
+		require.NoError(t, err)
+		require.NoError(t, model.DB.Model(&stored).Update("payload", string(payload)).Error)
+		resent := decodeEmailVerificationData(t, securityEnrollmentRequest(http.MethodPost, "/api/user/email/verify/resend", resendBody, "", flow.identity, EmailVerifyResend))
+		assert.InDelta(t, flow.data.ExpiresAt, resent.ExpiresAt, 1, "resending never extends the flow")
+		second := flow.code(t)
+		if second != first {
+			assert.Equal(t, "EMAIL_BINDING_CODE_INVALID", decodeSecurityEnrollmentResponse(t, finishHoidcEmailVerification(t, flow.identity, flow.data.FlowToken, first)).Code)
+		}
+		assert.True(t, decodeSecurityEnrollmentResponse(t, finishHoidcEmailVerification(t, flow.identity, flow.data.FlowToken, second)).Success)
+	})
+	t.Run("undelivered code leaves no flow", func(t *testing.T) {
+		user, identity := setupSecurityEnrollmentTest(t)
+		useHoidcEmailAccount(t, user)
+		newSecurityMailbox(t)
+		common.SMTPServer = ""
+		assert.Equal(t, "EMAIL_BINDING_DELIVERY_FAILED", decodeSecurityEnrollmentResponse(t, startHoidcEmailVerification(t, identity, hoidcEmailOperation)).Code)
+		var pending int64
+		require.NoError(t, model.DB.Model(&model.AuthFlow{}).Where("purpose = ? AND consumed_at IS NULL", model.AuthFlowPurposeEmailStepUp).Count(&pending).Error)
+		assert.Zero(t, pending)
+	})
+	t.Run("invalid context", func(t *testing.T) {
+		user, identity := setupSecurityEnrollmentTest(t)
+		useHoidcEmailAccount(t, user)
+		response := startHoidcEmailVerification(t, identity, service.VerificationOperation{Scope: service.VerificationScopeAccessTokenGenerate, Context: []byte(`{"scopes":["profile:read"]}`)})
+		assert.Equal(t, http.StatusBadRequest, response.Code)
+		assert.Equal(t, "SECURITY_CONTEXT_INVALID", decodeSecurityEnrollmentResponse(t, response).Code)
+	})
+	t.Run("proof is bound to the started operation", func(t *testing.T) {
+		flow := startHoidcEmailFlow(t)
+		body := decodeSecurityEnrollmentResponse(t, finishHoidcEmailVerification(t, flow.identity, flow.data.FlowToken, flow.code(t)))
+		require.True(t, body.Success, body.Message)
+		var proof service.SecurityProof
+		require.NoError(t, common.Unmarshal(body.Data, &proof))
+		response := securityEnrollmentRequest(http.MethodPost, "/api/user/access_tokens", `{"name":"ci","scopes":["usage:read"],"expires_at":0}`, proof.ProofToken, flow.identity, CreateAccessToken)
+		assert.Equal(t, "SECURITY_PROOF_CONTEXT_MISMATCH", decodeSecurityEnrollmentResponse(t, response).Code)
+		tokens, err := model.ListUserAccessTokens(flow.user.Id)
+		require.NoError(t, err)
+		assert.Empty(t, tokens)
+	})
+	t.Run("factor enrolled during verification", func(t *testing.T) {
+		flow := startHoidcEmailFlow(t)
+		code := flow.code(t)
+		require.NoError(t, model.DB.Create(&model.TwoFA{UserId: flow.user.Id, Secret: "JBSWY3DPEHPK3PXP", IsEnabled: true}).Error)
+		assert.Equal(t, "SECURITY_PROOF_METHOD_MISMATCH", decodeSecurityEnrollmentResponse(t, finishHoidcEmailVerification(t, flow.identity, flow.data.FlowToken, code)).Code)
+	})
+}
+
 func TestSecurityEnrollmentAccessTokenLifecycleConsumesProofs(t *testing.T) {
 	user, identity := setupSecurityEnrollmentTest(t)
 	require.NoError(t, model.DB.Model(user).Update("access_token", "previous-token").Error)
@@ -1162,15 +1396,18 @@ func TestSecurityEnrollmentPasskeyProofProtectsChannelKeyRead(t *testing.T) {
 }
 
 func TestSecurityEnrollmentVerifyRequiresDedicatedFlowForInteractiveMethods(t *testing.T) {
-	for _, method := range []string{service.VerificationMethodPasskey, service.VerificationMethodOAuth} {
+	for _, method := range []string{service.VerificationMethodPasskey, service.VerificationMethodOAuth, service.VerificationMethodEmail} {
 		t.Run(method, func(t *testing.T) {
 			user, identity := setupSecurityEnrollmentTest(t)
-			if method == service.VerificationMethodPasskey {
+			switch method {
+			case service.VerificationMethodPasskey:
 				require.NoError(t, model.DB.Create(&model.PasskeyCredential{UserID: user.Id, CredentialID: "enrolled-passkey", PublicKey: "public-key"}).Error)
-			} else {
+			case service.VerificationMethodOAuth:
 				require.NoError(t, model.DB.Model(user).Updates(map[string]any{"password": "", "github_id": "linked-user"}).Error)
 				oauth.Register("enrollment-oauth", &enrollmentOAuthProvider{externalID: "linked-user"})
 				t.Cleanup(func() { oauth.Unregister("enrollment-oauth") })
+			case service.VerificationMethodEmail:
+				useHoidcEmailAccount(t, user)
 			}
 			_, err := service.RequireVerificationMethod(identity, service.VerificationScopeTwoFASetup, method)
 			require.NoError(t, err)

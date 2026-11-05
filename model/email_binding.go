@@ -18,6 +18,7 @@ var (
 	ErrEmailBindingCodeInvalid = errors.New("Email verification code is incorrect.")
 	ErrEmailBindingLocked      = errors.New("Too many incorrect codes. Start email verification again.")
 	ErrEmailBindingResendWait  = errors.New("Please wait before requesting another verification code.")
+	ErrSsoEmailManaged         = errors.New("SSO users cannot change email")
 )
 
 // EmailBindingState is server-owned payload. It deliberately contains only
@@ -149,28 +150,37 @@ func CompleteEmailBinding(identity AuthSessionIdentity, token, email, newCode, o
 	return state, verificationError
 }
 
-func lockEmailBindingWithTx(tx *gorm.DB, identity AuthSessionIdentity, token string) (*AuthFlow, *EmailBindingState, error) {
-	match := AuthFlowMatch{Purpose: AuthFlowPurposeEmailBinding, UserId: identity.UserID, SessionId: identity.SessionID}
+// lockPendingAuthFlowWithTx locks an unconsumed, unexpired flow row for the rest
+// of the transaction.
+func lockPendingAuthFlowWithTx(tx *gorm.DB, token string, match AuthFlowMatch) (*AuthFlow, error) {
 	// Make the first statement a write so SQLite does not have to upgrade a
 	// deferred read transaction. A no-op update also locks the row on MySQL and
 	// PostgreSQL; do not interpret dialect-dependent RowsAffected as success.
 	if err := applyAuthFlowMatch(tx.Model(&AuthFlow{}), token, match).
 		Where("consumed_at IS NULL AND expires_at > ?", time.Now()).
 		UpdateColumn("payload", gorm.Expr("payload")).Error; err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	var flow AuthFlow
 	if err := applyAuthFlowMatch(tx, token, match).First(&flow).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, nil, ErrAuthFlowInvalid
+			return nil, ErrAuthFlowInvalid
 		}
-		return nil, nil, err
+		return nil, err
 	}
 	if flow.ConsumedAt != nil {
-		return nil, nil, ErrAuthFlowConsumed
+		return nil, ErrAuthFlowConsumed
 	}
 	if !flow.ExpiresAt.After(time.Now()) {
-		return nil, nil, ErrAuthFlowExpired
+		return nil, ErrAuthFlowExpired
+	}
+	return &flow, nil
+}
+
+func lockEmailBindingWithTx(tx *gorm.DB, identity AuthSessionIdentity, token string) (*AuthFlow, *EmailBindingState, error) {
+	flow, err := lockPendingAuthFlowWithTx(tx, token, AuthFlowMatch{Purpose: AuthFlowPurposeEmailBinding, UserId: identity.UserID, SessionId: identity.SessionID})
+	if err != nil {
+		return nil, nil, err
 	}
 	var state EmailBindingState
 	if err := common.UnmarshalJsonStr(flow.Payload, &state); err != nil {
@@ -182,7 +192,7 @@ func lockEmailBindingWithTx(tx *gorm.DB, identity AuthSessionIdentity, token str
 	if state.FailedAttempts >= EmailBindingMaxAttempts {
 		return nil, nil, ErrEmailBindingLocked
 	}
-	return &flow, &state, nil
+	return flow, &state, nil
 }
 
 func validateEmailBindingAccountWithTx(tx *gorm.DB, identity AuthSessionIdentity, state *EmailBindingState) error {
@@ -195,10 +205,159 @@ func validateEmailBindingAccountWithTx(tx *gorm.DB, identity AuthSessionIdentity
 		return err
 	}
 	var user User
+	if err := tx.Select("email", "hoidc_id").First(&user, identity.UserID).Error; err != nil {
+		return err
+	}
+	// SSO owns the email of an HOIDC account; it is checked here so start,
+	// resend and finish all refuse it, even if the account became SSO mid-flow.
+	if user.HoidcId != "" {
+		return ErrSsoEmailManaged
+	}
+	if NormalizeEmail(user.Email) != state.CurrentEmail || state.CurrentEmail == state.Email {
+		return ErrAccountBindingChanged
+	}
+	return nil
+}
+
+// EmailStepUpState is server-owned payload of an email security verification.
+// It keeps only a salted code hash, never a usable code or proof token, and
+// binds the code to one operation (scope and context hash) and one session.
+type EmailStepUpState struct {
+	AuthSessionIdentity
+	Scope          string `json:"scope"`
+	ContextHash    string `json:"context_hash"`
+	Email          string `json:"email"`
+	CodeHash       string `json:"code_hash"`
+	FailedAttempts int    `json:"failed_attempts"`
+	ResendAt       int64  `json:"resend_at"`
+}
+
+func CreateEmailStepUp(identity AuthSessionIdentity, state EmailStepUpState) (string, *AuthFlow, error) {
+	var token string
+	var flow *AuthFlow
+	err := DB.Transaction(func(tx *gorm.DB) error {
+		if err := validateEmailStepUpWithTx(tx, identity, &state); err != nil {
+			return err
+		}
+		payload, err := common.Marshal(state)
+		if err != nil {
+			return err
+		}
+		token, flow, err = createAuthFlowWithTx(tx, AuthFlowCreate{
+			Purpose: AuthFlowPurposeEmailStepUp, UserId: identity.UserID, SessionId: identity.SessionID,
+			Payload: string(payload), ExpiresAt: time.Now().Add(EmailBindingTTL),
+		})
+		return err
+	})
+	return token, flow, err
+}
+
+func GetEmailStepUp(identity AuthSessionIdentity, token string) (*AuthFlow, *EmailStepUpState, error) {
+	flow, err := GetAuthFlow(token, AuthFlowMatch{Purpose: AuthFlowPurposeEmailStepUp, UserId: identity.UserID, SessionId: identity.SessionID})
+	if err != nil {
+		return nil, nil, err
+	}
+	var state EmailStepUpState
+	if err := common.UnmarshalJsonStr(flow.Payload, &state); err != nil || state.AuthSessionIdentity != identity {
+		return nil, nil, ErrAuthFlowInvalid
+	}
+	return flow, &state, nil
+}
+
+// ResendEmailStepUp replaces the code. It keeps the deadline and the failure
+// counter, so resending never extends a flow or resets its lock.
+func ResendEmailStepUp(identity AuthSessionIdentity, token, codeHash string) (*AuthFlow, *EmailStepUpState, error) {
+	var flow *AuthFlow
+	var state *EmailStepUpState
+	err := DB.Transaction(func(tx *gorm.DB) error {
+		var err error
+		flow, state, err = lockEmailStepUpWithTx(tx, identity, token)
+		if err != nil {
+			return err
+		}
+		now := time.Now()
+		if state.ResendAt > now.Unix() {
+			return ErrEmailBindingResendWait
+		}
+		if codeHash == "" {
+			return ErrAuthFlowInvalid
+		}
+		state.CodeHash = codeHash
+		state.ResendAt = now.Add(EmailBindingResendDelay).Unix()
+		payload, err := common.Marshal(state)
+		if err != nil {
+			return err
+		}
+		return tx.Model(flow).Update("payload", string(payload)).Error
+	})
+	return flow, state, err
+}
+
+// CompleteEmailStepUp commits failed attempts even though verification fails.
+// A correct code consumes the flow, so one code completes one verification.
+func CompleteEmailStepUp(identity AuthSessionIdentity, token, code string) (*EmailStepUpState, error) {
+	var state *EmailStepUpState
+	var verificationError error
+	err := DB.Transaction(func(tx *gorm.DB) error {
+		flow, lockedState, err := lockEmailStepUpWithTx(tx, identity, token)
+		if err != nil {
+			return err
+		}
+		state = lockedState
+		numeric, codeError := common.ValidateNumericCode(code)
+		if codeError != nil || !common.ValidatePasswordAndHash(numeric, state.CodeHash) {
+			state.FailedAttempts++
+			verificationError = ErrEmailBindingCodeInvalid
+			if state.FailedAttempts >= EmailBindingMaxAttempts {
+				verificationError = ErrEmailBindingLocked
+			}
+			payload, err := common.Marshal(state)
+			if err != nil {
+				return err
+			}
+			return tx.Model(flow).Update("payload", string(payload)).Error
+		}
+		return tx.Model(flow).Update("consumed_at", time.Now()).Error
+	})
+	if err != nil {
+		return nil, err
+	}
+	return state, verificationError
+}
+
+func lockEmailStepUpWithTx(tx *gorm.DB, identity AuthSessionIdentity, token string) (*AuthFlow, *EmailStepUpState, error) {
+	flow, err := lockPendingAuthFlowWithTx(tx, token, AuthFlowMatch{Purpose: AuthFlowPurposeEmailStepUp, UserId: identity.UserID, SessionId: identity.SessionID})
+	if err != nil {
+		return nil, nil, err
+	}
+	var state EmailStepUpState
+	if err := common.UnmarshalJsonStr(flow.Payload, &state); err != nil {
+		return nil, nil, ErrAuthFlowInvalid
+	}
+	if err := validateEmailStepUpWithTx(tx, identity, &state); err != nil {
+		return nil, nil, err
+	}
+	if state.FailedAttempts >= EmailBindingMaxAttempts {
+		return nil, nil, ErrEmailBindingLocked
+	}
+	return flow, &state, nil
+}
+
+// validateEmailStepUpWithTx rechecks the session and that the code still goes
+// to the account's current email address.
+func validateEmailStepUpWithTx(tx *gorm.DB, identity AuthSessionIdentity, state *EmailStepUpState) error {
+	if state.AuthSessionIdentity != identity || state.Scope == "" || state.ContextHash == "" ||
+		state.Email == "" || state.Email != NormalizeEmail(state.Email) || state.CodeHash == "" {
+		return ErrAuthFlowInvalid
+	}
+	if err := ValidateAuthSessionWithTx(tx, identity); err != nil {
+		return err
+	}
+	var user User
 	if err := tx.Select("email").First(&user, identity.UserID).Error; err != nil {
 		return err
 	}
-	if NormalizeEmail(user.Email) != state.CurrentEmail || state.CurrentEmail == state.Email {
+	if NormalizeEmail(user.Email) != state.Email {
 		return ErrAccountBindingChanged
 	}
 	return nil
