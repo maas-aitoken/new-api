@@ -28,7 +28,13 @@ import {
 import { formatBillingCurrencyFromUSD } from '@/lib/currency'
 import { cn } from '@/lib/utils'
 
-import { formatScore, ladderOutcomeLabel, skipReasonLabel } from './labels'
+import {
+  formatScore,
+  ladderOutcomeLabel,
+  previewNoteLabel,
+  previewOutcomeLabel,
+  skipReasonLabel,
+} from './labels'
 import { StepFrame, ToneBadge } from './route-process-parts'
 import type { RoutePick, RoutePickCandidate, RouteTraceStep } from './types'
 
@@ -56,6 +62,8 @@ export function PickTable(props: { pick: RoutePick }) {
   const comparesCost = props.pick.band.some(
     (row) => (row.cost_multiplier ?? 0) > 0
   )
+  // 这次没拿到调度器预览的回答时说明原因，所有倍率都按原生规则算。
+  const previewOutcome = previewOutcomeLabel(t, props.pick.preview)
   const costColumns: StaticDataTableColumn<RoutePickCandidate>[] = [
     {
       id: 'cost_multiplier',
@@ -69,6 +77,11 @@ export function PickTable(props: { pick: RoutePick }) {
             <span className='text-muted-foreground text-xs font-normal'>
               {costSourceLabel(t, row)}
             </span>
+            {row.preview && (
+              <span className='text-muted-foreground text-xs font-normal'>
+                {previewNoteLabel(t, row.preview)}
+              </span>
+            )}
           </div>
         ) : (
           '-'
@@ -143,6 +156,9 @@ export function PickTable(props: { pick: RoutePick }) {
           ? ` ${t('The discount uses the compared cost: the user price times the cost multiplier of the channel the first attempt lands on. The multiplier never changes what the user is billed.')}`
           : null}
       </p>
+      {previewOutcome && (
+        <p className='text-muted-foreground text-xs'>{previewOutcome}</p>
+      )}
       <StaticDataTable
         className={tableStyles.sectionContainer}
         headerRowClassName={tableStyles.mutedHeaderRow}
