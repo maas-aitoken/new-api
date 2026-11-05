@@ -56,6 +56,9 @@ const (
 	ContextKeyChannelIsMultiKey        ContextKey = "channel_is_multi_key"
 	ContextKeyChannelMultiKeyIndex     ContextKey = "channel_multi_key_index"
 	ContextKeyChannelKey               ContextKey = "channel_key"
+	// ContextKeyChannelCostMultiplier 是本次尝试的 <渠道, 模型> 费用倍率（float64，未配置为 1），
+	// 选定渠道时按用户请求一侧的模型名算好，结束时乘进 relay_attempts.cost_actual。
+	ContextKeyChannelCostMultiplier ContextKey = "channel_cost_multiplier"
 
 	// ContextKeyRelayAttempt stores the in-progress relay attempt telemetry
 	// record, so the upstream request layer and the billing layer can annotate

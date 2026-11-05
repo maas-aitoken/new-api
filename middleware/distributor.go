@@ -928,11 +928,16 @@ func SetupContextForSelectedChannel(c *gin.Context, channel *model.Channel, mode
 	common.SetContextKey(c, constant.ContextKeyChannelTag, channel.GetTag())
 	common.SetContextKey(c, constant.ContextKeyChannelType, channel.Type)
 	common.SetContextKey(c, constant.ContextKeyChannelCreateTime, channel.CreatedTime)
-	common.SetContextKey(c, constant.ContextKeyChannelSetting, channel.GetSetting())
+	channelSetting := channel.GetSetting()
+	common.SetContextKey(c, constant.ContextKeyChannelSetting, channelSetting)
+	// 费用倍率按用户请求一侧的模型名查（和计费同侧），在这里就算好：这时还没有映射，
+	// 请求名还是请求名；结束时再查，拿到的是映射后、甚至被流式响应改过的上游名。
+	common.SetContextKey(c, constant.ContextKeyChannelCostMultiplier,
+		channelSetting.CostMultiplierForModel(model.CostMultiplierModel(channel.GetModels(), modelName)))
 	common.SetContextKey(c, constant.ContextKeyChannelOtherSetting, channel.GetOtherSettings())
 	switch channel.Type {
 	case constant.ChannelTypeTaskPlugin:
-		c.Set("task_plugin_key", channel.GetSetting().TaskPluginKey)
+		c.Set("task_plugin_key", channelSetting.TaskPluginKey)
 	case constant.ChannelTypeNewAPI:
 		// The bound plugin verified above executes; ordinary requests through
 		// the same gateway channel carry no pinned plugin.

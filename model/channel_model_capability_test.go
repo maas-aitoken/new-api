@@ -20,7 +20,7 @@ func setupCapabilityModelTest(t *testing.T) *gorm.DB {
 	dsn := fmt.Sprintf("file:%s?mode=memory&cache=shared", strings.ReplaceAll(t.Name(), "/", "_"))
 	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{})
 	require.NoError(t, err)
-	require.NoError(t, db.AutoMigrate(&Model{}, &Channel{}, &Ability{}, &ChannelModelStatus{}, &ChannelModelCapability{}, &ResourcePoolSource{}, &CapacityPool{}))
+	require.NoError(t, db.AutoMigrate(&Model{}, &Channel{}, &Ability{}, &ChannelModelStatus{}, &ChannelModelCapability{}, &ResourcePoolSource{}, &CapacityPool{}, &Option{}))
 	DB = db
 	t.Cleanup(func() {
 		DB = previousDB
@@ -270,38 +270,134 @@ func TestCapabilityTargetsListUndeclaredChannelModelsForCostMultiplier(t *testin
 	assert.Equal(t, 0.0, targets[0].Channels[0].CostMultiplier)
 }
 
-func TestChannelCostMultiplierFollowsModelMapping(t *testing.T) {
+// 倍率按用户请求的模型名（映射之前）存和查：映射到同一上游的两个别名各存各的，
+// 额度却按上游名共用一份。
+func TestChannelCostMultiplierKeysByRequestModel(t *testing.T) {
 	db := setupCapabilityModelTest(t)
-	mapping := `{"public-model":"upstream-model"}`
+	mapping := `{"gpt-4o":"gpt-4o-2024-08-06","gpt-4o-latest":"gpt-4o-2024-08-06"}`
 	require.NoError(t, db.Create(&Channel{
-		Id: 5, Name: "mapped", Group: "default", Models: "public-model",
+		Id: 5, Name: "mapped", Group: "default", Models: "gpt-4o,gpt-4o-latest",
 		ModelMapping: &mapping, Status: common.ChannelStatusEnabled,
 	}).Error)
-	require.NoError(t, db.Create(&Ability{Group: "default", Model: "public-model", ChannelId: 5, Enabled: true}).Error)
+	require.NoError(t, db.Create(&[]Ability{
+		{Group: "default", Model: "gpt-4o", ChannelId: 5, Enabled: true},
+		{Group: "default", Model: "gpt-4o-latest", ChannelId: 5, Enabled: true},
+	}).Error)
 	require.NoError(t, InitCapabilityCache())
 
-	assert.Equal(t, 0.0, ChannelCostMultiplier("", mapping, "public-model"))
+	assert.Equal(t, 0.0, ChannelCostMultiplier("", "gpt-4o"))
 
-	require.NoError(t, SetChannelModelCostMultiplier(5, "public-model", 1.25))
+	require.NoError(t, SetChannelModelCostMultiplier(5, "gpt-4o", 0.8))
+	require.NoError(t, SetChannelModelCostMultiplier(5, "gpt-4o-latest", 0.5))
+	require.NoError(t, SetChannelModelLimit(5, "gpt-4o", dto.ModelLimit{RPM: 100}))
 	var channel Channel
 	require.NoError(t, db.First(&channel, "id = ?", 5).Error)
-	assert.Equal(t, map[string]float64{"upstream-model": 1.25}, channel.GetSetting().CostMultiplierMap)
-	assert.Equal(t, 1.25, ChannelCostMultiplier(*channel.Setting, mapping, "public-model"))
+	setting := channel.GetSetting()
+	assert.Equal(t, map[string]float64{"gpt-4o": 0.8, "gpt-4o-latest": 0.5}, setting.CostMultiplierMap)
+	assert.Equal(t, map[string]dto.ModelLimit{"gpt-4o-2024-08-06": {RPM: 100}}, setting.ModelLimits)
 
 	targets, _, err := GetCapabilityTargets(CapabilityTargetQuery{})
 	require.NoError(t, err)
-	require.Len(t, targets, 1)
-	require.Len(t, targets[0].Channels, 1)
-	assert.Equal(t, 1.25, targets[0].Channels[0].CostMultiplier)
+	require.Len(t, targets, 2)
+	byModel := map[string]CapabilityTargetChannel{}
+	for _, target := range targets {
+		require.Len(t, target.Channels, 1)
+		byModel[target.ModelName] = target.Channels[0]
+	}
+	assert.Equal(t, 0.8, byModel["gpt-4o"].CostMultiplier)
+	assert.Equal(t, 0.5, byModel["gpt-4o-latest"].CostMultiplier)
+	assert.Equal(t, 100, byModel["gpt-4o-latest"].ModelLimit.RPM, "aliases of one upstream share its limits")
+	assert.Equal(t, []string{"gpt-4o-latest"}, byModel["gpt-4o"].SharedModels)
+	assert.Equal(t, []string{"gpt-4o"}, byModel["gpt-4o-latest"].SharedModels)
 
-	// 0 表示清除倍率，回到按 1 处理。
-	require.NoError(t, SetChannelModelCostMultiplier(5, "public-model", 0))
+	// 0 表示清除倍率，只清这一行，另一个别名不受影响。
+	require.NoError(t, SetChannelModelCostMultiplier(5, "gpt-4o", 0))
 	require.NoError(t, db.First(&channel, "id = ?", 5).Error)
-	assert.Empty(t, channel.GetSetting().CostMultiplierMap)
+	assert.Equal(t, map[string]float64{"gpt-4o-latest": 0.5}, channel.GetSetting().CostMultiplierMap)
 
 	err = SetChannelModelCostMultiplier(5, "other-model", 2)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "does not serve model")
+}
+
+// 升级时把旧的上游名键换成请求名：每个请求名拿到能力页升级前显示的值，只跑一次。
+func TestMigrateCostMultiplierKeysToRequestModel(t *testing.T) {
+	db := setupCapabilityModelTest(t)
+	strPtr := func(value string) *string { return &value }
+	require.NoError(t, db.Create(&[]Channel{
+		// 两个别名映射到同一上游：都继承原来共用的值；对不上任何请求名的旧键丢弃；其它字段保留。
+		{Id: 1, Name: "aliases", Models: "gpt-4o,gpt-4o-latest,gpt-4o-mini",
+			ModelMapping: strPtr(`{"gpt-4o":"gpt-4o-2024-08-06","gpt-4o-latest":"gpt-4o-2024-08-06"}`),
+			Setting:      strPtr(`{"cost_multiplier":{"gpt-4o-2024-08-06":0.8,"gpt-4o-mini":1.2,"removed-model":3},"model_limits":{"gpt-4o-2024-08-06":{"rpm":100}},"x_unknown":true}`)},
+		// 旧版渠道抽屉按链尾名填的倍率：页面看不到，但记录时一直生效，转换时保留。
+		{Id: 2, Name: "chain", Models: "a", ModelMapping: strPtr(`{"a":"b","b":"c"}`),
+			Setting: strPtr(`{"cost_multiplier":{"c":1.5}}`)},
+		// 一跳名和链尾名都有值时，取能力页显示的一跳名的值。
+		{Id: 5, Name: "chain-shown", Models: "x", ModelMapping: strPtr(`{"x":"y","y":"z"}`),
+			Setting: strPtr(`{"cost_multiplier":{"y":2,"z":9}}`)},
+		// 没有映射时键本来就是请求名，不改写。
+		{Id: 3, Name: "plain", Models: "claude-sonnet-4-5", Setting: strPtr(`{"cost_multiplier":{"claude-sonnet-4-5":0.6}}`)},
+		// 坏数据跳过，不挡住其它渠道。
+		{Id: 4, Name: "broken", Models: "m", Setting: strPtr(`{"cost_multiplier":"not-a-map"}`)},
+	}).Error)
+
+	require.NoError(t, MigrateCostMultiplierKeysToRequestModel())
+
+	settingOf := func(id int) string {
+		var channel Channel
+		require.NoError(t, db.First(&channel, "id = ?", id).Error)
+		return *channel.Setting
+	}
+	var aliases map[string]any
+	require.NoError(t, common.UnmarshalJsonStr(settingOf(1), &aliases))
+	assert.Equal(t, map[string]any{"gpt-4o": 0.8, "gpt-4o-latest": 0.8, "gpt-4o-mini": 1.2}, aliases["cost_multiplier"])
+	assert.Equal(t, map[string]any{"gpt-4o-2024-08-06": map[string]any{"rpm": float64(100)}}, aliases["model_limits"], "limits stay keyed by the upstream name")
+	assert.Equal(t, true, aliases["x_unknown"])
+	assert.JSONEq(t, `{"cost_multiplier":{"a":1.5}}`, settingOf(2))
+	assert.JSONEq(t, `{"cost_multiplier":{"x":2}}`, settingOf(5))
+	assert.Equal(t, `{"cost_multiplier":{"claude-sonnet-4-5":0.6}}`, settingOf(3))
+	assert.Equal(t, `{"cost_multiplier":"not-a-map"}`, settingOf(4))
+
+	// 第二次启动不再转换：转换后的键按旧规则会被当成上游名，重跑会把 gpt-4o-latest 的值弄丢。
+	require.NoError(t, db.Model(&Channel{}).Where("id = ?", 1).Update("setting", `{"cost_multiplier":{"gpt-4o":0.8,"gpt-4o-latest":0.5}}`).Error)
+	require.NoError(t, MigrateCostMultiplierKeysToRequestModel())
+	assert.Equal(t, `{"cost_multiplier":{"gpt-4o":0.8,"gpt-4o-latest":0.5}}`, settingOf(1))
+
+	// 完成标记由服务端管理：选项接口不能写它，也不出现在选项表里。
+	require.ErrorIs(t, UpdateOption(costMultiplierKeyMigratedKey, "1"), errCostMultiplierKeyMigratedReadOnly)
+	common.OptionMapRWMutex.Lock()
+	previousOptions := common.OptionMap
+	common.OptionMap = map[string]string{costMultiplierKeyMigratedKey: "1"}
+	common.OptionMapRWMutex.Unlock()
+	t.Cleanup(func() {
+		common.OptionMapRWMutex.Lock()
+		common.OptionMap = previousOptions
+		common.OptionMapRWMutex.Unlock()
+	})
+	require.NoError(t, updateOptionMap(costMultiplierKeyMigratedKey, "1"))
+	common.OptionMapRWMutex.RLock()
+	_, listed := common.OptionMap[costMultiplierKeyMigratedKey]
+	common.OptionMapRWMutex.RUnlock()
+	assert.False(t, listed)
+}
+
+func TestCostMultiplierModel(t *testing.T) {
+	tests := []struct {
+		name          string
+		channelModels []string
+		requestModel  string
+		want          string
+	}{
+		{name: "listed request name", channelModels: []string{"gpt-4o", "gpt-4o-latest"}, requestModel: "gpt-4o-latest", want: "gpt-4o-latest"},
+		{name: "effort variant matched through its base name", channelModels: []string{"gpt-5"}, requestModel: "gpt-5-high", want: "gpt-5"},
+		{name: "listed variant is preferred over its base name", channelModels: []string{"gpt-5", "gpt-5-high"}, requestModel: "gpt-5-high", want: "gpt-5-high"},
+		{name: "unlisted name stays as requested", channelModels: []string{"gpt-4o"}, requestModel: "claude-sonnet-4-5", want: "claude-sonnet-4-5"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, CostMultiplierModel(tt.channelModels, tt.requestModel))
+		})
+	}
 }
 
 func TestResolveMappedModel(t *testing.T) {

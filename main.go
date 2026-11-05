@@ -370,6 +370,10 @@ func InitResources() error {
 		if err := model.MigrateRetiredFrontendOptions(); err != nil {
 			common.SysError(common.LogText("failed to migrate retired frontend options: %s", err.Error()))
 		}
+		// 在 InitChannelCache 之前跑，渠道缓存读到的就是转换后的倍率键。失败不阻断启动，下次启动重试。
+		if err := model.MigrateCostMultiplierKeysToRequestModel(); err != nil {
+			common.SysError(common.LogText("failed to migrate cost multiplier keys: %s", err.Error()))
+		}
 	}
 	model.InitOptionMap()
 	excludedChannelIDs, _, excludedErr := operation_setting.ParseChannelModelExcludedChannelIDs(

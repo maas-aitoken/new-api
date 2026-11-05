@@ -371,6 +371,26 @@ function CapabilityChannelList(props: {
         } else if (channel.configured) {
           statusLabel = t('Narrowed')
         }
+        // 额度按映射后的上游名存（网关控制侧），映射到同一上游的几个模型共用；倍率不共用。
+        const sharedModels = channel.shared_models ?? []
+        let upstreamNote = ''
+        if (sharedModels.length > 0) {
+          upstreamNote = t(
+            'Upstream {{model}}; limits shared with {{models}}',
+            {
+              model: channel.upstream_model,
+              models: sharedModels.join(', '),
+            }
+          )
+        } else if (
+          channel.upstream_model &&
+          channel.upstream_model !== props.target.model_name
+        ) {
+          upstreamNote = t(
+            'Upstream {{model}}; aliases of the same upstream share these limits',
+            { model: channel.upstream_model }
+          )
+        }
         return (
           <li
             key={channel.id}
@@ -419,18 +439,12 @@ function CapabilityChannelList(props: {
                 modelName={props.target.model_name}
               />
             )}
-            {channel.upstream_model &&
-            channel.upstream_model !== props.target.model_name ? (
+            {upstreamNote ? (
               <div
                 className='text-muted-foreground truncate text-xs'
-                title={channel.upstream_model}
+                title={upstreamNote}
               >
-                {t(
-                  'Upstream {{model}}; aliases of the same upstream share these limits',
-                  {
-                    model: channel.upstream_model,
-                  }
-                )}
+                {upstreamNote}
               </div>
             ) : null}
             <ChannelModelCapacityLine
@@ -587,6 +601,12 @@ function ChannelCostMultiplierInput(props: {
           role='alert'
         >
           {error}
+        </span>
+      ) : null}
+      {/* 倍率按这一行的模型名存（和计费同侧），只有和别的模型共用额度时才需要点明这一点。 */}
+      {!error && (props.channel.shared_models ?? []).length > 0 ? (
+        <span className='truncate' title={props.modelName}>
+          {t('Only for {{model}}', { model: props.modelName })}
         </span>
       ) : null}
     </label>

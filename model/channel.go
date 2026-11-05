@@ -1075,15 +1075,12 @@ func (channel *Channel) ValidateSettings() error {
 	if err := channelParams.ValidateHTTPTransport(); err != nil {
 		return err
 	}
+	// cost_multiplier 和 model_limits 都只校验取值，不拿键去对照模型列表和 model_mapping：
+	// 删了模型或改了映射之后，旧键会变成孤儿；若在这里拒绝，管理员在能力页看不到这些
+	// 旧键也就清不掉，渠道就再也存不了。孤儿键不会命中任何请求，留着无害。
 	if err := channelParams.ValidateCostMultiplier(); err != nil {
 		return err
 	}
-	if err := channel.validateCostMultiplierModels(channelParams.CostMultiplierMap); err != nil {
-		return err
-	}
-	// model_limits 只校验取值，不像 cost_multiplier 那样对照模型列表：
-	// 改了 model_mapping 之后旧上游名的额度会变成孤儿，若在这里拒绝，
-	// 管理员在能力页看不到旧上游名也就清不掉，渠道就再也存不了。孤儿额度不会命中任何请求。
 	if err := channelParams.ValidateModelLimits(); err != nil {
 		return err
 	}
@@ -1116,54 +1113,6 @@ func (channel *Channel) ValidateSettings() error {
 	if constant.IsAdvancedCustomChannel(channel.Type) && channelOtherSettings.UpstreamModelUpdateCheckEnabled {
 		if _, ok := channelOtherSettings.AdvancedCustom.ModelListRoute(); !ok {
 			return fmt.Errorf("advanced custom channels require a %s route when upstream model update checks are enabled", dto.AdvancedCustomModelListPath)
-		}
-	}
-	return nil
-}
-
-// validateCostMultiplierModels cross-checks cost multiplier keys against the
-// channel's model list and model mapping. Keys are the names the channel
-// actually serves upstream: the mapped target of a model mapping entry, or a
-// channel model that no mapping entry redirects away. A client-facing name
-// that model mapping redirects away is rejected, because the relay never
-// dispatches under that name.
-func (channel *Channel) validateCostMultiplierModels(costMultiplier map[string]float64) error {
-	if len(costMultiplier) == 0 {
-		return nil
-	}
-
-	allowed := make(map[string]struct{})
-	for _, model := range strings.Split(channel.Models, ",") {
-		if model = strings.TrimSpace(model); model != "" {
-			allowed[model] = struct{}{}
-		}
-	}
-	if channel.ModelMapping != nil && *channel.ModelMapping != "" {
-		modelMapping := make(map[string]string)
-		if err := common.Unmarshal([]byte(*channel.ModelMapping), &modelMapping); err != nil {
-			return fmt.Errorf("invalid model_mapping while validating cost_multiplier: %w", err)
-		}
-		sources := make(map[string]struct{}, len(modelMapping))
-		for clientModel, upstreamModel := range modelMapping {
-			if upstreamModel = strings.TrimSpace(upstreamModel); upstreamModel != "" {
-				allowed[upstreamModel] = struct{}{}
-			}
-			// The source name is remapped upstream, so the relay never
-			// dispatches under it; a multiplier keyed by it never matches.
-			sources[strings.TrimSpace(clientModel)] = struct{}{}
-		}
-		for source := range sources {
-			delete(allowed, source)
-		}
-	}
-
-	if len(allowed) == 0 {
-		return nil
-	}
-
-	for model := range costMultiplier {
-		if _, ok := allowed[model]; !ok {
-			return fmt.Errorf("cost_multiplier model %s must be a model mapping target or a channel model that is not remapped", model)
 		}
 	}
 	return nil
