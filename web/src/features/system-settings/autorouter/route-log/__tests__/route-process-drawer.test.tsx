@@ -488,6 +488,29 @@ test('an unknown task type is a valid answer with no ranking, and the previous r
   expect(screen.getByText('Kept the previous route')).toBeVisible()
 })
 
+test('an effort held at the previous one and then raised by the benefit lists the hold first', async () => {
+  mockLog({
+    ...logItem,
+    task_type: 'unknown',
+    effort: 'xhigh',
+    detail: {
+      result: { resolved_model: 'coder', model: 'coder', effort: 'xhigh', source: 'jev', effort_override: true },
+      trace: {
+        request: { human_turns: 2, text_runes: 40, previous_runes: 30 },
+        judgment: 'live',
+        validity: {},
+        effort: { difficulty: 1, base: 'low', threshold: 0.5, benefit: 0.7, floored: true, upgraded: true },
+        ladder: [{ profile: 'code.build', outcome: 'inherited', model: 'coder' }],
+      },
+    },
+  })
+  renderDrawer({})
+
+  const held = await screen.findByText('Held at the previous effort')
+  const raised = screen.getByText('Raised one step by the larger-model benefit')
+  expect(held.compareDocumentPosition(raised) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+})
+
 const tiers = { capability: 0, balanced: 0.07, cost: 0.3 }
 
 // An adaptive request that compared quality and price at the weight its mode gave.
