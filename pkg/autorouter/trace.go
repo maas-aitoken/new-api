@@ -33,11 +33,12 @@ const (
 	JudgmentUnroutable    = "unroutable"     // no model could serve it, so jev was not called
 )
 
-// Why a decision is not trusted.
+// Why a request has no valid decision to route by. A task type of unknown is a
+// valid answer, not one of these.
 const (
-	TrustNoDecision   = "no_decision"
-	TrustNoDifficulty = "no_difficulty"
-	TrustUnknownTask  = "unknown_task" // the task type belongs to no class, such as unknown
+	DecisionMissing         = "no_decision"       // jev failed, or the request was never classified
+	DecisionNoDifficulty    = "no_difficulty"     // jev answered without a difficulty
+	DecisionInvalidTaskType = "invalid_task_type" // jev answered a task type it was not offered
 )
 
 // Why an adaptive request has no judged weight.
@@ -65,7 +66,7 @@ type Trace struct {
 	Request      RequestTrace  `json:"request"`
 	Judgment     string        `json:"judgment"`
 	Unroutable   *Unroutable   `json:"unroutable,omitempty"`
-	Trust        *Trust        `json:"trust,omitempty"`
+	Validity     *Validity     `json:"validity,omitempty"`
 	Mode         *ModeTrace    `json:"mode,omitempty"`
 	Continuation *Continuation `json:"continuation,omitempty"`
 	Effort       *EffortTrace  `json:"effort,omitempty"`
@@ -113,11 +114,13 @@ type ReasonCount struct {
 	Examples []string `json:"examples,omitempty"`
 }
 
-// Trust says whether the classification could pick a ranking, and from what.
-type Trust struct {
-	// Reason is empty when the decision is trusted.
-	Reason string `json:"reason,omitempty"`
-	// Profiles are the rankings tried, most specific first.
+// Validity says whether the request had a valid decision, and which rankings it
+// routes by.
+type Validity struct {
+	// Error is empty for a valid decision, else one of the Decision* codes.
+	Error string `json:"error,omitempty"`
+	// Profiles are the rankings tried, most specific first. A valid decision whose
+	// task type is unknown has none.
 	Profiles []string `json:"profiles,omitempty"`
 }
 

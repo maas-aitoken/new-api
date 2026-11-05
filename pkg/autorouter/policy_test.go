@@ -85,9 +85,9 @@ func TestSelectRoute(t *testing.T) {
 	}
 }
 
-// 可信的判断自己定档位、会改写客户端的推理字段，所以用 overridable 判定候选；
-// 兜底路径不碰客户端字段，仍按客户端原样的请求用 available 判定。
-func TestSelectRouteJudgesTrustedAndFallbackCandidatesSeparately(t *testing.T) {
+// 档位由判断定下时会改写客户端的推理字段，所以用 overridable 判定候选；
+// 沿用上一轮或默认模型时不碰客户端字段，仍按客户端原样的请求用 available 判定。
+func TestSelectRouteJudgesOverridingAndFallbackCandidatesSeparately(t *testing.T) {
 	policy := Policy{
 		TaskModels:             map[string][]string{"code.build": {"coder", "coder-b"}},
 		DefaultModels:          []string{"general", "general-b"},
@@ -98,21 +98,22 @@ func TestSelectRouteJudgesTrustedAndFallbackCandidatesSeparately(t *testing.T) {
 	}
 	one := 1.0
 	zero := 0.0
-	trusted := &Decision{TaskType: "code.build", TaskTypeProbability: 0.9, Difficulty: 2, TaskChange: &one, LargerModelBenefit: &zero}
+	leaf := &Decision{TaskType: "code.build", TaskTypeProbability: 0.9, Difficulty: 2, TaskChange: &one, LargerModelBenefit: &zero}
 	// 客户端自己带的推理档位 coder 的渠道不支持，但 auto 会把它改写掉，所以 coder 仍可选。
 	available := func(model string) bool { return model == "coder-b" || model == "general-b" }
 	overridable := func(string) bool { return true }
 
 	candidates := Candidates{Available: available, Overridable: overridable}
-	route, inherited, ok, _ := SelectRoute(trusted, nil, policy, candidates, nil)
+	route, inherited, ok, _ := SelectRoute(leaf, nil, policy, candidates, nil)
 	assert.True(t, ok)
 	assert.False(t, inherited)
-	assert.Equal(t, "coder", route.Model, "可信判断按 overridable 选模")
+	assert.Equal(t, "coder", route.Model, "任务类型是二级类时按 overridable 选模")
 
 	route, inherited, ok, _ = SelectRoute(nil, nil, policy, candidates, nil)
 	assert.True(t, ok)
 	assert.True(t, inherited)
-	assert.Equal(t, "general-b", route.Model, "兜底按客户端原样的请求选模，跳过 general")
+	assert.Equal(t, "general-b", route.Model, "没有判断时按客户端原样的请求选模，跳过 general")
+
 }
 
 // pickEntry 描述质量/成本选择里的一个候选。
@@ -277,8 +278,8 @@ func TestPickByQualityCostComparesThePlatformCost(t *testing.T) {
 	assert.False(t, ok, "nothing left to compare")
 }
 
-// 可信的判断在同一任务类型的候选里一次比较质量和价格；沿用上一轮模型、
-// 兜底和没有价格时都不做这个比较。
+// 按榜单选模型时在同一榜单的候选里一次比较质量和价格；沿用上一轮模型、
+// 默认模型以外的退路和没有价格时都不做这个比较。
 func TestSelectRoutePicksByQualityAndPrice(t *testing.T) {
 	policy := Policy{
 		TaskModels: map[string][]string{"code.build": {"top", "mid", "cheap", "weak"}, "code.ops": {"top", "legacy"}, "code": {"top", "mid"}},
@@ -307,7 +308,7 @@ func TestSelectRoutePicksByQualityAndPrice(t *testing.T) {
 		return &Decision{TaskType: taskType, TaskTypeProbability: 0.9, Difficulty: 2, TaskChange: &taskChange, LargerModelBenefit: &zero}
 	}
 
-	t.Run("a trusted decision picks by quality and price", func(t *testing.T) {
+	t.Run("a decision with a leaf task type picks by quality and price", func(t *testing.T) {
 		route, inherited, ok, pick := SelectRoute(decide("code.build", 1), nil, policy, priced, nil)
 		assert.True(t, ok)
 		assert.False(t, inherited)
@@ -333,10 +334,10 @@ func TestSelectRoutePicksByQualityAndPrice(t *testing.T) {
 		require.NotNil(t, pick)
 		assert.Equal(t, "mid", pick.Chosen)
 	})
-	t.Run("costs are asked with the step's effort and trust", func(t *testing.T) {
+	t.Run("costs are asked with the step's effort and whether the client's reasoning is set aside", func(t *testing.T) {
 		type ask struct {
-			effort  string
-			trusted bool
+			effort                string
+			ignoreClientReasoning bool
 		}
 		var asked []ask
 		withCosts := priced
@@ -350,7 +351,7 @@ func TestSelectRoutePicksByQualityAndPrice(t *testing.T) {
 		require.True(t, ok)
 		_, _, ok, _ = SelectRoute(nil, nil, policy, withCosts, nil)
 		require.True(t, ok)
-		assert.Equal(t, []ask{{"xhigh", true}, {"medium", false}}, asked, "a trusted ranking, then an untrusted fallback")
+		assert.Equal(t, []ask{{"xhigh", true}, {"medium", false}}, asked, "a ranking chosen by a valid decision, then the default models without a decision")
 	})
 	t.Run("without prices the first available model in list order wins", func(t *testing.T) {
 		route, _, ok, pick := SelectRoute(decide("code.build", 1), nil, policy, Candidates{Available: all, Overridable: all}, nil)
@@ -365,7 +366,7 @@ func TestSelectRoutePicksByQualityAndPrice(t *testing.T) {
 		assert.Equal(t, "top", route.Model)
 		assert.Nil(t, pick)
 	})
-	t.Run("an untrusted decision with no previous route compares the default models", func(t *testing.T) {
+	t.Run("no decision and no previous route compares the default models", func(t *testing.T) {
 		route, inherited, ok, pick := SelectRoute(nil, nil, policy, priced, nil)
 		assert.True(t, ok)
 		assert.True(t, inherited)
@@ -378,7 +379,7 @@ func TestSelectRoutePicksByQualityAndPrice(t *testing.T) {
 		assert.True(t, ok)
 		assert.Equal(t, "general", route.Model, "能力优先时兜底也取分数最高的")
 	})
-	t.Run("a trusted decision with nothing servable in its rankings falls to the default models", func(t *testing.T) {
+	t.Run("a leaf task type with nothing servable in its rankings falls to the default models", func(t *testing.T) {
 		candidates := priced
 		candidates.Overridable = func(model string) bool { return strings.HasPrefix(model, "general") }
 		route, _, ok, pick := SelectRoute(decide("code.build", 1), nil, policy, candidates, nil)
@@ -431,11 +432,11 @@ func TestSelectRoutePicksByQualityAndPrice(t *testing.T) {
 		}
 	})
 	t.Run("the mode answer counts even when the task type is unknown", func(t *testing.T) {
-		untrusted := &Decision{TaskType: TaskTypeUnknown, TaskTypeProbability: 0.9, Difficulty: 1}
-		route, inherited, ok, pick := SelectRoute(withMode(untrusted, 1, 0, 0), nil, adaptive, priced, nil)
+		unknown := &Decision{TaskType: TaskTypeUnknown, TaskTypeProbability: 0.9, Difficulty: 1}
+		route, inherited, ok, pick := SelectRoute(withMode(unknown, 1, 0, 0), nil, adaptive, priced, nil)
 		require.True(t, ok)
 		assert.True(t, inherited)
-		assert.Equal(t, "general", route.Model, "能力优先时兜底取分数最高的，退到均衡档会取更便宜的 general-cheap")
+		assert.Equal(t, "general", route.Model, "能力优先时默认模型也取分数最高的，退到均衡档会取更便宜的 general-cheap")
 		require.NotNil(t, pick)
 		assert.Equal(t, 0.0, pick.Weight)
 	})
@@ -564,7 +565,7 @@ func TestRouteFallback(t *testing.T) {
 	assert.Equal(t, "default", Route{}.Fallback())
 }
 
-// 选路留痕记下一次路由是怎么来的：判断可不可信、是否续用上一轮、难度怎么变成档位、
+// 选路留痕记下一次路由是怎么来的：判断合不合法、按哪些榜单、是否续用上一轮、难度怎么变成档位、
 // 每个榜单试了什么，以及为什么没选更靠前的模型。
 func TestSelectRouteTrace(t *testing.T) {
 	policy := Policy{
@@ -597,10 +598,10 @@ func TestSelectRouteTrace(t *testing.T) {
 		return route, trace
 	}
 
-	t.Run("a trusted leaf records the comparison and how difficulty became the effort", func(t *testing.T) {
+	t.Run("a leaf task type records the comparison and how difficulty became the effort", func(t *testing.T) {
 		route, trace := run(decide("code.build", 2, 1, 0.1), nil, candidates)
 		assert.Equal(t, Route{Profile: "code.build", Model: "mid", Effort: "medium"}, route)
-		assert.Equal(t, &Trust{Profiles: []string{"code.build", "code"}}, trace.Trust)
+		assert.Equal(t, &Validity{Profiles: []string{"code.build", "code"}}, trace.Validity)
 		assert.Equal(t, &EffortTrace{Difficulty: 2, Base: "medium", Benefit: ptr(0.1), Threshold: 0.5}, trace.Effort)
 		assert.Nil(t, trace.Continuation, "没有上一轮路由就谈不上续用")
 		assert.Equal(t, []LadderStep{{Profile: "code.build", Models: 3, Outcome: OutcomeCompared, Model: "mid"}}, trace.Ladder)
@@ -609,31 +610,33 @@ func TestSelectRouteTrace(t *testing.T) {
 	t.Run("a task type without its own ranking falls to its class", func(t *testing.T) {
 		route, trace := run(decide("code.frontend", 1, 1, 0.1), nil, candidates)
 		assert.Equal(t, Route{Profile: "code", Model: "mid", Effort: "low"}, route)
-		assert.Equal(t, []string{"code.frontend", "code"}, trace.Trust.Profiles)
+		assert.Equal(t, []string{"code.frontend", "code"}, trace.Validity.Profiles)
 		assert.Equal(t, []LadderStep{
 			{Profile: "code.frontend", Outcome: OutcomeNone},
 			{Profile: "code", Models: 2, Outcome: OutcomeCompared, Model: "mid"},
 		}, trace.Ladder)
 	})
 
-	t.Run("an untrusted decision records why and takes the defaults", func(t *testing.T) {
+	t.Run("an unknown task type and a request without a valid decision both take the defaults", func(t *testing.T) {
 		tests := []struct {
 			name     string
 			decision *Decision
-			want     Trust
+			want     Validity
 		}{
-			{"jev failed", nil, Trust{Reason: TrustNoDecision}},
-			{"no difficulty", &Decision{TaskType: "code.build", TaskTypeProbability: 0.9}, Trust{Reason: TrustNoDifficulty}},
-			{"unknown task type",
+			{"unknown is a valid answer with no ranking",
 				&Decision{TaskType: TaskTypeUnknown, TaskTypeProbability: 0.4, Difficulty: 1, TaskTypeProbabilities: map[string]float64{"code.build": 0.3, "general.chat": 0.3, TaskTypeUnknown: 0.4}},
-				Trust{Reason: TrustUnknownTask}},
+				Validity{}},
+			{"jev failed", nil, Validity{Error: DecisionMissing}},
+			{"no difficulty", &Decision{TaskType: "code.build", TaskTypeProbability: 0.9}, Validity{Error: DecisionNoDifficulty}},
+			{"no task type", &Decision{Difficulty: 2}, Validity{Error: DecisionInvalidTaskType}},
+			{"a task type jev was not offered", &Decision{TaskType: "code.mobile", TaskTypeProbability: 0.9, Difficulty: 2}, Validity{Error: DecisionInvalidTaskType}},
 		}
 		for _, tt := range tests {
 			route, trace := run(tt.decision, nil, candidates)
-			assert.Equal(t, &tt.want, trace.Trust, tt.name)
+			assert.Equal(t, &tt.want, trace.Validity, tt.name)
 			assert.Equal(t, Route{Model: "general", Effort: "medium"}, route, tt.name)
 			assert.Equal(t, []LadderStep{{Profile: DefaultProfile, Models: 1, Outcome: OutcomeFirstAvailable, Model: "general"}}, trace.Ladder, tt.name)
-			assert.Nil(t, trace.Effort, "不可信的判断不看难度: %s", tt.name)
+			assert.Nil(t, trace.Effort, "这些请求的档位不由难度定: %s", tt.name)
 		}
 	})
 
@@ -661,11 +664,11 @@ func TestSelectRouteTrace(t *testing.T) {
 		assert.Equal(t, &EffortTrace{Difficulty: 2, Base: "medium", Benefit: ptr(0.7), Threshold: 0.5, Upgraded: true}, trace.Effort)
 	})
 
-	t.Run("an untrusted decision keeps the previous route", func(t *testing.T) {
+	t.Run("without a decision the previous route is kept", func(t *testing.T) {
 		previous := &Route{Profile: "code.build", Model: "top", Effort: "high"}
 		route, trace := run(nil, previous, candidates)
 		assert.Equal(t, *previous, route)
-		assert.Equal(t, TrustNoDecision, trace.Trust.Reason)
+		assert.Equal(t, DecisionMissing, trace.Validity.Error)
 		assert.Equal(t, []LadderStep{{Profile: "code.build", Outcome: OutcomeInherited, Model: "top"}}, trace.Ladder)
 	})
 

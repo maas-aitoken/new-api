@@ -39,13 +39,13 @@ const (
 //     同一条指令的后续请求不再调 jev，但路由每次按各自的可用集合重新算，
 //     所以一次带图请求因为能力不满足换了模型，不会影响之后的纯文本请求。
 //   - r: 和 s: 键存最近一次算出的路由（Route），供下一条指令"沿用上一轮模型"，
-//     以及没有可读文字的子 agent 继承会话路由。s: 键还记着这条路由是否来自可信的
-//     jev 判断（Trusted），子 agent 继承时据此决定能不能覆盖客户端的推理字段。
+//     以及没有可读文字的子 agent 继承会话路由。s: 键还记着这条路由的档位是否由
+//     jev 判断定下（EffortOverride），子 agent 继承时据此决定能不能覆盖客户端的推理字段。
 type autoRouterEntry struct {
-	Route    autorouter.Route     `json:"route"`
-	Decision *autorouter.Decision `json:"decision,omitempty"`
-	Failed   bool                 `json:"failed,omitempty"`
-	Trusted  bool                 `json:"trusted,omitempty"`
+	Route          autorouter.Route     `json:"route"`
+	Decision       *autorouter.Decision `json:"decision,omitempty"`
+	Failed         bool                 `json:"failed,omitempty"`
+	EffortOverride bool                 `json:"effort_override,omitempty"`
 }
 
 var (
@@ -130,8 +130,8 @@ func autoRouterCacheKey(kind string, tokenID int, parts ...string) string {
 // AutoCandidates 由分发中间件提供，回答一个候选模型能不能服务这个请求。
 type AutoCandidates struct {
 	// Serves 判定一个候选：令牌白名单、分组启用、至少一个可用渠道的生效能力满足请求。
-	// ignoreClientReasoning 为 true 时撇开客户端自己写的推理字段：可信的 auto 判断
-	// 会自己定档位并改写它们；false 时按客户端原样的请求判定，兜底路径用它。
+	// ignoreClientReasoning 为 true 时撇开客户端自己写的推理字段：档位由 auto 的判断
+	// 定下时会改写它们；false 时按客户端原样的请求判定，沿用上一轮或默认模型时用它。
 	Serves func(name string, ignoreClientReasoning bool) bool
 	// Why 说明一个候选为什么不能服务这个请求（撇开客户端的推理字段，与 Serves 的第二个
 	// 参数为 true 时一致），能服务时返回空串，只用于选路留痕。可以为 nil。
@@ -203,11 +203,11 @@ func ResolveAutoModel(c *gin.Context, candidates AutoCandidates) (*autorouter.Re
 		trace.Judgment = autorouter.JudgmentSession
 		if entry, found, _ := cache.Get(autoRouterCacheKey("s", tokenID, instruction.Session)); found {
 			serves := available
-			if entry.Trusted {
+			if entry.EffortOverride {
 				serves = overridable
 			}
 			if autorouter.ModelAvailable(entry.Route.Model, serves) {
-				result.Route, result.Source, result.EffortOverride = entry.Route, autorouter.SourceInherit, entry.Trusted
+				result.Route, result.Source, result.EffortOverride = entry.Route, autorouter.SourceInherit, entry.EffortOverride
 				trace.Ladder = append(trace.Ladder, autorouter.LadderStep{Profile: entry.Route.Profile, Outcome: autorouter.OutcomeInherited, Model: entry.Route.Model})
 				ok = true
 			}
@@ -306,14 +306,14 @@ func ResolveAutoModel(c *gin.Context, candidates AutoCandidates) (*autorouter.Re
 		// The session remembers its latest human instruction's route for the
 		// sub-agents whose task arrives without readable text.
 		if ok && instruction.Session != "" && !instruction.Agent {
-			_ = cache.SetWithTTL(autoRouterCacheKey("s", tokenID, instruction.Session), autoRouterEntry{Route: result.Route, Trusted: !inherited}, ttl)
+			_ = cache.SetWithTTL(autoRouterCacheKey("s", tokenID, instruction.Session), autoRouterEntry{Route: result.Route, EffortOverride: !inherited}, ttl)
 		}
 	}
 	if !ok {
-		// 前面已经选过路（Trust 有值），或根本没有可用模型时，兜底这一次不再写留痕，
+		// 前面已经选过路（Validity 有值），或根本没有可用模型时，兜底这一次不再写留痕，
 		// 免得盖掉真正的失败过程。
 		var fallbackTrace *autorouter.Trace
-		if trace.Trust == nil && trace.Judgment != autorouter.JudgmentUnroutable {
+		if trace.Validity == nil && trace.Judgment != autorouter.JudgmentUnroutable {
 			fallbackTrace = trace
 		}
 		result.Route, _, ok, result.Pick = autorouter.SelectRoute(nil, nil, policy, routing, fallbackTrace)
@@ -327,7 +327,7 @@ func ResolveAutoModel(c *gin.Context, candidates AutoCandidates) (*autorouter.Re
 		}
 		result.ResolvedModel, result.EffortInBody, ok = AutoServingModel(result.Model, result.Effort, serves)
 		if result.EffortInBody {
-			// 只有可信的判断才改客户端的推理字段；兜底路径保持原样。
+			// 只有档位由判断定下时才改客户端的推理字段，其余保持原样。
 			result.EffortAction = autorouter.EffortKeep
 			if result.EffortOverride {
 				gate := CapabilityGateFromContext(c)

@@ -182,7 +182,7 @@ func TestResolveAutoModelFollowsPreviousRoute(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "coder-xhigh", unknown.ResolvedModel)
 	assert.Equal(t, autorouter.SourceInherit, unknown.Source)
-	assert.False(t, unknown.EffortOverride, "不可信的判断沿用上一轮路由，不碰客户端的推理字段")
+	assert.False(t, unknown.EffortOverride, "任务类型是 unknown 时沿用上一轮路由，不碰客户端的推理字段")
 	require.NotNil(t, unknown.Decision)
 	assert.Equal(t, autorouter.TaskTypeUnknown, unknown.Decision.TaskType)
 
@@ -193,10 +193,11 @@ func TestResolveAutoModelFollowsPreviousRoute(t *testing.T) {
 	assert.Equal(t, autorouter.SourceJev, continued.Source)
 	assert.Equal(t, "general.chat", continued.Decision.TaskType)
 	assert.True(t, continued.EffortOverride)
+
 }
 
 // 概率最高的叶子哪怕只有 0.4，也按它的榜单选模型，code 下两个叶子加起来更高也不改走大类。
-// 这是一次可信的判断，档位由 auto 定，会覆盖客户端自己写的推理字段。
+// 档位由 auto 定，会覆盖客户端自己写的推理字段。
 func TestResolveAutoModelRoutesByTheMostProbableTaskType(t *testing.T) {
 	var calls atomic.Int32
 	useAutoRouterSetting(t, fakeJev(t, &calls, 0).URL, 1000)
@@ -226,7 +227,7 @@ func TestResolveAutoModelEncryptedSubAgentInheritsSessionRoute(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "coder-xhigh", result.ResolvedModel)
 	assert.Equal(t, autorouter.SourceInherit, result.Source)
-	assert.True(t, result.EffortOverride, "子 agent 继承的是一次可信判断的路由，也继承覆盖推理字段的资格")
+	assert.True(t, result.EffortOverride, "子 agent 继承的路由档位由判断定下，也继承覆盖推理字段的资格")
 	assert.Nil(t, result.Jev)
 	assert.Equal(t, int32(1), calls.Load())
 
@@ -298,7 +299,7 @@ func TestResolveAutoModelSkipsJevWhenNothingIsRoutable(t *testing.T) {
 	assert.False(t, common.GetContextKeyBool(c, constant.ContextKeyAutoRouted), "a request that resolved to no model is not marked")
 }
 
-// 候选的用户价格从 AutoCandidates.Price 进来，可信的判断在榜单分接近的模型里选更便宜的。
+// 候选的用户价格从 AutoCandidates.Price 进来，按榜单选模型时在榜单分接近的模型里选更便宜的。
 func TestResolveAutoModelPicksByQualityAndPrice(t *testing.T) {
 	var calls atomic.Int32
 	useAutoRouterSetting(t, fakeJev(t, &calls, 0).URL, 1000)
@@ -469,7 +470,7 @@ func TestResolveAutoModelConvergesEffortForDeclaredReasoningModels(t *testing.T)
 		return AutoCandidates{Serves: func(string, bool) bool { return true }, Channels: func(string) []int { return channels }}
 	}
 
-	t.Run("a trusted decision converges the effort and the final filter judges it", func(t *testing.T) {
+	t.Run("a leaf task type converges the effort and the final filter judges it", func(t *testing.T) {
 		// 客户端自己要 xhigh；请求带 tools，所以只有渠道 11、12 能服务（13 不支持 tools）。
 		gate := &CapabilityGate{mode: CapabilityGateEnforce, needs: &capability.Needs{ToolsCount: 1, ReasoningEffort: "xhigh"}, modelVerdicts: map[string]capabilityVerdict{}}
 		c := newAutoRouterContext(9701, `{"messages":[{"role":"user","content":"hard"}]}`)
@@ -495,7 +496,7 @@ func TestResolveAutoModelConvergesEffortForDeclaredReasoningModels(t *testing.T)
 		assert.Empty(t, result.AppliedEffort)
 	})
 
-	t.Run("an untrusted fallback leaves the client's reasoning fields alone", func(t *testing.T) {
+	t.Run("an unknown task type leaves the client's reasoning fields alone", func(t *testing.T) {
 		result, err := ResolveAutoModel(newAutoRouterContext(9703, `{"messages":[{"role":"user","content":"ok"}]}`), withChannels(11, 12))
 		require.NoError(t, err)
 		assert.Equal(t, "reasoner", result.ResolvedModel)
@@ -641,8 +642,7 @@ func TestResolveAutoModelTrace(t *testing.T) {
 		require.NotNil(t, trace)
 		assert.Equal(t, autorouter.JudgmentLive, trace.Judgment)
 		assert.Equal(t, autorouter.RequestTrace{Protocol: autorouter.ProtocolChat, HumanTurns: 1, TextRunes: 4}, trace.Request)
-		assert.Equal(t, []string{"code.build", "code"}, trace.Trust.Profiles)
-		assert.Empty(t, trace.Trust.Reason)
+		assert.Equal(t, &autorouter.Validity{Profiles: []string{"code.build", "code"}}, trace.Validity)
 		assert.Equal(t, "xhigh", trace.Effort.Base)
 		assert.Equal(t, []autorouter.LadderStep{{Profile: "code.build", Models: 1, Outcome: autorouter.OutcomeFirstAvailable, Model: "coder"}}, trace.Ladder)
 
@@ -662,7 +662,7 @@ func TestResolveAutoModelTrace(t *testing.T) {
 		first, err := ResolveAutoModel(newAutoRouterContext(9902, body), allModelsAvailable)
 		require.NoError(t, err)
 		assert.Equal(t, autorouter.JudgmentLiveFailed, first.Trace.Judgment)
-		assert.Equal(t, autorouter.TrustNoDecision, first.Trace.Trust.Reason)
+		assert.Equal(t, autorouter.DecisionMissing, first.Trace.Validity.Error)
 		assert.Equal(t, []autorouter.LadderStep{{Profile: autorouter.DefaultProfile, Models: 1, Outcome: autorouter.OutcomeFirstAvailable, Model: "general"}}, first.Trace.Ladder)
 
 		second, err := ResolveAutoModel(newAutoRouterContext(9902, body), allModelsAvailable)
@@ -678,7 +678,7 @@ func TestResolveAutoModelTrace(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, autorouter.JudgmentAuxiliary, auxiliary.Trace.Judgment)
 		assert.True(t, auxiliary.Trace.Request.Auxiliary)
-		assert.Equal(t, autorouter.TrustNoDecision, auxiliary.Trace.Trust.Reason)
+		assert.Equal(t, autorouter.DecisionMissing, auxiliary.Trace.Validity.Error)
 
 		empty, err := ResolveAutoModel(newAutoRouterContext(9904, `{"messages":[{"role":"assistant","content":"hi"}]}`), allModelsAvailable)
 		require.NoError(t, err)
@@ -718,7 +718,7 @@ func TestResolveAutoModelTrace(t *testing.T) {
 		require.Error(t, err)
 		require.NotNil(t, result.Trace, "失败的请求也带着留痕，选路日志要记它")
 		assert.Equal(t, autorouter.JudgmentUnroutable, result.Trace.Judgment)
-		assert.Nil(t, result.Trace.Trust)
+		assert.Nil(t, result.Trace.Validity)
 		assert.Empty(t, result.Trace.Ladder, "兜底那一次不再写进留痕")
 		assert.Equal(t, &autorouter.Unroutable{Reasons: []autorouter.ReasonCount{
 			{Reason: autorouter.ReasonNoChannel, Count: 2, Examples: []string{"coder", "chat"}},
@@ -730,7 +730,7 @@ func TestResolveAutoModelTrace(t *testing.T) {
 	t.Run("a failed route keeps the first attempt instead of the fallback's", func(t *testing.T) {
 		var calls atomic.Int32
 		useAutoRouterSetting(t, fakeJev(t, &calls, 0).URL, 1000)
-		// "ok" 分不出任务，判断不可信；客户端原样的请求没有任何模型能服务，但撇开推理字段后有。
+		// "ok" 判成 unknown，沿用上一轮或默认模型；客户端原样的请求没有任何模型能服务，但撇开推理字段后有。
 		candidates := AutoCandidates{
 			Serves:   func(_ string, ignoreClientReasoning bool) bool { return ignoreClientReasoning },
 			Channels: func(string) []int { return nil },

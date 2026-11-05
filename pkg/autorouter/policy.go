@@ -33,8 +33,8 @@ type Policy struct {
 	// continues the previous task: the model stays, so the prompt cache
 	// survives, and the effort may go up but never down.
 	ContinuationTaskChange float64
-	// TaskScores maps a task type to the quality score of its models. A trusted
-	// decision picks among the scored models by quality and price; models
+	// TaskScores maps a task type to the quality score of its models. A decision
+	// that routes by a ranking picks among its scored models by quality and price; models
 	// without a score are only a fallback in TaskModels order. The scores under
 	// DefaultProfile rank DefaultModels the same way.
 	TaskScores map[string]map[string]float64
@@ -74,28 +74,30 @@ func (r Route) Fallback() string {
 	}
 }
 
-// trustedProfiles returns the rankings a decision routes by, most specific
-// first: the task type jev chose, which is its most probable one, then that
-// task type's class. Nil means the decision is not trusted: jev gave no
-// answer, no difficulty, or a task type outside every class such as unknown.
-// trust says how it came out either way.
-func trustedProfiles(decision *Decision) ([]string, Trust) {
-	var trust Trust
+// validateDecision checks a decision and returns the rankings it routes by,
+// most specific first: the task type jev chose, which is its most probable
+// one, then that task type's class. A valid decision has a difficulty and a
+// task type among those jev was offered; one whose task type is unknown is
+// valid and routes by no ranking. validity.Error says why a decision is not
+// valid, and is DecisionMissing when there is none.
+func validateDecision(decision *Decision) (profiles []string, validity Validity) {
 	if decision == nil {
-		trust.Reason = TrustNoDecision
-		return nil, trust
+		validity.Error = DecisionMissing
+		return nil, validity
 	}
 	if decision.Difficulty <= 0 {
-		trust.Reason = TrustNoDifficulty
-		return nil, trust
+		validity.Error = DecisionNoDifficulty
+		return nil, validity
 	}
-	class := TaskClass(decision.TaskType)
-	if class == "" {
-		trust.Reason = TrustUnknownTask
-		return nil, trust
+	if _, offered := taskTypeCriteria[decision.TaskType]; !offered {
+		validity.Error = DecisionInvalidTaskType
+		return nil, validity
 	}
-	trust.Profiles = []string{decision.TaskType, class}
-	return trust.Profiles, trust
+	if decision.TaskType == TaskTypeUnknown {
+		return nil, validity
+	}
+	validity.Profiles = []string{decision.TaskType, TaskClass(decision.TaskType)}
+	return validity.Profiles, validity
 }
 
 // SelectRoute maps a jev decision to a route. decision is nil when jev failed;
@@ -103,22 +105,26 @@ func trustedProfiles(decision *Decision) ([]string, Trust) {
 // inherited reports that the decision was not used and the route came from
 // previous or the defaults. ok is false when no model is available at all.
 //
+// A valid decision whose task type is unknown routes by no ranking, so it
+// keeps the previous route or takes the defaults, like a request without a
+// valid decision.
+//
 // candidates.Available judges a model against the request exactly as the client
 // sent it; the inherited fallbacks use it because they leave the client's
 // reasoning fields alone. candidates.Overridable judges a model with the
-// client's reasoning fields set aside, because a trusted decision picks the
-// effort itself and rewrites them. pick is set when the model was chosen by
+// client's reasoning fields set aside, because a decision that sets the effort
+// picks it itself and rewrites them. pick is set when the model was chosen by
 // quality and price among several candidates.
 //
 // trace, when not nil, receives how the route came about: whether the decision was
-// trusted, whether the request continued the previous task, how difficulty became an
+// valid, whether the request continued the previous task, how difficulty became an
 // effort, and each ranking tried.
 func SelectRoute(decision *Decision, previous *Route, policy Policy, candidates Candidates, trace *Trace) (route Route, inherited, ok bool, pick *Pick) {
 	if trace == nil {
 		trace = &Trace{}
 	}
 	if policy.Preference == PreferenceAdaptive {
-		// mode 问题与任务类型是否可信无关：判断可信与否只决定走哪个榜单，成本倾向照样可用。
+		// mode 问题与任务类型无关：任务类型只决定走哪个榜单，unknown 或没有合法判断时成本倾向照样可用。
 		var probabilities map[string]float64
 		if decision != nil {
 			probabilities = decision.ModeProbabilities
@@ -128,8 +134,8 @@ func SelectRoute(decision *Decision, previous *Route, policy Policy, candidates 
 		trace.Mode = &mode
 	}
 	available, overridable := candidates.Available, candidates.Overridable
-	profiles, trust := trustedProfiles(decision)
-	trace.Trust = &trust
+	profiles, validity := validateDecision(decision)
+	trace.Validity = &validity
 	if profiles == nil {
 		if previous != nil && ModelAvailable(previous.Model, available) {
 			trace.Ladder = append(trace.Ladder, LadderStep{Profile: previous.Profile, Outcome: OutcomeInherited, Model: previous.Model})
@@ -176,9 +182,9 @@ func SelectRoute(decision *Decision, previous *Route, policy Policy, candidates 
 // compares quality and price under the policy's preference; otherwise, or when no
 // scored model is servable, it takes the first available model in list order.
 // picked is set only for the comparison. Every call adds a step to trace.
-// trusted 表示 available 撇开了客户端的推理字段（可信判断走 overridable），effort 是这一步
-// 的期望档位，两者一起交给 Candidates.Costs，让主机按同一口径找出服务请求的模型名和渠道。
-func (p Policy) choose(profile string, models []string, available func(string) bool, trusted bool, effort string, candidates Candidates, trace *Trace) (string, *Pick, bool) {
+// ignoreClientReasoning 表示 available 撇开了客户端的推理字段（档位由判断定下时走 overridable），
+// effort 是这一步的期望档位，两者一起交给 Candidates.Costs，让主机按同一口径找出服务请求的模型名和渠道。
+func (p Policy) choose(profile string, models []string, available func(string) bool, ignoreClientReasoning bool, effort string, candidates Candidates, trace *Trace) (string, *Pick, bool) {
 	step := LadderStep{Profile: profile, Models: len(models), Outcome: OutcomeNone}
 	var picked *Pick
 	model, found := "", false
@@ -186,7 +192,7 @@ func (p Policy) choose(profile string, models []string, available func(string) b
 		servable := func(name string) bool { return ModelAvailable(name, available) }
 		var costs func([]string) map[string]Cost
 		if candidates.Costs != nil {
-			costs = func(names []string) map[string]Cost { return candidates.Costs(names, effort, trusted) }
+			costs = func(names []string) map[string]Cost { return candidates.Costs(names, effort, ignoreClientReasoning) }
 		}
 		pick, ok := pickByQualityCost(models, scores, p.CostWeight, servable, candidates.Price, costs, candidates.Why)
 		step.Skipped, step.SkippedMore = pick.skipped, pick.skippedMore
@@ -270,10 +276,10 @@ func ResolveVariant(model, effort string, available func(model string) bool) (st
 
 // Where a route came from.
 const (
-	SourceJev     = "jev"     // jev ran and its decision was trusted
-	SourceCache   = "cache"   // the trusted decision came from the cache; the route is recomputed
-	SourceInherit = "inherit" // jev was untrusted or failed; previous route kept
-	SourceDefault = "default" // no usable signal and no previous route
+	SourceJev     = "jev"     // jev ran and its decision set the route
+	SourceCache   = "cache"   // that decision came from the cache; the route is recomputed
+	SourceInherit = "inherit" // the task type was unknown, or there was no valid decision; previous route kept
+	SourceDefault = "default" // the same, with no previous route
 )
 
 // Result is the routing outcome of one request.
@@ -288,8 +294,9 @@ type Result struct {
 	// EffortInBody 表示档位写进请求体而不是拼在模型名后缀上：只有模型声明了
 	// 推理维度，并且裸模型名本身可用时才这样做，其余沿用后缀。
 	EffortInBody bool `json:"effort_in_body,omitempty"`
-	// EffortOverride 表示这条路由来自可信的 jev 判断，可以覆盖客户端自己写的推理字段；
-	// 兜底路径（辅助请求、jev 失败或不可信）为 false，不碰客户端字段。
+	// EffortOverride 表示这条路由的档位由 jev 的判断定下，可以覆盖客户端自己写的推理字段：
+	// 任务类型是二级类。其余情况（任务类型是 unknown、没有合法判断、辅助请求）为 false，
+	// 不碰客户端字段。
 	EffortOverride bool `json:"effort_override,omitempty"`
 	// Pick 是模型按质量和价格在多个候选里选出时的比较过程；沿用上一轮模型、
 	// 兜底和按榜单顺序取第一个时为 nil。

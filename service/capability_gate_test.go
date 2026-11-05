@@ -427,7 +427,7 @@ func TestCapabilityGateCandidateCanIgnoreClientReasoning(t *testing.T) {
 	gate := &CapabilityGate{mode: CapabilityGateEnforce, needs: needs, modelVerdicts: map[string]capabilityVerdict{}}
 
 	assert.False(t, gate.AllowsAnyChannel("reasoner", []int{11, 12}, false), "客户端要的 max 没有渠道声明过")
-	assert.True(t, gate.AllowsAnyChannel("reasoner", []int{11, 12}, true), "可信的 auto 判断自己定档位，不拿客户端原来的档位淘汰候选")
+	assert.True(t, gate.AllowsAnyChannel("reasoner", []int{11, 12}, true), "档位由 auto 的判断定下时，不拿客户端原来的档位淘汰候选")
 	assert.Equal(t, "max", needs.ReasoningEffort, "撇开推理只是在副本上做，不改客户端的诉求")
 }
 
