@@ -159,6 +159,7 @@ func resetSchedulerCircuit() {
 	schedulerEndpointCircuitState.Lock()
 	schedulerEndpointCircuitState.states = make(map[string]*schedulerEndpointCircuit)
 	schedulerEndpointCircuitState.Unlock()
+	schedulerPreviewUnsupportedUntil.Store(0)
 }
 
 func schedulerCircuitAllows(now time.Time) bool {

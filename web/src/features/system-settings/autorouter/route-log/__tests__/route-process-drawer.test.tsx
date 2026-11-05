@@ -152,6 +152,109 @@ test('the model that was chosen is marked in the comparison, and a better-ranked
   expect(screen.getByText('and 3 more')).toBeVisible()
 })
 
+test('a comparison by platform cost shows the multiplier of each candidate, where it came from and the compared cost', async () => {
+  mockLog({
+    ...routed,
+    detail: {
+      ...routed.detail,
+      result: {
+        ...routed.detail?.result,
+        pick: {
+          chosen: 'sonnet',
+          weight: 0.07,
+          band: [
+            {
+              model: 'sonnet',
+              score: 0.95,
+              price: 4,
+              cost_multiplier: 0.25,
+              cost: 1,
+              channel_id: 12,
+              channels: 1,
+              cost_source: 'scheduler',
+              discount: 0,
+              utility: 0.95,
+            },
+            {
+              model: 'haiku',
+              score: 0.93,
+              price: 1.5,
+              cost_multiplier: 0.8,
+              cost: 1.2,
+              channels: 2,
+              cost_source: 'expected',
+              discount: 0.07,
+              utility: 0.86,
+            },
+          ],
+        },
+      },
+    },
+  })
+  renderDrawer({})
+
+  expect(
+    await screen.findByRole('columnheader', { name: 'Cost multiplier' })
+  ).toBeVisible()
+  expect(
+    screen.getByRole('columnheader', { name: 'Compared cost' })
+  ).toBeVisible()
+  const chosenRow = screen.getByText('Chosen').closest('tr') as HTMLElement
+  expect(within(chosenRow).getByText('× 0.2500')).toBeVisible()
+  expect(
+    within(chosenRow).getByText('Scheduler picks channel #12')
+  ).toBeVisible()
+  const otherRow = screen.getByText('haiku').closest('tr') as HTMLElement
+  expect(within(otherRow).getByText('Expected over 2 channels')).toBeVisible()
+  expect(
+    screen.getByText(/The multiplier never changes what the user is billed/)
+  ).toBeVisible()
+})
+
+test('a model the scheduler could not place says so in the skipped list', async () => {
+  mockLog({
+    ...routed,
+    detail: {
+      ...routed.detail,
+      trace: {
+        ...routed.detail!.trace!,
+        ladder: [
+          {
+            profile: 'code.build',
+            models: 3,
+            outcome: 'compared',
+            model: 'sonnet',
+            skipped: [
+              { model: 'opus', score: 0.97, reason: 'scheduler_no_candidate' },
+            ],
+          },
+        ],
+      },
+    },
+  })
+  renderDrawer({})
+
+  expect(
+    await screen.findByText(
+      'The scheduler has no channel that can take it right now',
+      { exact: false }
+    )
+  ).toBeVisible()
+})
+
+test('a comparison by user price alone keeps the original columns', async () => {
+  mockLog(routed)
+  renderDrawer({})
+
+  await screen.findByText('Chosen')
+  expect(
+    screen.queryByRole('columnheader', { name: 'Cost multiplier' })
+  ).not.toBeInTheDocument()
+  expect(
+    screen.queryByText(/The multiplier never changes what the user is billed/)
+  ).not.toBeInTheDocument()
+})
+
 test('a request no model could serve shows the failure and the reasons by count', async () => {
   mockLog({
     ...logItem,

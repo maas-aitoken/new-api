@@ -88,16 +88,61 @@ type Candidates struct {
 	// Why 说明一个模型为什么不能服务这个请求（撇开客户端的推理字段），能服务时返回空串，
 	// 留给选路留痕解释"为什么没选更靠前的模型"。可以为 nil。
 	Why func(model string) string
+	// Costs 在候选带定下来之后对带内模型一次性给出比较成本：首次请求命中的分组下的用户价，
+	// 乘上会落到的渠道的费用倍率（几个渠道时按概率取期望）。effort 是这一步的期望档位，
+	// ignoreClientReasoning 与判定可用时的口径一致，主机据此找出真正服务请求的模型名和渠道。
+	// 结果里没有的模型按 Price 比较；为 nil 时只比较 Price。费用倍率不参与计费，只影响这里的选择。
+	Costs func(models []string, effort string, ignoreClientReasoning bool) map[string]Cost
 }
+
+// Cost 是一个候选模型的比较成本。只要有这一项，Price 就以它为准。
+type Cost struct {
+	// Price 是首次请求命中的分组下的用户混合价（美元/百万 token）。
+	Price float64
+	// Multiplier 是会落到的渠道的费用倍率，几个渠道时是按命中概率的期望，没配按 1。
+	Multiplier float64
+	// ChannelID 是确定会落到的那个渠道（调度器预览、会话亲和，或只有一个可能的渠道），否则为 0。
+	ChannelID int
+	// Channels 是参与期望的渠道个数。
+	Channels int
+	// Source 是倍率从哪来，见 CostSource*。
+	Source string
+	// Excluded 表示这个模型这次一定服务不了（调度器预览没有可用渠道），比较时跳过，Reason 是原因。
+	Excluded bool
+	Reason   string
+}
+
+// 比较成本里的倍率从哪来。
+const (
+	CostSourceScheduler = "scheduler" // 调度器预览给出了确定的渠道
+	CostSourceAffinity  = "affinity"  // 会话亲和绑定的渠道
+	CostSourceExpected  = "expected"  // 按原生选渠道规则的命中概率取期望
+)
 
 // Candidate 是质量/成本选择里的一个候选。
 type Candidate struct {
 	Model string  `json:"model"`
 	Score float64 `json:"score"`
+	// Price 是用户侧混合价（美元/百万 token）。
 	Price float64 `json:"price"`
+	// CostMultiplier 不为 0 时，比较用的是 Cost = Price × CostMultiplier（平台成本，与
+	// relay_attempts.cost_actual 同一口径）；为 0 表示没有估算，按 Price 比较。
+	CostMultiplier float64 `json:"cost_multiplier,omitempty"`
+	Cost           float64 `json:"cost,omitempty"`
+	ChannelID      int     `json:"channel_id,omitempty"`
+	Channels       int     `json:"channels,omitempty"`
+	CostSource     string  `json:"cost_source,omitempty"`
 	// Discount 是价格折扣，Utility 是分数减去折扣，排名按 Utility。
 	Discount float64 `json:"discount"`
 	Utility  float64 `json:"utility"`
+}
+
+// compared 是这个候选参与比较的价格：估算过倍率时是平台成本，否则是用户价。
+func (c Candidate) compared() float64 {
+	if c.CostMultiplier > 0 {
+		return c.Cost
+	}
+	return c.Price
 }
 
 // Pick 是一次质量/成本选择的过程，写进决策留痕。
@@ -125,16 +170,19 @@ func (p *Pick) skip(model string, score float64, reason string) {
 // pickByQualityCost 在同一个榜单的候选里一次比较质量和价格，按折后分排名取第一。
 //
 //   - 候选带：分数不低于"最高可用分 - weight"。再便宜也不能比最高分低出这个范围。
-//   - 价格折扣：带内按价格的对数位置打折，最便宜的折 0，最贵的折满 weight。
+//   - 比较的价格：带定下来之后用 costs 一次取齐带内模型的比较成本（用户价 × 渠道费用倍率），
+//     没有的按用户价；带的成员只看分数、可用和有没有价，与价格高低无关，所以一次就够。
+//   - 价格折扣：带内按比较价格的对数位置打折，最便宜的折 0，最贵的折满 weight。
 //     用对数是因为模型价格跨好几个数量级；只在带内归一化，所以折扣不会超过 weight。
 //   - 折后分最高的中选，折后分相同取更便宜的，再相同取榜单里靠前的。
 //
 // weight 为 0 时候选带只剩与最高分并列的模型，等于按榜单分选。scores 里没有分数的模型不参与；
-// 没有任何可用且有价格的候选时 ok 为 false。
+// 没有任何可用且有价格的候选时 ok 为 false。costs 标为 Excluded 的模型从带里去掉（带不重组，
+// 仍以原来的最高分为准），全部去掉时 ok 为 false。
 //
 // 带内被跳过的模型（不可用，或可用但按次计价没法比价）连同原因记在返回的 Pick 里，
-// 即使 ok 为 false 也带着，选路留痕据此解释"为什么没选更靠前的模型"。why 可以为 nil。
-func pickByQualityCost(models []string, scores map[string]float64, weight float64, overridable func(string) bool, price func(string) (float64, bool), why func(string) string) (Pick, bool) {
+// 即使 ok 为 false 也带着，选路留痕据此解释"为什么没选更靠前的模型"。why、costs 可以为 nil。
+func pickByQualityCost(models []string, scores map[string]float64, weight float64, overridable func(string) bool, price func(string) (float64, bool), costs func([]string) map[string]Cost, why func(string) string) (Pick, bool) {
 	scored := make([]string, 0, len(models))
 	for _, model := range models {
 		if _, found := scores[model]; found {
@@ -178,14 +226,45 @@ func pickByQualityCost(models []string, scores map[string]float64, weight float6
 	if len(band) == 0 {
 		return pick, false
 	}
+	if costs != nil {
+		names := make([]string, len(band))
+		for i := range band {
+			names[i] = band[i].Model
+		}
+		estimated := costs(names)
+		kept := band[:0]
+		for _, candidate := range band {
+			cost, found := estimated[candidate.Model]
+			if !found {
+				kept = append(kept, candidate)
+				continue
+			}
+			if cost.Excluded {
+				pick.skip(candidate.Model, candidate.Score, cost.Reason)
+				continue
+			}
+			multiplier := cost.Multiplier
+			if multiplier <= 0 {
+				multiplier = 1
+			}
+			candidate.Price = cost.Price
+			candidate.CostMultiplier, candidate.Cost = multiplier, cost.Price*multiplier
+			candidate.ChannelID, candidate.Channels, candidate.CostSource = cost.ChannelID, cost.Channels, cost.Source
+			kept = append(kept, candidate)
+		}
+		band = kept
+		if len(band) == 0 {
+			return pick, false
+		}
+	}
 
 	floor, ceiling := priceRange(band)
 	chosen := 0
 	for i := range band {
-		band[i].Discount = weight * logPosition(band[i].Price, floor, ceiling)
+		band[i].Discount = weight * logPosition(band[i].compared(), floor, ceiling)
 		band[i].Utility = band[i].Score - band[i].Discount
 		if band[i].Utility > band[chosen].Utility ||
-			band[i].Utility == band[chosen].Utility && band[i].Price < band[chosen].Price {
+			band[i].Utility == band[chosen].Utility && band[i].compared() < band[chosen].compared() {
 			chosen = i
 		}
 	}
@@ -193,15 +272,15 @@ func pickByQualityCost(models []string, scores map[string]float64, weight float6
 	return pick, true
 }
 
-// priceRange 返回带内的价格下限和上限。免费（价格为 0）的模型不拉低下限，
+// priceRange 返回带内比较价格的下限和上限。免费（价格为 0）的模型不拉低下限，
 // 否则一个免费模型会把其余模型的价格差都压扁；全部免费时返回 1，折扣恒为 0。
 func priceRange(band []Candidate) (floor, ceiling float64) {
 	floor, ceiling = math.Inf(1), 0
 	for _, candidate := range band {
-		if candidate.Price > 0 {
-			floor = min(floor, candidate.Price)
+		if value := candidate.compared(); value > 0 {
+			floor = min(floor, value)
 		}
-		ceiling = max(ceiling, candidate.Price)
+		ceiling = max(ceiling, candidate.compared())
 	}
 	if math.IsInf(floor, 1) {
 		return 1, 1
