@@ -34,7 +34,7 @@ services:
       - CONSUL_KV_DB_PATH=${CONSUL_KV_DB_PATH:-}
       - CONSUL_HTTP_ADDR=${CONSUL_HTTP_ADDR:-} # host:port defaults to http://
       - CONSUL_HTTP_TOKEN=${CONSUL_HTTP_TOKEN:-}
-      # Optional exact key under clickhouse in the decoded KV JSON (e.g. ch_maas_log).
+      # Optional exact key under clickhouse in the decoded KV JSON (e.g. prod_logs).
       - CONSUL_CLICKHOUSE_CONFIG_KEY=${CONSUL_CLICKHOUSE_CONFIG_KEY:-}
       - RELAY_ATTEMPT_LOG_ENABLED=true
       - RELAY_ATTEMPT_LOG_SAMPLE_RATE=1
