@@ -21,6 +21,7 @@ import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, test, vi } from 'vitest'
 
+import { TooltipProvider } from '@/components/ui/tooltip'
 import { getModelAvailability } from '@/features/dashboard/api'
 import type { ModelAvailabilityRow } from '@/features/dashboard/types'
 
@@ -74,13 +75,54 @@ function renderPanel(
   queryClients.push(queryClient)
   render(
     <QueryClientProvider client={queryClient}>
-      <ModelAvailability />
+      <TooltipProvider>
+        <ModelAvailability />
+      </TooltipProvider>
     </QueryClientProvider>
   )
 }
 
 function bodyRows() {
   return screen.getAllByRole('row').slice(1)
+}
+
+// Wilson ranks a, c, b; request totals rank b, a, c; tokens rank c, a, b.
+const SORTABLE_ROWS = [
+  { ...availabilityRow('model-a', 50, 0, 0), total_tokens: 6000 },
+  { ...availabilityRow('model-b', 90, 10, 20), total_tokens: 1500 },
+  { ...availabilityRow('model-c', 30, 0, 0), total_tokens: 9000 },
+]
+
+function rankAndModelColumns() {
+  return bodyRows().map((row) => {
+    const cells = within(row).getAllByRole('cell')
+    return [cells[0].textContent, cells[1].textContent]
+  })
+}
+
+async function sortBy(
+  user: ReturnType<typeof userEvent.setup>,
+  column: string,
+  direction: 'Asc' | 'Desc'
+) {
+  await user.click(
+    within(screen.getByRole('columnheader', { name: column })).getByRole(
+      'button'
+    )
+  )
+  await user.click(await screen.findByRole('menuitem', { name: direction }))
+  await waitFor(() => expect(screen.queryByRole('menu')).toBeNull())
+}
+
+function cellInColumn(modelName: string, column: string) {
+  const table = screen.getByRole('table')
+  const headers = within(table).getAllByRole('columnheader')
+  const index = headers.findIndex(
+    (header) => header.textContent?.trim() === column
+  )
+  expect(index).toBeGreaterThanOrEqual(0)
+  const row = within(table).getByText(modelName).closest('tr') as HTMLElement
+  return within(row).getAllByRole('cell')[index]
 }
 
 afterEach(() => {
@@ -181,6 +223,84 @@ describe('ModelAvailability', () => {
     await screen.findByRole('table')
 
     expect(screen.queryByRole('alert')).toBeNull()
+  })
+
+  test.each([
+    ['Requests', ['model-b', 'model-a', 'model-c']],
+    ['Tokens', ['model-c', 'model-a', 'model-b']],
+    ['Average TPM', ['model-c', 'model-a', 'model-b']],
+  ])(
+    'sorting %s descending reorders models and keeps their confidence rank',
+    async (column, expectedModels) => {
+      const user = userEvent.setup()
+      renderPanel(SORTABLE_ROWS)
+      await screen.findByRole('table')
+
+      await sortBy(user, column, 'Desc')
+
+      const confidenceRank: Record<string, string> = {
+        'model-a': '1',
+        'model-c': '2',
+        'model-b': '3',
+      }
+      expect(rankAndModelColumns()).toEqual(
+        expectedModels.map((model) => [confidenceRank[model], model])
+      )
+    }
+  )
+
+  test('sorting rank ascending after another sort restores the confidence order', async () => {
+    const user = userEvent.setup()
+    renderPanel(SORTABLE_ROWS)
+    await screen.findByRole('table')
+
+    await sortBy(user, 'Requests', 'Desc')
+    await sortBy(user, 'Rank', 'Asc')
+
+    expect(rankAndModelColumns()).toEqual([
+      ['1', 'model-a'],
+      ['2', 'model-c'],
+      ['3', 'model-b'],
+    ])
+  })
+
+  test('the successes / failures column counts interrupted streams as failures', async () => {
+    renderPanel(SORTABLE_ROWS)
+    await screen.findByRole('table')
+
+    expect(cellInColumn('model-b', 'Successes / Failures')).toHaveTextContent(
+      /^90\s*\/\s*30$/
+    )
+    expect(cellInColumn('model-a', 'Successes / Failures')).toHaveTextContent(
+      /^50\s*\/\s*0$/
+    )
+  })
+
+  test('hovering a successes / failures cell shows the per-model breakdown', async () => {
+    const user = userEvent.setup()
+    renderPanel(SORTABLE_ROWS)
+    await screen.findByRole('table')
+
+    await user.hover(
+      within(cellInColumn('model-b', 'Successes / Failures')).getByText('90')
+    )
+
+    expect(
+      await screen.findByText('90 succeeded · 10 interrupted · 20 failed')
+    ).toBeInTheDocument()
+  })
+
+  test('the table scrolls inside a bounded container with a sticky header', async () => {
+    renderPanel(SORTABLE_ROWS)
+    const table = await screen.findByRole('table')
+
+    const scrollContainer = table.parentElement as HTMLElement
+    expect(scrollContainer).toHaveClass('overflow-auto')
+    expect(scrollContainer.className).toMatch(/max-h-\[/)
+    expect(within(table).getAllByRole('rowgroup')[0]).toHaveClass(
+      'sticky',
+      'top-0'
+    )
   })
 
   test('the per-model rate column is labelled Availability, not Success rate', async () => {

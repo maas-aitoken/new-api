@@ -36,22 +36,28 @@ import {
   staticDataTableClassNames as tableStyles,
   useDataTable,
 } from '@/components/data-table'
+import { StatusBadge } from '@/components/status-badge'
 import { Button } from '@/components/ui/button'
 import { IconBadge } from '@/components/ui/icon-badge'
 import { Skeleton } from '@/components/ui/skeleton'
 import { TableCell, TableRow } from '@/components/ui/table'
 import { getUsageAnalytics } from '@/features/dashboard/api'
-import { MetricsHint } from '@/features/dashboard/components/models/model-usage-expansion'
+import {
+  MetricsHint,
+  SuccessRateCell,
+} from '@/features/dashboard/components/models/model-usage-expansion'
 import {
   avgUseTime,
   cacheHitRate,
+  orgFilterParams,
   ratePerMinute,
   successRate,
 } from '@/features/dashboard/lib'
 import type {
   UsageAnalyticsRow,
-  UsageMetrics,
+  UsageOrgFilter,
 } from '@/features/dashboard/types'
+import { USER_STATUS, USER_STATUSES } from '@/features/users/constants'
 import {
   formatCompactNumber,
   formatNumber,
@@ -61,9 +67,10 @@ import {
   formatUseTime,
 } from '@/lib/format'
 import { getRollingDateRange } from '@/lib/time'
-import { cn } from '@/lib/utils'
 
 const COLUMN_VISIBILITY_STORAGE_KEY = 'dashboard-user-usage:column-visibility'
+// Email is opt-in.
+const INITIAL_COLUMN_VISIBILITY = { email: false }
 const NO_ROWS: UsageAnalyticsRow[] = []
 const INITIAL_SORTING = [{ id: 'quota', desc: true }]
 const INITIAL_PAGINATION = { pageIndex: 0, pageSize: 20 }
@@ -77,29 +84,7 @@ interface UsageTimeRange {
 interface UserUsageTableProps {
   // Rolling range in days.
   selectedRange: number
-}
-
-function SuccessRateCell(props: {
-  metrics: Pick<
-    UsageMetrics,
-    'tracked_count' | 'stream_error_count' | 'failed_count'
-  >
-}) {
-  return (
-    <span className='font-mono'>
-      {formatPercent(successRate(props.metrics))}
-      <span
-        className={cn(
-          'ml-1.5',
-          props.metrics.failed_count > 0
-            ? 'text-destructive'
-            : 'text-muted-foreground'
-        )}
-      >
-        / {formatNumber(props.metrics.failed_count)}
-      </span>
-    </span>
-  )
+  org?: UsageOrgFilter
 }
 
 function UserModelUsage(props: {
@@ -248,15 +233,43 @@ function UserModelUsage(props: {
   )
 }
 
+const TEXT_COLUMN_IDS = new Set([
+  'expand',
+  'user',
+  'email',
+  'business_unit',
+  'department',
+  'team',
+])
+
 // Keep this reference stable for memoized table rows.
 function getUserUsageColumnClassName(
   columnId: string,
   kind: 'header' | 'cell'
 ) {
-  if (kind === 'header' || columnId === 'expand' || columnId === 'user') {
+  if (kind === 'header' || TEXT_COLUMN_IDS.has(columnId)) {
     return undefined
   }
   return 'font-mono'
+}
+
+const INACTIVE_USER_STATUSES = [
+  USER_STATUSES[USER_STATUS.DISABLED],
+  USER_STATUSES[USER_STATUS.RESIGNED],
+]
+
+function OrgCell(props: { value?: string; title?: string }) {
+  if (!props.value) {
+    return <span className='text-muted-foreground'>—</span>
+  }
+  return (
+    <span
+      className='block max-w-[180px] truncate'
+      title={props.title || props.value}
+    >
+      {props.value}
+    </span>
+  )
 }
 
 function useUserUsageColumns(
@@ -298,9 +311,22 @@ function useUserUsageColumns(
         cell: ({ row }) => {
           const username = row.original.username || `#${row.original.user_id}`
           const displayName = row.original.display_name
+          const status = INACTIVE_USER_STATUSES.find(
+            (config) => config.value === row.original.user_status
+          )
           return (
             <div className='flex min-w-[140px] flex-col'>
-              <span className='truncate font-medium'>{username}</span>
+              <span className='flex min-w-0 items-center gap-1.5'>
+                <span className='truncate font-medium'>{username}</span>
+                {status && (
+                  <StatusBadge
+                    label={t(status.labelKey)}
+                    variant={status.variant}
+                    copyable={false}
+                    className='font-normal'
+                  />
+                )}
+              </span>
               {displayName && displayName !== username && (
                 <span className='text-muted-foreground truncate text-xs'>
                   {displayName}
@@ -310,6 +336,37 @@ function useUserUsageColumns(
           )
         },
         enableHiding: false,
+      },
+      {
+        id: 'email',
+        accessorFn: (row) => row.email ?? '',
+        header: t('Email'),
+        cell: ({ row }) => <OrgCell value={row.original.email} />,
+      },
+      {
+        id: 'business_unit',
+        accessorFn: (row) => row.business_unit ?? '',
+        header: t('Business unit'),
+        cell: ({ row }) => <OrgCell value={row.original.business_unit} />,
+      },
+      {
+        id: 'department',
+        accessorFn: (row) => row.department ?? '',
+        header: t('Department'),
+        cell: ({ row }) => (
+          <OrgCell
+            value={row.original.department}
+            title={row.original.org_path}
+          />
+        ),
+      },
+      {
+        id: 'team',
+        accessorFn: (row) => row.team ?? '',
+        header: t('Team'),
+        cell: ({ row }) => (
+          <OrgCell value={row.original.team} title={row.original.org_path} />
+        ),
       },
       {
         id: 'requests',
@@ -371,12 +428,13 @@ export function UserUsageTable(props: UserUsageTableProps) {
     }
   }, [props.selectedRange])
   const minutes = (timeRange.end_timestamp - timeRange.start_timestamp) / 60
+  const orgParams = useMemo(() => orgFilterParams(props.org ?? {}), [props.org])
 
   const { data, isLoading, isFetching, isError } = useQuery({
-    queryKey: ['dashboard', 'user-usage-table', 'user', timeRange],
+    queryKey: ['dashboard', 'user-usage-table', 'user', timeRange, orgParams],
     queryFn: async () => {
       const res = await getUsageAnalytics(
-        { ...timeRange, group_by: 'user' },
+        { ...timeRange, ...orgParams, group_by: 'user' },
         true
       )
       if (!res.success) throw new Error(res.message)
@@ -394,6 +452,7 @@ export function UserUsageTable(props: UserUsageTableProps) {
     getRowId: (row) => `${row.user_id ?? 0}:${row.username ?? ''}`,
     initialSorting: INITIAL_SORTING,
     initialPagination: INITIAL_PAGINATION,
+    initialColumnVisibility: INITIAL_COLUMN_VISIBILITY,
     columnVisibilityStorageKey: COLUMN_VISIBILITY_STORAGE_KEY,
   })
 
@@ -407,7 +466,7 @@ export function UserUsageTable(props: UserUsageTableProps) {
         <MetricsHint
           lines={[
             t(
-              'Failures count final failures only: a request retried across channels counts once.'
+              'Failures include interrupted streams and final failures; a request retried across channels counts once.'
             ),
             t(
               'Success rate, cache hit rate and latency only cover requests recorded after this release.'
@@ -430,7 +489,7 @@ export function UserUsageTable(props: UserUsageTableProps) {
         isLoading={isLoading}
         skeletonKeyPrefix='user-usage-skeleton'
         containerClassName='rounded-none border-0'
-        tableClassName='min-w-[860px]'
+        tableClassName='min-w-[1180px]'
         tableHeaderClassName='[background-color:var(--table-header)]'
         getColumnClassName={getUserUsageColumnClassName}
         emptyContent={isError ? t('Failed to load') : t('No data available')}

@@ -30,6 +30,9 @@ import type {
   UptimeGroupResult,
   UsageAnalyticsData,
   UsageAnalyticsParams,
+  UsageOrgFilter,
+  UsageOrgOption,
+  UserChartsDimension,
 } from './types'
 
 // ============================================================================
@@ -43,7 +46,7 @@ import type {
 // Get user quota data within a time range
 // Admin users get all users' data by default.
 export async function getUserQuotaDates(
-  params: {
+  params: UsageOrgFilter & {
     start_timestamp: number
     end_timestamp: number
     default_time?: string
@@ -107,14 +110,28 @@ export async function getModelAvailability(
 // System Monitoring
 // ----------------------------------------------------------------------------
 
-export async function getUserQuotaDataByUsers(params: {
-  start_timestamp: number
-  end_timestamp: number
-}) {
+// Hourly consumption per username, or per organization path of `dimension`.
+export async function getUserQuotaDataByUsers(
+  params: UsageOrgFilter & {
+    start_timestamp: number
+    end_timestamp: number
+    dimension?: UserChartsDimension
+  }
+) {
   const res = await api.get<{ success: boolean; data: QuotaDataItem[] }>(
     '/api/data/users',
     { params }
   )
+  return res.data
+}
+
+// Organization paths for the user analytics filters.
+export async function getUsageOrgOptions() {
+  const res = await api.get<{
+    success: boolean
+    message?: string
+    data?: UsageOrgOption[]
+  }>('/api/data/org-options')
   return res.data
 }
 
