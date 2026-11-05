@@ -31,6 +31,7 @@ import {
   ratePerMinute,
   successRate,
 } from './analytics'
+import { ORG_LEVELS, orgLevelLabel } from './organization'
 
 export type UsageExportGroupBy = Exclude<UsageAnalyticsGroupBy, 'summary'>
 
@@ -41,9 +42,17 @@ export const USAGE_EXPORT_GROUPINGS: readonly UsageExportGroupBy[] = [
   'model_channel',
 ]
 
-export type UsageExportDatasets = Record<
-  UsageExportGroupBy,
-  UsageAnalyticsRow[]
+// User analytics export.
+export const USER_USAGE_EXPORT_GROUPINGS: readonly UsageExportGroupBy[] = [
+  'business_unit',
+  'department',
+  'team',
+  'user',
+  'user_model',
+]
+
+export type UsageExportDatasets = Partial<
+  Record<UsageExportGroupBy, UsageAnalyticsRow[]>
 >
 
 type UsageExportCell = string | number | null
@@ -74,15 +83,32 @@ function roundTo2(value: number | null): number | null {
   return Math.round(value * 100) / 100
 }
 
-/** Export percentages (0-100), latency in seconds, and rates over `minutes`. */
+/** Percentages 0-100, latency in seconds, rates over `minutes`; one sheet per grouping. */
 export function buildUsageSheets(
   datasets: UsageExportDatasets,
-  minutes: number
+  minutes: number,
+  groupings: readonly UsageExportGroupBy[] = USAGE_EXPORT_GROUPINGS
 ): UsageExportSheet[] {
   const modelColumn: UsageExportColumnSpec = {
     header: t('Model'),
     width: 32,
     value: (row) => row.model_name || null,
+  }
+  // Rollup rows name unassigned users; user rows leave them blank.
+  const orgColumns = (
+    rollup: boolean,
+    depth: number
+  ): UsageExportColumnSpec[] =>
+    ORG_LEVELS.slice(0, depth).map((level) => ({
+      header: orgLevelLabel(level, t),
+      width: 20,
+      value: (row) => row[level] || (rollup ? t('Unassigned') : null),
+    }))
+  const userCountColumn: UsageExportColumnSpec = {
+    header: t('Users'),
+    width: 10,
+    numFmt: INTEGER_FORMAT,
+    value: (row) => row.user_count ?? null,
   }
   const userColumns: UsageExportColumnSpec[] = [
     {
@@ -100,6 +126,12 @@ export function buildUsageSheets(
       width: 20,
       value: (row) => row.display_name || null,
     },
+    {
+      header: t('Email'),
+      width: 28,
+      value: (row) => row.email || null,
+    },
+    ...orgColumns(false, ORG_LEVELS.length),
   ]
   const metricColumns: UsageExportColumnSpec[] = [
     {
@@ -174,8 +206,9 @@ export function buildUsageSheets(
       value: (row) => row.stream_error_count,
     },
     {
-      header: t('Failures'),
-      width: 12,
+      // Excludes stream errors, unlike the on-screen failures.
+      header: t('Final failures'),
+      width: 14,
       numFmt: INTEGER_FORMAT,
       value: (row) => row.failed_count,
     },
@@ -207,15 +240,7 @@ export function buildUsageSheets(
   > = {
     model: {
       name: t('Models'),
-      dimensions: [
-        modelColumn,
-        {
-          header: t('Users'),
-          width: 10,
-          numFmt: INTEGER_FORMAT,
-          value: (row) => row.user_count ?? null,
-        },
-      ],
+      dimensions: [modelColumn, userCountColumn],
     },
     user: { name: t('Users'), dimensions: userColumns },
     user_model: {
@@ -238,9 +263,21 @@ export function buildUsageSheets(
         modelColumn,
       ],
     },
+    business_unit: {
+      name: t('Business units'),
+      dimensions: [...orgColumns(true, 1), userCountColumn],
+    },
+    department: {
+      name: t('Departments'),
+      dimensions: [...orgColumns(true, 2), userCountColumn],
+    },
+    team: {
+      name: t('Teams'),
+      dimensions: [...orgColumns(true, 3), userCountColumn],
+    },
   }
 
-  return USAGE_EXPORT_GROUPINGS.map((groupBy) => {
+  return groupings.map((groupBy) => {
     const layout = layouts[groupBy]
     const specs = [...layout.dimensions, ...metricColumns]
     return {
@@ -251,7 +288,7 @@ export function buildUsageSheets(
         width: spec.width,
         numFmt: spec.numFmt,
       })),
-      rows: datasets[groupBy].map((row) =>
+      rows: (datasets[groupBy] ?? []).map((row) =>
         specs.map((spec) => spec.value(row))
       ),
     }

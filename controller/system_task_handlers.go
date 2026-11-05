@@ -409,7 +409,7 @@ func runSsoUserSync(_ context.Context) (*ssoSyncResult, error) {
 			hoidcId, email, u.Name, u.Avatar, u.DepartmentTreePathStr,
 			u.StraightLineManagerEmail, u.StraightLineManagerName,
 			u.StraightLineManagerUid, u.MentorUid, u.DottedLineManagerUid, u.OrganizationOid, u.DepartmentOid,
-			u.IsCharge,
+			&u.IsCharge,
 			common.HoidcAllowSignup,
 		)
 		if err != nil {

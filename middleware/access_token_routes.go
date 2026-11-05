@@ -154,6 +154,8 @@ var accessTokenRouteRules = map[string]accessTokenRouteRule{
 	"GET /api/subscription/admin/users/:id/subscriptions":            accessTokenScopeRule("billing:read"),
 	"POST /api/subscription/admin/users/:id/subscriptions":           accessTokenScopeRule("billing:write"),
 	"POST /api/subscription/admin/users/:id/subscriptions/reset":     accessTokenScopeRule("billing:write"),
+	"POST /api/subscription/admin/users/:id/subscriptions/change":    accessTokenScopeRule("billing:write"),
+	"GET /api/subscription/admin/current_subscriptions":              accessTokenScopeRule("billing:read"),
 	"POST /api/subscription/admin/user_subscriptions/:id/invalidate": accessTokenScopeRule("billing:write"),
 	"DELETE /api/subscription/admin/user_subscriptions/:id":          accessTokenScopeRule("billing:write"),
 
@@ -276,6 +278,7 @@ var accessTokenRouteRules = map[string]accessTokenRouteRule{
 	"GET /api/data/self":                        accessTokenScopeRule("usage:read"),
 	"GET /api/data/flow":                        accessTokenScopeRule("log:read"),
 	"GET /api/data/flow/self":                   accessTokenScopeRule("usage:read"),
+	"GET /api/data/scope":                       accessTokenScopeRule("usage:read"),
 	"GET /api/data/analytics":                   accessTokenScopeRule("log:read"),
 	"GET /api/data/analytics/self":              accessTokenScopeRule("usage:read"),
 	"GET /api/data/org-options":                 accessTokenScopeRule("log:read"),

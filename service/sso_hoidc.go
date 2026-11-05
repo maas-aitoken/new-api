@@ -97,11 +97,12 @@ func VerifySsoToken(token string) (*SsoUserInfo, error) {
 // Like the org fields, the reporting-line and org-id values only overwrite an
 // existing user when they are non-empty and changed, so callers without them
 // (the login path) pass zero values to leave the stored columns untouched.
+// isCharge must be able to drop to 0: the sync passes it, the login path passes nil.
 func ProvisionSsoUser(
 	hoidcId, email, name, avatar, departmentTreePathStr string,
 	straightLineManagerEmail, straightLineManagerName string,
 	straightLineManagerUid, mentorUid, dottedLineManagerUid, organizationOid, departmentOid int64,
-	isCharge int,
+	isCharge *int,
 	allowSignup bool,
 ) (*model.User, error) {
 	email = strings.TrimSpace(strings.ToLower(email))
@@ -170,8 +171,8 @@ func ProvisionSsoUser(
 		if departmentOid != 0 && departmentOid != user.DepartmentOid {
 			updates["department_oid"] = departmentOid
 		}
-		if isCharge != 0 && isCharge != user.IsCharge {
-			updates["is_charge"] = isCharge
+		if isCharge != nil && *isCharge != user.IsCharge {
+			updates["is_charge"] = *isCharge
 		}
 		if len(updates) > 0 {
 			model.DB.Model(&user).Updates(updates)
@@ -209,7 +210,9 @@ func ProvisionSsoUser(
 		DottedLineManagerUid:     dottedLineManagerUid,
 		OrganizationOid:          organizationOid,
 		DepartmentOid:            departmentOid,
-		IsCharge:                 isCharge,
+	}
+	if isCharge != nil {
+		newUser.IsCharge = *isCharge
 	}
 	if err := newUser.Insert(0); err != nil {
 		return nil, fmt.Errorf("failed to create SSO user: %w", err)

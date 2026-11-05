@@ -17,6 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useQuery } from '@tanstack/react-query'
+import type { ColumnDef, SortingState } from '@tanstack/react-table'
 import {
   Activity,
   AlertTriangle,
@@ -30,9 +31,10 @@ import { useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import {
-  StaticDataTable,
+  DataTableView,
   TruncatedCell,
   staticDataTableClassNames as tableStyles,
+  useDataTable,
 } from '@/components/data-table'
 import {
   StatusBadge,
@@ -65,8 +67,11 @@ import {
 } from '@/lib/format'
 import { cn } from '@/lib/utils'
 
+import { OutcomeCountsCell } from './model-usage-expansion'
+
 const AVAILABILITY_STALE_MS = 30 * 1000
 const AVAILABILITY_REFETCH_MS = 60 * 1000
+const INITIAL_SORTING: SortingState = [{ id: 'rank', desc: false }]
 
 const STATUS_VARIANTS: Record<ModelAvailabilityStatusId, StatusVariant> = {
   stable: 'success',
@@ -239,7 +244,7 @@ export function ModelAvailability() {
                   </p>
                   <p>
                     {t(
-                      'Failures count final failures only: a request retried across channels counts once.'
+                      'Failures include interrupted streams and final failures; a request retried across channels counts once.'
                     )}
                   </p>
                   <p>
@@ -331,6 +336,20 @@ function OverviewStat(props: {
   )
 }
 
+// Keep this reference stable for memoized table rows.
+function getAvailabilityColumnClassName(
+  columnId: string,
+  kind: 'header' | 'cell'
+) {
+  if (kind === 'header') {
+    return cn(tableStyles.compactHeaderCell, columnId === 'rank' && 'w-12')
+  }
+  if (columnId === 'rank') return 'text-muted-foreground py-1.5 font-mono'
+  if (columnId === 'last-called') return 'text-muted-foreground py-1.5'
+  if (columnId === 'model' || columnId === 'status') return 'py-1.5'
+  return 'py-1.5 font-mono'
+}
+
 function ModelAvailabilityTable(props: {
   rows: RankedModelAvailabilityRow[]
   locale: string | undefined
@@ -338,144 +357,150 @@ function ModelAvailabilityTable(props: {
   const { t } = useTranslation()
   const locale = props.locale
 
-  return (
-    <div className='max-h-[28rem] overflow-auto border-t'>
-      <StaticDataTable
-        className='rounded-none border-0'
-        tableClassName='min-w-[960px] text-sm [&_tbody>tr]:h-10'
-        headerRowClassName={cn(
-          tableStyles.mutedHeaderRow,
-          'sticky top-0 z-10 bg-background'
-        )}
-        data={props.rows}
-        getRowKey={(row) => row.model_name}
-        emptyContent={t('No model calls in this window')}
-        columns={[
-          {
-            id: 'rank',
-            header: t('Rank'),
-            className: cn(tableStyles.compactHeaderCell, 'w-12'),
-            cellClassName: 'text-muted-foreground py-1.5 font-mono',
-            cell: (row) => row.rank,
-          },
-          {
-            id: 'model',
-            header: t('Model'),
-            className: tableStyles.compactHeaderCell,
-            cellClassName: 'py-1.5',
-            cell: (row) => (
-              <span className='font-mono text-sm'>
-                {row.model_name || t('Unknown model')}
-              </span>
-            ),
-          },
-          {
-            id: 'status',
-            header: t('Status'),
-            className: tableStyles.compactHeaderCell,
-            cellClassName: 'py-1.5',
-            cell: (row) => (
-              <StatusBadge
-                label={t(row.status.labelKey)}
-                variant={STATUS_VARIANTS[row.status.id]}
-                copyable={false}
-              />
-            ),
-          },
-          {
-            id: 'availability',
-            header: t('Availability'),
-            className: tableStyles.compactHeaderCellRight,
-            cellClassName: 'py-1.5',
-            cell: (row) => (
-              <div className='flex items-center justify-end gap-2'>
-                <div
-                  className='bg-muted h-1.5 w-16 overflow-hidden rounded-full'
-                  aria-hidden='true'
-                >
-                  <div
-                    className={cn(
-                      'h-full rounded-full',
-                      dotColorMap[STATUS_VARIANTS[row.status.id]]
-                    )}
-                    style={{ width: `${row.rate ?? 0}%` }}
-                  />
-                </div>
-                <span className='w-16 text-right font-mono tabular-nums'>
-                  {formatPercent(row.rate)}
-                </span>
-              </div>
-            ),
-          },
-          {
-            id: 'requests',
-            header: t('Requests'),
-            className: tableStyles.compactHeaderCellRight,
-            cellClassName: 'py-1.5 text-right font-mono',
-            cell: (row) => (
-              <TruncatedCell
-                tooltipContent={t(
-                  '{{success}} succeeded · {{interrupted}} interrupted · {{failed}} failed',
-                  {
-                    success: formatNumber(row.success_count, locale),
-                    interrupted: formatNumber(row.stream_error_count, locale),
-                    failed: formatNumber(row.failed_count, locale),
-                  }
+  const columns = useMemo<ColumnDef<RankedModelAvailabilityRow, unknown>[]>(
+    () => [
+      {
+        id: 'rank',
+        accessorKey: 'rank',
+        header: t('Rank'),
+        cell: ({ row }) => row.original.rank,
+      },
+      {
+        id: 'model',
+        header: t('Model'),
+        enableSorting: false,
+        cell: ({ row }) => (
+          <span className='font-mono text-sm'>
+            {row.original.model_name || t('Unknown model')}
+          </span>
+        ),
+      },
+      {
+        id: 'status',
+        header: t('Status'),
+        enableSorting: false,
+        cell: ({ row }) => (
+          <StatusBadge
+            label={t(row.original.status.labelKey)}
+            variant={STATUS_VARIANTS[row.original.status.id]}
+            copyable={false}
+          />
+        ),
+      },
+      {
+        id: 'availability',
+        header: t('Availability'),
+        enableSorting: false,
+        cell: ({ row }) => (
+          <div className='flex items-center gap-2'>
+            <div
+              className='bg-muted h-1.5 w-16 overflow-hidden rounded-full'
+              aria-hidden='true'
+            >
+              <div
+                className={cn(
+                  'h-full rounded-full',
+                  dotColorMap[STATUS_VARIANTS[row.original.status.id]]
                 )}
-              >
-                <span>{formatCompactNumber(row.total, locale)}</span>
-              </TruncatedCell>
-            ),
-          },
-          {
-            id: 'tokens',
-            header: t('Tokens'),
-            className: tableStyles.compactHeaderCellRight,
-            cellClassName: 'py-1.5 text-right font-mono',
-            cell: (row) => formatCompactNumber(row.total_tokens, locale),
-          },
-          {
-            id: 'average-rpm',
-            header: t('Average RPM'),
-            className: tableStyles.compactHeaderCellRight,
-            cellClassName: 'py-1.5 text-right font-mono',
-            cell: (row) => formatNumber(row.rpm, locale),
-          },
-          {
-            id: 'average-tpm',
-            header: t('Average TPM'),
-            className: tableStyles.compactHeaderCellRight,
-            cellClassName: 'py-1.5 text-right font-mono',
-            cell: (row) => formatCompactNumber(row.tpm, locale),
-          },
-          {
-            id: 'share',
-            header: t('Share'),
-            className: tableStyles.compactHeaderCellRight,
-            cellClassName: 'py-1.5 text-right font-mono',
-            cell: (row) => formatPercent(row.share),
-          },
-          {
-            id: 'last-called',
-            header: t('Last called'),
-            className: tableStyles.compactHeaderCellRight,
-            cellClassName: 'text-muted-foreground py-1.5 text-right',
-            cell: (row) => (
-              <TruncatedCell
-                tooltipContent={formatTimestampToDate(row.last_called_at)}
-              >
-                <span>
-                  {formatTimestampRelative(
-                    row.last_called_at,
-                    'seconds',
-                    locale
-                  )}
-                </span>
-              </TruncatedCell>
-            ),
-          },
-        ]}
-      />
-    </div>
+                style={{ width: `${row.original.rate ?? 0}%` }}
+              />
+            </div>
+            <span className='w-16 text-right font-mono tabular-nums'>
+              {formatPercent(row.original.rate)}
+            </span>
+          </div>
+        ),
+      },
+      {
+        id: 'requests',
+        accessorKey: 'total',
+        header: t('Requests'),
+        cell: ({ row }) => (
+          <TruncatedCell
+            tooltipContent={formatNumber(row.original.total, locale)}
+          >
+            {formatCompactNumber(row.original.total, locale)}
+          </TruncatedCell>
+        ),
+      },
+      {
+        id: 'outcomes',
+        header: t('Successes / Failures'),
+        enableSorting: false,
+        cell: ({ row }) => (
+          <OutcomeCountsCell
+            value={formatCompactNumber(row.original.success_count, locale)}
+            succeeded={row.original.success_count}
+            interrupted={row.original.stream_error_count}
+            failed={row.original.failed_count}
+          />
+        ),
+      },
+      {
+        id: 'tokens',
+        accessorKey: 'total_tokens',
+        header: t('Tokens'),
+        cell: ({ row }) =>
+          formatCompactNumber(row.original.total_tokens, locale),
+      },
+      {
+        id: 'average-rpm',
+        header: t('Average RPM'),
+        enableSorting: false,
+        cell: ({ row }) => formatNumber(row.original.rpm, locale),
+      },
+      {
+        id: 'average-tpm',
+        accessorKey: 'tpm',
+        header: t('Average TPM'),
+        cell: ({ row }) => formatCompactNumber(row.original.tpm, locale),
+      },
+      {
+        id: 'share',
+        header: t('Share'),
+        enableSorting: false,
+        cell: ({ row }) => formatPercent(row.original.share),
+      },
+      {
+        id: 'last-called',
+        header: t('Last called'),
+        enableSorting: false,
+        cell: ({ row }) => (
+          <TruncatedCell
+            tooltipContent={formatTimestampToDate(row.original.last_called_at)}
+          >
+            {formatTimestampRelative(
+              row.original.last_called_at,
+              'seconds',
+              locale
+            )}
+          </TruncatedCell>
+        ),
+      },
+    ],
+    [locale, t]
+  )
+
+  // Rows arrive ranked by confidence, so rank ascending is the default order.
+  const { table } = useDataTable({
+    data: props.rows,
+    columns,
+    getRowId: (row) => row.model_name,
+    initialSorting: INITIAL_SORTING,
+    withPaginationRowModel: false,
+  })
+
+  return (
+    <DataTableView
+      table={table}
+      splitHeader
+      containerClassName='rounded-none border-0 border-t'
+      bodyContainerClassName='max-h-[28rem]'
+      tableClassName='min-w-[1040px] text-sm [&_tbody>tr]:h-10'
+      tableHeaderRowClassName={tableStyles.mutedHeaderRow}
+      getColumnClassName={getAvailabilityColumnClassName}
+      emptyContent={t('No model calls in this window')}
+      emptyCellClassName='text-muted-foreground h-24 text-center'
+    />
   )
 }

@@ -22,6 +22,7 @@ import userEvent from '@testing-library/user-event'
 import i18next from 'i18next'
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 
+import { TooltipProvider } from '@/components/ui/tooltip'
 import type {
   DashboardFilters,
   UsageAnalyticsParams,
@@ -116,7 +117,9 @@ function renderTable(role: number) {
   queryClients.push(queryClient)
   render(
     <QueryClientProvider client={queryClient}>
-      <ModelMetricsTable filters={FILTERS} />
+      <TooltipProvider>
+        <ModelMetricsTable filters={FILTERS} />
+      </TooltipProvider>
     </QueryClientProvider>
   )
 }
@@ -206,6 +209,43 @@ describe('ModelMetricsTable', () => {
     expect(screen.getByText('25%')).toBeInTheDocument()
     expect(screen.getByText('95%')).toBeInTheDocument()
     expect(analyticsCalls('model')[0]?.[0]).toBe('/api/data/analytics')
+  })
+
+  test('a rate lowered only by interrupted streams shows those streams as failures', async () => {
+    respondWith(() => ({
+      success: true,
+      data: {
+        summary: null,
+        rows: [
+          {
+            ...metrics({
+              request_count: 9,
+              tracked_count: 9,
+              stream_error_count: 2,
+            }),
+            model_name: 'gpt-4o',
+            user_count: 1,
+          },
+        ],
+      },
+    }))
+    renderTable(ROLE.ADMIN)
+
+    const rate = await screen.findByText('77.78%')
+
+    expect(rate.closest('td')).toHaveTextContent(/^77\.78%\s*\/\s*2$/)
+  })
+
+  test('hovering the success rate shows the succeeded, interrupted and failed breakdown', async () => {
+    const user = userEvent.setup()
+    respondWith(adminResponder)
+    renderTable(ROLE.ADMIN)
+
+    await user.hover(await screen.findByText('95%'))
+
+    expect(
+      await screen.findByText('95 succeeded · 3 interrupted · 2 failed')
+    ).toBeInTheDocument()
   })
 
   test('token breakdown columns are hidden by default', async () => {

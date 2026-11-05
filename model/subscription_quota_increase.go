@@ -11,12 +11,85 @@ import (
 
 const SubscriptionSourceQuotaIncrease = "quota_increase"
 
+// userQuotaUsedSince sums quota billed to the account, without iSelf attribution or
+// business-scene keys. quota_data lags by the dashboard flush interval.
+func userQuotaUsedSince(db *gorm.DB, userId int, since int64) (int64, error) {
+	businessTokens := db.Unscoped().Model(&Token{}).Select("id").
+		Where("user_id = ? AND scene = ?", userId, string(common.TokenSceneBusiness))
+	var used int64
+	err := db.Model(&QuotaData{}).
+		Where("user_id = ? AND created_at >= ? AND token_id NOT IN (?)", userId, since, businessTokens).
+		Select("COALESCE(SUM(quota), 0)").
+		Scan(&used).Error
+	return used, err
+}
+
+// GetUserMonthQuotaUsed is the quota billed since the 1st of this month.
+func GetUserMonthQuotaUsed(userId int) (int64, error) {
+	now := time.Unix(GetDBTimestamp(), 0)
+	return userQuotaUsedSince(DB, userId, time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location()).Unix())
+}
+
 // quotaTierAbove treats 0 as unlimited, the highest tier.
 func quotaTierAbove(amount int64, than int64) bool {
 	if than == 0 {
 		return false
 	}
 	return amount == 0 || amount > than
+}
+
+// currentSubscription is the one plan changes apply to: the largest active tier.
+func currentSubscription(subs []UserSubscription) *UserSubscription {
+	var current *UserSubscription
+	for i := range subs {
+		if current == nil || quotaTierAbove(subs[i].AmountTotal, current.AmountTotal) {
+			current = &subs[i]
+		}
+	}
+	return current
+}
+
+// switchSubscriptionPlanTx moves sub to next in place: in-flight settlements still
+// find it and the used amount carries over. previous may be nil (plan deleted).
+// Reports whether the user's group changed. next must be normalized.
+func switchSubscriptionPlanTx(tx *gorm.DB, sub *UserSubscription, previous *SubscriptionPlan, next *SubscriptionPlan) (bool, error) {
+	updates := map[string]any{
+		"plan_id":               next.Id,
+		"amount_total":          next.TotalAmount,
+		"downgrade_group":       strings.TrimSpace(next.DowngradeGroup),
+		"allow_wallet_overflow": *next.AllowWalletOverflow,
+	}
+	// A different reset period restarts now.
+	if previous == nil || NormalizeResetPeriod(previous.QuotaResetPeriod) != NormalizeResetPeriod(next.QuotaResetPeriod) ||
+		(NormalizeResetPeriod(next.QuotaResetPeriod) == SubscriptionResetCustom && previous.QuotaResetCustomSeconds != next.QuotaResetCustomSeconds) {
+		now := GetDBTimestamp()
+		nextReset := calcNextResetTime(time.Unix(now, 0), next, sub.EndTime)
+		lastReset := int64(0)
+		if nextReset > 0 {
+			lastReset = now
+		}
+		updates["next_reset_time"] = nextReset
+		updates["last_reset_time"] = lastReset
+	}
+	groupChanged := false
+	// Keep the group from before the first plan change for restoring on expiry.
+	if upgradeGroup := strings.TrimSpace(next.UpgradeGroup); upgradeGroup != "" {
+		userGroup, err := getUserGroupByIdTx(tx, sub.UserId)
+		if err != nil {
+			return false, err
+		}
+		updates["upgrade_group"] = upgradeGroup
+		if userGroup != upgradeGroup {
+			if strings.TrimSpace(sub.PrevUserGroup) == "" {
+				updates["prev_user_group"] = userGroup
+			}
+			if err := tx.Model(&User{}).Where("id = ?", sub.UserId).Update("group", upgradeGroup).Error; err != nil {
+				return false, err
+			}
+			groupChanged = true
+		}
+	}
+	return groupChanged, tx.Model(sub).Updates(updates).Error
 }
 
 // IncreaseUserSubscriptionQuota moves the user to the next larger enabled plan.
@@ -39,18 +112,12 @@ func IncreaseUserSubscriptionQuota(userId int) (*SubscriptionPlan, error) {
 			return err
 		}
 		var subs []UserSubscription
-		if err := lockForUpdate(tx).
-			Where("user_id = ? AND status = ? AND end_time > ?", userId, "active", GetDBTimestamp()).
+		if err := activeUserSubscriptions(lockForUpdate(tx), userId, GetDBTimestamp()).
 			Order("id asc").
 			Find(&subs).Error; err != nil {
 			return err
 		}
-		var current *UserSubscription
-		for i := range subs {
-			if current == nil || quotaTierAbove(subs[i].AmountTotal, current.AmountTotal) {
-				current = &subs[i]
-			}
-		}
+		current := currentSubscription(subs)
 
 		found := false
 		for _, plan := range plans {
@@ -76,52 +143,20 @@ func IncreaseUserSubscriptionQuota(userId int) (*SubscriptionPlan, error) {
 				return err
 			}
 			groupChanged = sub.PrevUserGroup != ""
-			return nil
+			// The first increase only raises the limit; this period's spend carries over.
+			return carryOverPeriodUsageTx(tx, sub, &next)
 		}
 
 		upgradedId = current.Id
-		updates := map[string]any{
-			"plan_id":               next.Id,
-			"amount_total":          next.TotalAmount,
-			"downgrade_group":       strings.TrimSpace(next.DowngradeGroup),
-			"allow_wallet_overflow": *next.AllowWalletOverflow,
-		}
-		// A different reset period restarts now; the used amount carries over.
 		var previous *SubscriptionPlan
 		for i := range plans {
 			if plans[i].Id == current.PlanId {
 				previous = &plans[i]
 			}
 		}
-		if previous == nil || NormalizeResetPeriod(previous.QuotaResetPeriod) != NormalizeResetPeriod(next.QuotaResetPeriod) ||
-			(NormalizeResetPeriod(next.QuotaResetPeriod) == SubscriptionResetCustom && previous.QuotaResetCustomSeconds != next.QuotaResetCustomSeconds) {
-			now := GetDBTimestamp()
-			nextReset := calcNextResetTime(time.Unix(now, 0), &next, current.EndTime)
-			lastReset := int64(0)
-			if nextReset > 0 {
-				lastReset = now
-			}
-			updates["next_reset_time"] = nextReset
-			updates["last_reset_time"] = lastReset
-		}
-		// Keep the group from before the first tier change for restoring on expiry.
-		if upgradeGroup := strings.TrimSpace(next.UpgradeGroup); upgradeGroup != "" {
-			userGroup, err := getUserGroupByIdTx(tx, userId)
-			if err != nil {
-				return err
-			}
-			updates["upgrade_group"] = upgradeGroup
-			if userGroup != upgradeGroup {
-				if strings.TrimSpace(current.PrevUserGroup) == "" {
-					updates["prev_user_group"] = userGroup
-				}
-				if err := tx.Model(&User{}).Where("id = ?", userId).Update("group", upgradeGroup).Error; err != nil {
-					return err
-				}
-				groupChanged = true
-			}
-		}
-		return tx.Model(current).Updates(updates).Error
+		changed, err := switchSubscriptionPlanTx(tx, current, previous, &next)
+		groupChanged = changed
+		return err
 	})
 	if err != nil {
 		return nil, err
@@ -132,6 +167,7 @@ func IncreaseUserSubscriptionQuota(userId int) (*SubscriptionPlan, error) {
 	if groupChanged {
 		refreshSubscriptionUserGroupCache(userId, common.LogText("subscription quota increase"))
 	}
-	RecordLog(userId, LogTypeSystem, common.NewMessage("Subscription quota increased, plan: {{plan}}", map[string]any{"plan": next.Title}))
+	// amount (0 = unlimited) is for the console notice.
+	RecordLog(userId, LogTypeSystem, common.NewMessage("Subscription quota increased, plan: {{plan}}", map[string]any{"plan": next.Title, "amount": next.TotalAmount}))
 	return &next, nil
 }
