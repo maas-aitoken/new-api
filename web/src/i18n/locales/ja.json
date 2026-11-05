@@ -7100,7 +7100,6 @@
     "Trim Space": "空白削除",
     "Trim Suffix": "サフィックス削除",
     "Truncate embeddings to this many dimensions": "指定した次元数にベクトルを切り詰めます",
-    "Trusted": "信頼済み",
     "Try adjusting your search": "検索条件を調整してみてください",
     "Try adjusting your search to locate a missing model.": "見つからないモデルを見つけるには、検索を調整してみてください。",
     "TTFT P50": "TTFT P50",

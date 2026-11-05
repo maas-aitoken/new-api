@@ -135,16 +135,16 @@ export function skipReasonLabel(t: TFunction, reason: string): string {
   }
 }
 
-export function trustReasonLabel(t: TFunction, reason: string): string {
-  switch (reason) {
+export function decisionErrorLabel(t: TFunction, error: string): string {
+  switch (error) {
     case 'no_decision':
       return t('The classifier gave no answer')
     case 'no_difficulty':
       return t('The answer carries no difficulty')
-    case 'unknown_task':
-      return t('The task type is unknown')
+    case 'invalid_task_type':
+      return t('The task type is none of the options')
     default:
-      return reason
+      return error
   }
 }
 

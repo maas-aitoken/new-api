@@ -22,9 +22,9 @@ import { useTranslation } from 'react-i18next'
 import { AUTO_PREFERENCES } from '@/features/keys/lib'
 
 import {
+  decisionErrorLabel,
   formatScore,
   preferenceLabel,
-  trustReasonLabel,
   type RouteTone,
 } from './labels'
 import {
@@ -37,34 +37,28 @@ import {
 import type {
   RouteTraceContinuation,
   RouteTraceMode,
-  RouteTraceTrust,
+  RouteTraceValidity,
 } from './types'
 
-export function TrustStep(props: { trust: RouteTraceTrust }) {
+/** Whether the classifier's answer was valid, and which rankings it routes by. */
+export function ValidityStep(props: { validity: RouteTraceValidity }) {
   const { t } = useTranslation()
-  const trust = props.trust
-  const trusted = !trust.reason
+  const error = props.validity.error
+  const profiles = props.validity.profiles
 
   return (
-    <StepFrame icon={ShieldCheck} title={t('Trust check')}>
+    <StepFrame icon={ShieldCheck} title={t('Validity check')}>
       <ToneBadge
-        tone={trusted ? 'success' : 'warning'}
-        label={trusted ? t('Trusted') : trustReasonLabel(t, trust.reason ?? '')}
+        tone={error ? 'warning' : 'success'}
+        label={error ? decisionErrorLabel(t, error) : t('Valid')}
       />
-      {trusted && trust.profiles && (
+      {profiles && profiles.length > 0 && (
         <>
           <p className='text-muted-foreground text-xs'>
             {t('Rankings to try, most specific first')}
           </p>
-          <Chips items={trust.profiles} />
+          <Chips items={profiles} />
         </>
-      )}
-      {!trusted && (
-        <p className='text-muted-foreground text-xs'>
-          {t(
-            'An untrusted answer keeps the previous route, or uses the default models.'
-          )}
-        </p>
       )}
     </StepFrame>
   )
