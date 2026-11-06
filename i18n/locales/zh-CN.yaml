@@ -78,6 +78,11 @@ notify.quota_low_bark: "{{.Prompt}}，剩余额度：{{.Quota}}，请及时充�
 notify.quota_low_gotify: "{{.Prompt}}，当前剩余额度为 {{.Quota}}，请及时充值。"
 notify.quota_low_email: "{{.Prompt}}，当前剩余额度为 {{.Quota}}，为了不影响您的使用，请及时充值。<br/>充值链接：<a href='{{.Link}}'>{{.Link}}</a>"
 
+# Quota increase notices sent to the cloud platform
+notify.quota_increased: "【{{.SystemName}}】{{.Name}}（{{.Email}}）申请提额，额度已由 {{.From}} 提升至 {{.To}}"
+notify.quota_increased_first: "【{{.SystemName}}】{{.Name}}（{{.Email}}）申请提额，额度已提升至 {{.To}}"
+notify.quota_unlimited: "不限"
+
 # Channel notices sent to administrators who receive them and to model update watchers
 channel.notify_disabled_subject: "通道「{{.Name}}」（#{{.Id}}）已被禁用"
 channel.notify_disabled_content: "通道「{{.Name}}」（#{{.Id}}）已被禁用，原因：{{.Reason}}"

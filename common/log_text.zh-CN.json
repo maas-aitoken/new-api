@@ -572,6 +572,7 @@
   "failed to send email to %s: %v": "向 %s 发送邮件失败: %v",
   "failed to send notice %s to user %d: %s": "向用户 %[2]d 发送通知 %[1]s 失败: %[3]s",
   "failed to send password reset email to %s: %s": "向 %s 发送密码重置邮件失败: %s",
+  "failed to send quota increase notice of user %d: %s": "发送用户 %d 的提额通知失败: %s",
   "failed to send quota notify to user %d: %s": "向用户 %d 发送额度通知失败: %s",
   "failed to send request: %s": "发送请求失败: %s",
   "failed to send subscription quota notify to user %d: %s": "向用户 %d 发送订阅额度通知失败: %s",

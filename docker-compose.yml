@@ -77,6 +77,9 @@ services:
       - SSO_USER_LIST_API_URL=${SSO_USER_LIST_API_URL:-}
       - SSO_USER_LIST_PLATFORM_ID=${SSO_USER_LIST_PLATFORM_ID:-}
       - SSO_USER_LIST_SECRET=${SSO_USER_LIST_SECRET:-}
+      # Quota increase notice to the cloud platform; headers as JSON, e.g. {"platId":"your-plat-id"}
+      - QUOTA_INCREASE_NOTIFY_URL=${QUOTA_INCREASE_NOTIFY_URL:-}
+      - QUOTA_INCREASE_NOTIFY_HEADERS=${QUOTA_INCREASE_NOTIFY_HEADERS:-}
 
     depends_on:
       - redis
