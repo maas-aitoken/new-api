@@ -7,6 +7,7 @@ import (
 	"math/rand/v2"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -21,6 +22,22 @@ type SsoUserInfo struct {
 	Name                  string `json:"name"`
 	Avatar                string `json:"avatar"`
 	DepartmentTreePathStr string `json:"department_tree_path_str"`
+	// StraightLineManagerUid 是直属上级的 SSO uid，0 表示顶层或该接口未返回此字段。
+	// 类型与 ssoUserListItem 和 User.StraightLineManagerUid 保持一致。
+	StraightLineManagerUid int64 `json:"straight_line_manager_uid"`
+}
+
+func SyncLoginUserLeader(userId int, managerUid int64) {
+	if userId <= 0 {
+		return
+	}
+	if managerUid <= 0 {
+		common.SysLog(common.LogText("SSO login: no straight-line manager for user %d, leader edge left to full sync", userId))
+		return
+	}
+	if err := model.SyncUserLeader(userId, strconv.FormatInt(managerUid, 10)); err != nil {
+		common.SysError(common.LogText("SSO login: failed to sync leader edge for user %d: %s", userId, err.Error()))
+	}
 }
 
 func parseOrgInfo(departmentTreePathStr string) (secondary, tertiary, team string) {

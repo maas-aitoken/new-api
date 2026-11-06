@@ -422,6 +422,21 @@ func runSsoUserSync(_ context.Context) (*ssoSyncResult, error) {
 	common.SysLog(fmt.Sprintf("SSO user sync completed: fetched=%d synced=%d skipped=%d failed=%d",
 		result.Fetched, result.Synced, result.Skipped, result.Failed))
 
+	edges := make(map[string]string, len(users))
+	for _, u := range users {
+		if u.Uid == 0 || u.StraightLineManagerUid == 0 {
+			continue
+		}
+		// 上游把 manager uid 定义成 int64，这里要用 FormatInt 而不是 Itoa。
+		// 两边都转成字符串去对 users.hoidc_id。
+		edges[strconv.Itoa(u.Uid)] = strconv.FormatInt(u.StraightLineManagerUid, 10)
+	}
+	if rebuilt, err := model.ReplaceAllUserLeaders(edges); err != nil {
+		common.SysError(fmt.Sprintf("SSO sync: failed to rebuild leader edges: %v", err))
+	} else {
+		common.SysLog(fmt.Sprintf("SSO sync: rebuilt %d leader edges from %d candidates", rebuilt, len(edges)))
+	}
+
 	cutoff := time.Now().Unix() - 24*3600
 	disabled, err := model.DisableStaleSsoUsers(cutoff)
 	if err != nil {

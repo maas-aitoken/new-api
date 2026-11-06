@@ -242,6 +242,8 @@ var accessTokenRouteRules = map[string]accessTokenRouteRule{
 	"GET /api/token/":                       accessTokenScopeRule("api_key:read"),
 	"GET /api/token/search":                 accessTokenScopeRule("api_key:read"),
 	"GET /api/token/auto-groups":            accessTokenScopeRule("api_key:read"),
+	"GET /api/token/view-scope":             accessTokenScopeRule("api_key:read"),
+	"GET /api/token/member-candidates":      accessTokenScopeRule("user:read"), // 检索用户而非密钥，故用 user:read
 	"GET /api/token/:id":                    accessTokenScopeRule("api_key:read"),
 	"GET /api/token/:id/routing-preference": accessTokenScopeRule("api_key:read"),
 	"PUT /api/token/:id/routing-preference": accessTokenScopeRule("api_key:write"),
