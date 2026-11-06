@@ -294,6 +294,32 @@ it('removes a member from the pool by channel and upstream model', async () => {
   )
 })
 
+it('asks the server to reset the pool only after the reset is confirmed', async () => {
+  const { post } = renderTab([pool], {
+    items: [dynamic],
+    shared: true,
+    window_seconds: 60,
+  })
+  const user = userEvent.setup()
+  await user.click(await screen.findByRole('button', { name: 'Reset' }))
+
+  const dialog = await screen.findByRole('alertdialog')
+  expect(
+    within(dialog).getByText('Reset capacity pool kiro-aws1?')
+  ).toBeVisible()
+  expect(post).not.toHaveBeenCalled()
+  await user.click(within(dialog).getByRole('button', { name: 'Reset' }))
+
+  await waitFor(() =>
+    expect(post).toHaveBeenCalledWith(
+      '/api/channel/resource_pools/capacity_pools/3/reset'
+    )
+  )
+  await waitFor(() =>
+    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
+  )
+})
+
 it('adds the checked models of a channel to the pool', async () => {
   const { post } = renderTab([pool], {
     items: [dynamic],
