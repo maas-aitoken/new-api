@@ -110,6 +110,7 @@ var channelPermissionRoutes = []permissionRoute{
 	{method: http.MethodPost, path: "/resource_pools/capacity_pools", permission: authz.ChannelWrite, handler: controller.SaveCapacityPool},
 	{method: http.MethodGet, path: "/resource_pools/capacity_pools/capacity", permission: authz.ChannelRead, handler: controller.GetCapacityPoolCapacity},
 	{method: http.MethodDelete, path: "/resource_pools/capacity_pools/:id", permission: authz.ChannelWrite, handler: controller.DeleteCapacityPool},
+	{method: http.MethodPost, path: "/resource_pools/capacity_pools/:id/reset", permission: authz.ChannelWrite, handler: controller.ResetCapacityPool},
 	{method: http.MethodPost, path: "/resource_pools/capacity_pools/:id/members", permission: authz.ChannelWrite, handler: controller.AddCapacityPoolMembers},
 	{method: http.MethodDelete, path: "/resource_pools/capacity_pools/:id/members", permission: authz.ChannelWrite, handler: controller.RemoveCapacityPoolMember},
 }

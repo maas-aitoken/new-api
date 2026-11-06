@@ -15,14 +15,16 @@ import (
 //	<前缀>:capacity:{池ID}:tpm       hash，字段是 Unix 秒，值是记在这一秒的 token 数
 //	<前缀>:capacity:{池ID}:inflight  zset，成员是租约 ID，分数是租约到期的 Unix 毫秒
 //
-// 容量池（cp-<id>）另有三个键，同一个 hash tag：
+// 容量池（cp-<id>）另有四个键，同一个 hash tag：
 //
 //	<前缀>:capacity:{池ID}:limit   hash，动态额度（见 PublishLimit），TTL 即宽限期
 //	<前缀>:capacity:{池ID}:total   hash，requests / tokens 累计数，配速学换算比例用
 //	<前缀>:capacity:{池ID}:status  hash，最近一次计算的结果（ok 或失败原因）
+//	<前缀>:capacity:{池ID}:reset   string，管理页请求的重置，主节点取走即删（见 RequestReset）
 //
 // maas-scheduler 按同样的布局读：rpm/tpm 取字段 > 当前秒-60 的值求和，
-// inflight 数分数大于当前毫秒的成员，limit 的字段见 PublishLimit。改布局要两边一起改。
+// inflight 数分数大于当前毫秒的成员，limit 的字段见 PublishLimit。改布局要两边一起改；
+// total、status、reset 只有 new-api 用。
 func poolKey(poolID, kind string) string {
 	return runtimePrefix() + ":capacity:{" + poolID + "}:" + kind
 }
