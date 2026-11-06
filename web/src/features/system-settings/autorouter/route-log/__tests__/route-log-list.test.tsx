@@ -179,6 +179,38 @@ test('an empty result says there are no routing logs', async () => {
   expect(await screen.findByText('No routing logs found')).toBeVisible()
 })
 
+test('Refresh asks for the same page with the same filters again and spins until the answer arrives', async () => {
+  const user = userEvent.setup()
+  const get = mockApi([item(1)], 45)
+  renderList()
+  await screen.findByText('model-1')
+  await user.type(screen.getByLabelText('Model'), 'sonnet')
+  await user.click(screen.getByRole('button', { name: 'Search' }))
+  await waitFor(() => expect(listCalls(get)).toHaveLength(2))
+  await user.click(screen.getByRole('button', { name: 'Go to next page' }))
+  await waitFor(() => expect(listCalls(get)).toHaveLength(3))
+  await screen.findByText('model-1')
+
+  let answer: (value: { data: unknown }) => void = () => undefined
+  get.mockImplementationOnce(() => new Promise((resolve) => (answer = resolve)))
+  const refresh = screen.getByRole('button', { name: 'Refresh' })
+  await user.click(refresh)
+
+  await waitFor(() => expect(listCalls(get)).toHaveLength(4))
+  expect(listCalls(get)[3]).toEqual({ model: 'sonnet', p: 2, page_size: 20 })
+  expect(refresh).toHaveAttribute('aria-busy', 'true')
+  expect(refresh).toBeDisabled()
+  answer({
+    data: {
+      success: true,
+      data: { items: [item(3)], total: 45, page: 2, page_size: 20 },
+    },
+  })
+  expect(await screen.findByText('model-3')).toBeVisible()
+  expect(refresh).toHaveAttribute('aria-busy', 'false')
+  expect(refresh).toBeEnabled()
+})
+
 test('a time range is sent in Unix seconds only after Search, and Reset clears it', async () => {
   const user = userEvent.setup()
   const get = mockApi([item(1)])

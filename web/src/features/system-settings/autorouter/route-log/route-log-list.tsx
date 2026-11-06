@@ -16,6 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+import { RefreshCw } from 'lucide-react'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
@@ -27,10 +28,12 @@ import {
 } from '@/components/data-table'
 import { EmptyState } from '@/components/empty-state'
 import { ErrorState } from '@/components/error-state'
+import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
 import { Skeleton } from '@/components/ui/skeleton'
 import { CompactDateTimeRangePicker } from '@/features/usage-logs/components/compact-date-time-range-picker'
+import { cn } from '@/lib/utils'
 
 import {
   EMPTY_ROUTE_LOG_FILTERS,
@@ -133,6 +136,22 @@ export function RouteLogList() {
         }
         onSearch={search}
         onReset={reset}
+        preActions={
+          <Button
+            type='button'
+            variant='outline'
+            size='icon'
+            aria-label={t('Refresh')}
+            aria-busy={logsQuery.isFetching}
+            disabled={logsQuery.isFetching}
+            onClick={() => void logsQuery.refetch()}
+          >
+            <RefreshCw
+              aria-hidden
+              className={cn(logsQuery.isFetching && 'animate-spin')}
+            />
+          </Button>
+        }
         customSearch={
           <>
             <CompactDateTimeRangePicker
