@@ -18,7 +18,7 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import type { TFunction } from 'i18next'
 
-import type { RouteResult } from './types'
+import type { RoutePreviewOutcome, RouteResult } from './types'
 
 export type RouteTone = 'success' | 'warning' | 'danger' | 'info' | 'neutral'
 
@@ -132,6 +132,71 @@ export function skipReasonLabel(t: TFunction, reason: string): string {
       return t('The scheduler has no channel that can take it right now')
     default:
       return reason
+  }
+}
+
+/** 为什么这次比价没拿到调度器预览的回答；回答了或没配调度器时为空串。 */
+export function previewOutcomeLabel(
+  t: TFunction,
+  outcome?: RoutePreviewOutcome
+): string {
+  if (!outcome) {
+    return ''
+  }
+  switch (outcome.status) {
+    case 'answered':
+      return ''
+    case 'not_scheduler_decided':
+      return t(
+        'The scheduler does not pick the channel for this request (shadow mode, a canary miss or the kill switch), so every multiplier follows the native routing rules.'
+      )
+    case 'not_configured':
+      return t(
+        'The scheduler picks the channel for this request but has no address or token, so every multiplier follows the native routing rules.'
+      )
+    case 'circuit_open':
+      return t(
+        'The scheduler circuit is open, so the preview was not asked and every multiplier follows the native routing rules.'
+      )
+    case 'unsupported':
+      return t(
+        'The scheduler address does not serve /v1/preview (HTTP 404: the scheduler is too old, or a gateway in front of it only passes /v1/schedule), so every multiplier follows the native routing rules.'
+      )
+    case 'timeout':
+      return t(
+        'The scheduler preview timed out, so every multiplier follows the native routing rules.'
+      )
+    case 'failed':
+      return outcome.http_status
+        ? t(
+            'The scheduler preview failed with HTTP {{status}}, so every multiplier follows the native routing rules.',
+            { status: outcome.http_status }
+          )
+        : t(
+            'The scheduler could not be reached for the preview, so every multiplier follows the native routing rules.'
+          )
+    case 'bad_response':
+      return t(
+        'The scheduler preview answer could not be used, so every multiplier follows the native routing rules.'
+      )
+    default:
+      return outcome.status
+  }
+}
+
+/** 调度器回答了预览、却没用上它给这个模型的答案的原因。 */
+export function previewNoteLabel(t: TFunction, note: string): string {
+  switch (note) {
+    case 'not_cached':
+      return t('The scheduler has not loaded this model yet')
+    case 'error':
+      return t('The scheduler could not place this model')
+    case 'unusable_channel':
+      return t('The channel the scheduler gave cannot be priced here')
+    case 'over_limit':
+      return t('Beyond the 64 models one preview can ask about')
+    default:
+      return note
   }
 }
 

@@ -80,14 +80,31 @@ export type RoutePickCandidate = {
   channel_id?: number
   channels?: number
   cost_source?: RouteCostSource
+  /**
+   * 调度器回答了预览、却没用上它给这个模型的答案时的原因（not_cached、error、unusable_channel、
+   * over_limit），这个模型按原生规则估算。
+   */
+  preview?: string
   discount: number
   utility: number
+}
+
+/**
+ * 一次比价问调度器预览的结果。answered 表示调度器回答了；其余是没拿到回答的原因：
+ * not_scheduler_decided、not_configured、circuit_open、unsupported、timeout、failed、bad_response。
+ */
+export type RoutePreviewOutcome = {
+  status: string
+  /** failed 时调度器回的状态码，连不上时没有。 */
+  http_status?: number
 }
 
 export type RoutePick = {
   chosen: string
   weight: number
   band: RoutePickCandidate[]
+  /** 没配调度器、或这次没估算比较成本时没有。 */
+  preview?: RoutePreviewOutcome
 }
 
 export type RouteEffortAction = 'keep' | 'set' | 'strip'

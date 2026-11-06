@@ -215,9 +215,11 @@ func (p Policy) choose(profile string, models []string, available func(string) b
 	model, found := "", false
 	if scores := p.TaskScores[profile]; len(scores) > 0 && candidates.Price != nil {
 		servable := func(name string) bool { return ModelAvailable(name, available) }
-		var costs func([]string) map[string]Cost
+		var costs func([]string) (map[string]Cost, *PreviewOutcome)
 		if candidates.Costs != nil {
-			costs = func(names []string) map[string]Cost { return candidates.Costs(names, effort, ignoreClientReasoning) }
+			costs = func(names []string) (map[string]Cost, *PreviewOutcome) {
+				return candidates.Costs(names, effort, ignoreClientReasoning)
+			}
 		}
 		pick, ok := pickByQualityCost(models, scores, p.CostWeight, servable, candidates.Price, costs, candidates.Why)
 		step.Skipped, step.SkippedMore = pick.skipped, pick.skippedMore

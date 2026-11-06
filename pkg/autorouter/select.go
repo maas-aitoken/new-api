@@ -92,7 +92,8 @@ type Candidates struct {
 	// 乘上会落到的渠道的费用倍率（几个渠道时按概率取期望）。effort 是这一步的期望档位，
 	// ignoreClientReasoning 与判定可用时的口径一致，主机据此找出真正服务请求的模型名和渠道。
 	// 结果里没有的模型按 Price 比较；为 nil 时只比较 Price。费用倍率不参与计费，只影响这里的选择。
-	Costs func(models []string, effort string, ignoreClientReasoning bool) map[string]Cost
+	// preview 是这次问调度器预览的结果（问没问、为什么没拿到回答），记进 Pick；没配调度器时为 nil。
+	Costs func(models []string, effort string, ignoreClientReasoning bool) (costs map[string]Cost, preview *PreviewOutcome)
 }
 
 // Cost 是一个候选模型的比较成本。只要有这一项，Price 就以它为准。
@@ -110,6 +111,19 @@ type Cost struct {
 	// Excluded 表示这个模型这次一定服务不了（调度器预览没有可用渠道），比较时跳过，Reason 是原因。
 	Excluded bool
 	Reason   string
+	// Preview 是调度器回答了这次预览、却没用上它给这个模型的答案时的原因（还没加载、出错、
+	// 给的渠道没法报价、超过一次能问的个数），这个模型按原生规则估算。整次没拿到回答时为空，
+	// 原因在 PreviewOutcome 里。
+	Preview string
+}
+
+// PreviewOutcome 是一次比价问调度器预览的结果，写进选路留痕：没用上预览时据此知道为什么。
+type PreviewOutcome struct {
+	// Status 是问的结果：answered 表示调度器回答了（各模型的情况看 Candidate.Preview），
+	// 其余是没拿到回答的原因（这次不由调度器定渠道、没配置、熔断、不支持预览、超时、失败、响应不对）。
+	Status string `json:"status"`
+	// HTTPStatus 是失败时调度器回的状态码，连不上时为 0。
+	HTTPStatus int `json:"http_status,omitempty"`
 }
 
 // 比较成本里的倍率从哪来。
@@ -132,6 +146,8 @@ type Candidate struct {
 	ChannelID      int     `json:"channel_id,omitempty"`
 	Channels       int     `json:"channels,omitempty"`
 	CostSource     string  `json:"cost_source,omitempty"`
+	// Preview 是调度器回答了预览、却没用上它给这个模型的答案时的原因，见 Cost.Preview。
+	Preview string `json:"preview,omitempty"`
 	// Discount 是价格折扣，Utility 是分数减去折扣，排名按 Utility。
 	Discount float64 `json:"discount"`
 	Utility  float64 `json:"utility"`
@@ -152,6 +168,8 @@ type Pick struct {
 	Weight float64 `json:"weight"`
 	// Band 是进入比较的候选：分数不低于最高可用分减去 Weight 的可用模型。
 	Band []Candidate `json:"band"`
+	// Preview 是这次比较问调度器预览的结果；没配调度器、或没有估算比较成本时为 nil。
+	Preview *PreviewOutcome `json:"preview,omitempty"`
 
 	// skipped 是比较时跳过的模型，只进选路留痕；消费日志里的摘要不带它，免得每条日志都变大。
 	skipped     []Skipped
@@ -182,7 +200,7 @@ func (p *Pick) skip(model string, score float64, reason string) {
 //
 // 带内被跳过的模型（不可用，或可用但按次计价没法比价）连同原因记在返回的 Pick 里，
 // 即使 ok 为 false 也带着，选路留痕据此解释"为什么没选更靠前的模型"。why、costs 可以为 nil。
-func pickByQualityCost(models []string, scores map[string]float64, weight float64, overridable func(string) bool, price func(string) (float64, bool), costs func([]string) map[string]Cost, why func(string) string) (Pick, bool) {
+func pickByQualityCost(models []string, scores map[string]float64, weight float64, overridable func(string) bool, price func(string) (float64, bool), costs func([]string) (map[string]Cost, *PreviewOutcome), why func(string) string) (Pick, bool) {
 	scored := make([]string, 0, len(models))
 	for _, model := range models {
 		if _, found := scores[model]; found {
@@ -231,7 +249,8 @@ func pickByQualityCost(models []string, scores map[string]float64, weight float6
 		for i := range band {
 			names[i] = band[i].Model
 		}
-		estimated := costs(names)
+		estimated, preview := costs(names)
+		pick.Preview = preview
 		kept := band[:0]
 		for _, candidate := range band {
 			cost, found := estimated[candidate.Model]
@@ -250,6 +269,7 @@ func pickByQualityCost(models []string, scores map[string]float64, weight float6
 			candidate.Price = cost.Price
 			candidate.CostMultiplier, candidate.Cost = multiplier, cost.Price*multiplier
 			candidate.ChannelID, candidate.Channels, candidate.CostSource = cost.ChannelID, cost.Channels, cost.Source
+			candidate.Preview = cost.Preview
 			kept = append(kept, candidate)
 		}
 		band = kept

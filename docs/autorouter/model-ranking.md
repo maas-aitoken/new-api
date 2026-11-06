@@ -232,7 +232,7 @@ w 既是候选带的宽度，也是折扣的上限，所以选中的模型比参
 
 **会落到哪个渠道**：
 
-- Scheduler 决定渠道（强制模式，或金丝雀命中）时，问 Scheduler 的只读预览 `POST /v1/preview`：一次问候选带里所有模型，各自现在会被调度到哪个渠道。预览与正式调度共用同一段排序，同一份评分、额度和用量下选的是同一个渠道；预览不写决策审计、不计调度指标。预览不可用、超时（整次 `SchedulerShadowTimeoutMS`，默认 100ms）、Scheduler 版本太旧（404，一分钟内不再问），或某个模型还没被 Scheduler 加载过时，这个模型按下面的原生规则估算。
+- Scheduler 决定渠道（强制模式，或金丝雀命中）时，问 Scheduler 的只读预览 `POST /v1/preview`：一次问候选带里所有模型，各自现在会被调度到哪个渠道。预览与正式调度共用同一段排序，同一份评分、额度和用量下选的是同一个渠道；预览不写决策审计、不计调度指标。一次最多问 64 个模型，多出的按原生规则估算。Scheduler 地址按顺序问，回 404 的地址（版本太旧，或前面的网关只放行 `/v1/schedule`）一分钟内跳过、接着问下一个。预览不可用、超时（整次 `SchedulerShadowTimeoutMS`，默认 100ms）、所有地址都回 404，或某个模型还没被 Scheduler 加载过时，这个模型按下面的原生规则估算；真正问过却没拿到回答时记一条 WARN 日志，原因同时写进选路日志（见 7.5 节的 `pick.preview`）。
 - 其余情况按原生选渠道的规则：会话亲和绑定了渠道就是那个渠道；否则按分组顺序取第一个过滤后还有渠道的分组，在最高优先级那一档里按权重算各渠道的命中概率，倍率取期望。
 - 渠道范围与选定模型后一致：令牌分组里可用的渠道，能力门控 enforce 下再按同一口径收窄。计费分组取首次会命中的分组（令牌分组是 `auto` 时，是第一个在这个渠道上服务该模型的分组），用户价按这个分组的倍率算。
 
@@ -416,6 +416,7 @@ w 从 0.07 调到 0.075，下限降低，`mimo-v2.6-pro`（0.9288 分，0.54 美
 - `preference` 是这次请求用的偏好：令牌自己设的，没设则是平台的 `default_preference`。
 - `pick` 只在做过质量/价格比较时出现。`weight` 是这次用的 w，`band` 是候选带，`discount` 是价格折扣，`utility` 是折后分，`chosen` 是选中的。沿用上一轮模型和按列表顺序取第一个时没有 `pick`。线上日志里的数值是完整精度，不是示例里的四位小数。
 - 估算过渠道时，`band` 的每一项还有 `cost_multiplier`（首次会落到的渠道的费用倍率）、`cost`（比较成本 = `price` × 倍率，`discount` 按它算）、`cost_source`（`scheduler` 调度器预览、`affinity` 会话亲和、`expected` 按命中概率的期望）、`channel_id`（确定会落到的渠道）和 `channels`（参与期望的渠道个数）。`price` 仍是用户侧价格。`channel_id` 来自预览时，和使用日志里实际落到的渠道对照，就能看出预览和正式调度有没有选得不一样。
+- 配了 Scheduler 时，`pick.preview` 记这次比价问预览的结果：`status` 为 `answered` 表示 Scheduler 回答了；其余是没拿到回答的原因，`not_scheduler_decided`（这次不由 Scheduler 定渠道：影子模式、金丝雀没命中或紧急停用）、`not_configured`、`circuit_open`、`unsupported`（地址都回 404）、`timeout`、`failed`（带 `http_status`，连不上时没有）、`bad_response`。回答了、某个模型却没用上它的答案时，`band` 里那一项的 `preview` 写原因：`not_cached`（还没加载）、`error`、`unusable_channel`（给的渠道在 new-api 这边没法报价）、`over_limit`（超过 64 个）。选路过程里，整次的原因写在候选表上方，单个模型的原因写在它的“费用倍率”下面。
 - `effort` 是第 7.2 节定出的期望档位，`applied_effort` 是按模型的渠道声明收敛后真正写进请求体的档位，`effort_action` 是 `set`（写入）、`keep`（不碰客户端字段）或 `strip`（模型不支持推理，去掉客户端字段）。`effort_override` 为 true 表示档位由这次判断定下（`leaf` 是二级类，或 `unknown` 但收益达到提档阈值），覆盖了客户端的推理字段。`effort_in_body` 为 true 表示档位写进请求体、模型名保持裸名；为 false 时档位拼在模型名后缀上（如 `gpt-5-high`）。
 
 ### 7.5 选路日志
@@ -508,10 +509,10 @@ w 从 0.07 调到 0.075，下限降低，`mimo-v2.6-pro`（0.9288 分，0.54 美
 | `web/src/features/usage-logs/` | 使用日志里标出 auto 请求并能按它筛选（`auto_routed` 列，老数据的空值按“不是 auto”算）；详情里的“Auto 路由”小节和“查看选路过程” |
 | `model/channel_cache.go`、`model/ability.go` | `FirstAttemptChannelShares`：首次尝试落到各渠道的概率，与实际抽签共用 `retryTierLocked` / `databaseRetryTier` |
 | `service/channel_affinity.go`、`service/capability_gate.go`、`service/autorouter.go` | 只读的 `PeekPreferredChannelByAffinity`、`KeptChannels`；`AutoServingModel` 是最终解析和比价共用的服务名规则；Scheduler 的 workload 改在选路之前写 |
-| `service/scheduler_preview.go` | 调 Scheduler 的 `/v1/preview`：整次一个截止时间，只读熔断状态、失败不计入熔断，404 后一分钟内不再问 |
+| `service/scheduler_preview.go` | 调 Scheduler 的 `/v1/preview`：整次一个截止时间，只读熔断状态、失败不计入熔断；回 404 的地址一分钟内跳过、接着问下一个；一次最多问 64 个（不能比 Scheduler 的上限大，调大时先升级 Scheduler）；结果带状态写进选路留痕，问过没拿到回答时记 WARN |
 | `pkg/autorouter/select.go`、`policy.go`、`trace.go` | `Candidates.Costs`：带定下来之后一次取齐比较成本，折扣与同分取舍都按比较成本；`Excluded` 的模型离开带；跳过原因 `scheduler_no_candidate`；`band` 多出成本相关字段 |
 | `middleware/auto_route_cost.go`、`middleware/distributor.go` | 实现 `Costs`：调度器预览或原生规则定渠道、按首次命中的分组报价、乘渠道费用倍率；预览说没有渠道的模型记进这次请求的拒绝原因 |
-| `web/src/features/system-settings/autorouter/route-log/` | 候选表在估算过渠道时多“费用倍率”“比较成本”两列，跳过原因多一项 |
+| `web/src/features/system-settings/autorouter/route-log/` | 候选表在估算过渠道时多“费用倍率”“比较成本”两列，跳过原因多一项；没用上调度器预览时在表上方说明原因，单个模型没用上时写在它的倍率下面 |
 
 ## 10. 已知限制
 

@@ -246,10 +246,11 @@ func TestPickByQualityCostComparesThePlatformCost(t *testing.T) {
 	all := func(string) bool { return true }
 	price := func(model string) (float64, bool) { return prices[model], true }
 	var asked [][]string
+	var outcome *PreviewOutcome
 	pickWith := func(estimates map[string]Cost) Pick {
-		pick, ok := pickByQualityCost(models, scores, 0.07, all, price, func(names []string) map[string]Cost {
+		pick, ok := pickByQualityCost(models, scores, 0.07, all, price, func(names []string) (map[string]Cost, *PreviewOutcome) {
 			asked = append(asked, slices.Clone(names))
-			return estimates
+			return estimates, outcome
 		}, nil)
 		require.True(t, ok)
 		return pick
@@ -268,10 +269,22 @@ func TestPickByQualityCostComparesThePlatformCost(t *testing.T) {
 	assert.Equal(t, Candidate{Model: "a", Score: 0.95, Price: 10, CostMultiplier: 0.2, Cost: 2, ChannelID: 7, Channels: 1,
 		CostSource: CostSourceScheduler, Discount: 0, Utility: 0.95}, pick.Band[0])
 	assert.InDelta(t, 0.07, pick.Band[1].Discount, 1e-9, "the dearest platform cost in the band takes the full discount")
+	assert.Nil(t, pick.Preview, "no scheduler, nothing to record")
+
+	// 调度器的预览结果原样记进 Pick；某个模型没用上它的答案时，原因跟着那个候选。
+	outcome = &PreviewOutcome{Status: "answered"}
+	pick = pickWith(map[string]Cost{
+		"a": {Price: 10, Multiplier: 0.2, ChannelID: 7, Channels: 1, Source: CostSourceScheduler},
+		"b": {Price: 3, Multiplier: 1, Channels: 2, Source: CostSourceExpected, Preview: "not_cached"},
+	})
+	assert.Equal(t, &PreviewOutcome{Status: "answered"}, pick.Preview)
+	assert.Empty(t, pick.Band[0].Preview)
+	assert.Equal(t, "not_cached", pick.Band[1].Preview)
+	outcome = nil
 
 	tied := map[string]float64{"a": 0.95, "b": 0.95}
-	pick, ok = pickByQualityCost([]string{"a", "b"}, tied, 0, all, price, func([]string) map[string]Cost {
-		return map[string]Cost{"a": {Price: 10, Multiplier: 0.2}, "b": {Price: 3, Multiplier: 1}}
+	pick, ok = pickByQualityCost([]string{"a", "b"}, tied, 0, all, price, func([]string) (map[string]Cost, *PreviewOutcome) {
+		return map[string]Cost{"a": {Price: 10, Multiplier: 0.2}, "b": {Price: 3, Multiplier: 1}}, nil
 	}, nil)
 	require.True(t, ok)
 	assert.Equal(t, "a", pick.Chosen, "at weight zero a tie goes to the lower platform cost")
@@ -287,8 +300,8 @@ func TestPickByQualityCostComparesThePlatformCost(t *testing.T) {
 	assert.Equal(t, "a", pick.Chosen, "an excluded model leaves the band")
 	assert.Equal(t, []Skipped{{Model: "b", Score: 0.94, Reason: ReasonSchedulerNoCandidate}}, pick.skipped)
 
-	_, ok = pickByQualityCost(models, scores, 0.07, all, price, func([]string) map[string]Cost {
-		return map[string]Cost{"a": {Excluded: true}, "b": {Excluded: true}}
+	_, ok = pickByQualityCost(models, scores, 0.07, all, price, func([]string) (map[string]Cost, *PreviewOutcome) {
+		return map[string]Cost{"a": {Excluded: true}, "b": {Excluded: true}}, nil
 	}, nil)
 	assert.False(t, ok, "nothing left to compare")
 }
@@ -356,9 +369,9 @@ func TestSelectRoutePicksByQualityAndPrice(t *testing.T) {
 		}
 		var asked []ask
 		withCosts := priced
-		withCosts.Costs = func(_ []string, effort string, ignoreClientReasoning bool) map[string]Cost {
+		withCosts.Costs = func(_ []string, effort string, ignoreClientReasoning bool) (map[string]Cost, *PreviewOutcome) {
 			asked = append(asked, ask{effort, ignoreClientReasoning})
-			return nil
+			return nil, nil
 		}
 		hard := decide("code.build", 1)
 		hard.Difficulty = 4

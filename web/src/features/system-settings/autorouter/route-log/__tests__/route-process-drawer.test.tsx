@@ -183,10 +183,12 @@ test('a comparison by platform cost shows the multiplier of each candidate, wher
               cost: 1.2,
               channels: 2,
               cost_source: 'expected',
+              preview: 'not_cached',
               discount: 0.07,
               utility: 0.86,
             },
           ],
+          preview: { status: 'answered' },
         },
       },
     },
@@ -207,9 +209,61 @@ test('a comparison by platform cost shows the multiplier of each candidate, wher
   const otherRow = screen.getByText('haiku').closest('tr') as HTMLElement
   expect(within(otherRow).getByText('Expected over 2 channels')).toBeVisible()
   expect(
+    within(otherRow).getByText('The scheduler has not loaded this model yet')
+  ).toBeVisible()
+  expect(
     screen.getByText(/The multiplier never changes what the user is billed/)
   ).toBeVisible()
+  expect(
+    screen.queryByText(/so every multiplier follows the native routing rules/)
+  ).not.toBeInTheDocument()
 })
+
+test.each([
+  [
+    { status: 'unsupported' },
+    'The scheduler address does not serve /v1/preview (HTTP 404: the scheduler is too old, or a gateway in front of it only passes /v1/schedule), so every multiplier follows the native routing rules.',
+  ],
+  [
+    { status: 'failed', http_status: 503 },
+    'The scheduler preview failed with HTTP 503, so every multiplier follows the native routing rules.',
+  ],
+])(
+  'a comparison the scheduler preview did not answer says why (%o)',
+  async (preview, caption) => {
+    mockLog({
+      ...routed,
+      detail: {
+        ...routed.detail,
+        result: {
+          ...routed.detail?.result,
+          pick: {
+            chosen: 'sonnet',
+            weight: 0.07,
+            band: [
+              {
+                model: 'sonnet',
+                score: 0.95,
+                price: 4,
+                cost_multiplier: 0.25,
+                cost: 1,
+                channel_id: 12,
+                channels: 1,
+                cost_source: 'expected',
+                discount: 0,
+                utility: 0.95,
+              },
+            ],
+            preview,
+          },
+        },
+      },
+    })
+    renderDrawer({})
+
+    expect(await screen.findByText(caption)).toBeVisible()
+  }
+)
 
 test('a model the scheduler could not place says so in the skipped list', async () => {
   mockLog({
