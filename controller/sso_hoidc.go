@@ -75,6 +75,10 @@ func SsoHoidcCallback(c *gin.Context) {
 		return
 	}
 
+	// 补一条本人的汇报边，覆盖新员工在两次 SSO 全量同步之间登录的冷启动窗口。
+	// 失败不阻断登录：边缺失只影响密钥业务视图的可见范围。
+	service.SyncLoginUserLeader(user.Id, userInfo.StraightLineManagerUid)
+
 	bundle, err := service.CreateLoginSession(
 		user.Id,
 		"sso_hoidc",

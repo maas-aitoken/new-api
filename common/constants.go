@@ -293,6 +293,15 @@ const (
 	TopUpStatusExpired = "expired"
 )
 
+// 决定令牌的可见范围
+type TokenViewScope int
+
+const (
+	TokenScopeOwned TokenViewScope = iota
+	TokenScopePersonal
+	TokenScopeBusiness
+)
+
 type TokenScene string
 
 const (
@@ -341,3 +350,9 @@ func NormalizeRoutingPreferenceMode(mode string) RoutingPreferenceMode {
 		return RoutingPreferenceModeBalanced
 	}
 }
+
+const (
+	TokenRoleOwner  = "owner"
+	TokenRoleMember = "member"
+	TokenRoleLeader = "leader"
+)

@@ -323,6 +323,8 @@ func SetApiRouter(router *gin.Engine) {
 		{
 			tokenRoute.GET("/", controller.GetAllTokens)
 			tokenRoute.GET("/search", middleware.SearchRateLimit(), controller.SearchTokens)
+			tokenRoute.GET("/view-scope", controller.GetKeyViewScope)
+			tokenRoute.GET("/member-candidates", middleware.SearchRateLimit(), controller.SearchTokenMemberCandidates)
 			tokenRoute.GET("/auto-groups", controller.GetTokenAutoGroups)
 			tokenRoute.GET("/:id", controller.GetToken)
 			tokenRoute.GET("/:id/routing-preference", controller.GetTokenRoutingPreference)
