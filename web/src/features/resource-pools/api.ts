@@ -268,6 +268,14 @@ export async function deleteCapacityPool(id: number): Promise<void> {
   requireServerSuccess(response.data);
 }
 
+/** 丢掉学到的换算比例和上调平滑，主节点下一轮按账号现状重算。配置和成员不变。 */
+export async function resetCapacityPool(id: number): Promise<void> {
+  const response = await api.post<{ success: boolean }>(
+    `${CAPACITY_POOLS_URL}/${id}/reset`,
+  );
+  requireServerSuccess(response.data);
+}
+
 /** models 为空表示把渠道的全部模型加进来。 */
 export async function addCapacityPoolMembers(
   poolId: number,

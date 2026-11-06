@@ -213,7 +213,9 @@ func TestCapacityLearnerLearnsFromOwnTraffic(t *testing.T) {
 	assert.Nil(t, learner.observe(mixed, channelcapacity.Totals{Requests: 1}, true, now))
 }
 
-func TestRefreshCapacityPoolPublishesDynamicLimitAndKeepsItOnFailure(t *testing.T) {
+// useCapacityPoolRedis 建好容量池用到的表，接上一个 miniredis，清空主节点的计算状态。
+func useCapacityPoolRedis(t *testing.T) *miniredis.Miniredis {
+	t.Helper()
 	require.NoError(t, model.DB.AutoMigrate(&model.ResourcePoolSource{}, &model.CapacityPool{}, &model.Channel{}))
 	server := miniredis.RunT(t)
 	client := redis.NewClient(&redis.Options{Addr: server.Addr()})
@@ -225,6 +227,11 @@ func TestRefreshCapacityPoolPublishesDynamicLimitAndKeepsItOnFailure(t *testing.
 		capacityPoolStates = make(map[int]*capacityPoolState)
 		_ = client.Close()
 	})
+	return server
+}
+
+func TestRefreshCapacityPoolPublishesDynamicLimitAndKeepsItOnFailure(t *testing.T) {
+	server := useCapacityPoolRedis(t)
 
 	provider := model.ResourcePoolGemini
 	require.NoError(t, model.SaveResourcePoolSources(provider, []*model.ResourcePoolSource{
@@ -310,4 +317,68 @@ func TestRefreshCapacityPoolPublishesDynamicLimitAndKeepsItOnFailure(t *testing.
 	view = resolve()
 	assert.False(t, view.Exhausted)
 	assert.Equal(t, dto.ModelLimit{RPM: 400, MaxConcurrency: 16}, view.Limit)
+}
+
+// 复现 2026-11-06 的事故：池里的账号还在被别处用，我们只记到一个请求，学到的比例把配速压到 1；
+// 关掉配速后额度每轮只涨 25%，重置之后下一轮直接按突发上限发布。
+func TestResetCapacityPoolDropsLearnedFactorAndSmoothing(t *testing.T) {
+	useCapacityPoolRedis(t)
+	provider := model.ResourcePoolGrok
+	require.NoError(t, model.SaveResourcePoolSources(provider, []*model.ResourcePoolSource{{Name: "grok-a", Endpoint: "https://grok.example.com", Enabled: true}}))
+	t.Cleanup(func() { require.NoError(t, model.SaveResourcePoolSources(provider, nil)) })
+	sources, err := model.GetResourcePoolSources(provider)
+	require.NoError(t, err)
+	require.Len(t, sources, 1)
+	source := sources[0].Id
+
+	config := model.CapacityPoolConfig{SourceIds: []int64{source}, DefaultRate: dto.ModelLimit{RPM: 100}, PacingEnabled: true}
+	pool := &model.CapacityPool{Name: "grok-shared", Provider: provider}
+	require.NoError(t, model.SaveCapacityPool(pool, config))
+	t.Cleanup(func() { _ = model.DeleteCapacityPool(pool.Id) })
+
+	now := time.Now().Truncate(time.Second)
+	resetAt := now.Add(7 * 24 * time.Hour).Format(time.RFC3339)
+	// 7 天累计数为 0：上游比例用不上，配速只能靠学到的比例。
+	accounts := func(percent float64) *ResourcePoolResult {
+		result := &ResourcePoolResult{Sources: []*model.ResourcePoolSourceStatus{{SourceId: source, Status: "success"}}}
+		for _, id := range []string{"1", "2"} {
+			result.Accounts = append(result.Accounts, &model.ResourcePoolAccount{
+				Id: id, SourceId: source, Enabled: true, Status: "active", UsagePercent7d: common.GetPointer(percent), Reset7dAt: resetAt,
+			})
+		}
+		return result
+	}
+	resolve := func() CapacityPoolLimitView {
+		views, err := ResolveCapacityPoolLimits([]*model.CapacityPool{pool})
+		require.NoError(t, err)
+		return views[pool.Id]
+	}
+
+	refreshCapacityPool(pool, accounts(10), nil, now)
+	assert.Equal(t, dto.ModelLimit{RPM: 200}, resolve().Limit, "还没学到比例，按突发上限")
+
+	// 两个账号各涨 20 个百分点，我们只记到一个请求：每个百分点 0.025 次请求，配速压到 1。
+	channelcapacity.Finish(channelcapacity.Begin(5, "grok-4", pool.Id, 1000), true, 1000, 0)
+	refreshCapacityPool(pool, accounts(30), nil, now.Add(time.Minute))
+	view := resolve()
+	assert.Equal(t, dto.ModelLimit{RPM: 1, TPM: 1}, view.Limit)
+	require.NotNil(t, view.Detail)
+	require.NotNil(t, view.Detail.Learned)
+
+	// 关掉配速：学到的比例不用了，但额度从 1 往回涨每轮最多 25%（至少 1），比例也还留着。
+	config.PacingEnabled = false
+	require.NoError(t, model.SaveCapacityPool(pool, config))
+	refreshCapacityPool(pool, accounts(30), nil, now.Add(2*time.Minute))
+	view = resolve()
+	assert.Equal(t, dto.ModelLimit{RPM: 2}, view.Limit)
+	require.NotNil(t, view.Detail)
+	assert.NotNil(t, view.Detail.Learned, "关掉配速只是不用比例，再打开会接着用")
+
+	// 重置：下一轮直接按突发上限发布，学到的比例清空。
+	require.NoError(t, channelcapacity.RequestReset(channelcapacity.CapacityPoolID(pool.Id)))
+	refreshCapacityPool(pool, accounts(30), nil, now.Add(3*time.Minute))
+	view = resolve()
+	assert.Equal(t, dto.ModelLimit{RPM: 200}, view.Limit)
+	require.NotNil(t, view.Detail)
+	assert.Nil(t, view.Detail.Learned)
 }

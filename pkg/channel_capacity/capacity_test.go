@@ -35,6 +35,7 @@ func useBackend(t *testing.T, shared bool) *redis.Client {
 	memoryLimitMu.Lock()
 	memoryLimits = make(map[string]memoryLimitEntry)
 	memoryStatuses = make(map[string]PollStatus)
+	memoryResetRequests = make(map[string]bool)
 	memoryLimitMu.Unlock()
 
 	previousEnabled, previousClient := common.RedisEnabled, common.RDB
@@ -271,6 +272,38 @@ func TestCapacityPoolLimitExpiresAfterGrace(t *testing.T) {
 			statuses, err := ReadStatuses([]string{capacityPool})
 			require.NoError(t, err)
 			assert.Equal(t, PollStatus{Status: "source_failed", Error: "kiro: HTTP 502", AttemptAt: 1_800_000_121}, statuses[capacityPool])
+		})
+	}
+}
+
+func TestCapacityPoolResetRequestIsTakenOnce(t *testing.T) {
+	for _, backend := range backends {
+		t.Run(backend.name, func(t *testing.T) {
+			client := useBackend(t, backend.shared)
+			capacityPool, other := CapacityPoolID(10), CapacityPoolID(11)
+
+			requested, err := TakeResetRequest(capacityPool)
+			require.NoError(t, err)
+			assert.False(t, requested, "没人请求过")
+
+			// 主节点取走之前连点两次，只算一次。
+			require.NoError(t, RequestReset(capacityPool))
+			require.NoError(t, RequestReset(capacityPool))
+			if client != nil {
+				ttl, err := client.PTTL(context.Background(), poolKey(capacityPool, "reset")).Result()
+				require.NoError(t, err)
+				assert.Equal(t, resetRequestTTL, ttl, "主节点一直不来取，请求也会过期")
+			}
+			requested, err = TakeResetRequest(capacityPool)
+			require.NoError(t, err)
+			assert.True(t, requested)
+			requested, err = TakeResetRequest(capacityPool)
+			require.NoError(t, err)
+			assert.False(t, requested, "取走即删除")
+
+			requested, err = TakeResetRequest(other)
+			require.NoError(t, err)
+			assert.False(t, requested, "只重置被请求的池")
 		})
 	}
 }
