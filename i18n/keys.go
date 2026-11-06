@@ -98,6 +98,13 @@ const (
 	MsgNotifyQuotaLowEmail             = "notify.quota_low_email"
 )
 
+// Quota increase notices sent to the cloud platform, in DEFAULT_LANGUAGE
+const (
+	MsgNotifyQuotaIncreased      = "notify.quota_increased"
+	MsgNotifyQuotaIncreasedFirst = "notify.quota_increased_first"
+	MsgNotifyQuotaUnlimited      = "notify.quota_unlimited"
+)
+
 // Channel notices sent to administrators who receive them and to model update
 // watchers
 const (

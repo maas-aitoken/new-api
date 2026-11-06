@@ -153,6 +153,8 @@ func InitEnv() {
 	SsoUserListApiUrl = GetEnvOrDefaultString("SSO_USER_LIST_API_URL", "")
 	SsoUserListPlatformId = GetEnvOrDefaultString("SSO_USER_LIST_PLATFORM_ID", "")
 	SsoUserListSecret = GetEnvOrDefaultString("SSO_USER_LIST_SECRET", "")
+	QuotaIncreaseNotifyUrl = strings.TrimSpace(GetEnvOrDefaultString("QUOTA_INCREASE_NOTIFY_URL", ""))
+	QuotaIncreaseNotifyHeaders = strings.TrimSpace(GetEnvOrDefaultString("QUOTA_INCREASE_NOTIFY_HEADERS", ""))
 
 	initConstantEnv()
 }

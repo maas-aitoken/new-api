@@ -6,8 +6,10 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
+	"github.com/bytedance/gopkg/util/gopool"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
@@ -136,17 +138,27 @@ func SubscriptionRequestBalancePay(c *gin.Context) {
 	common.ApiSuccess(c, nil)
 }
 
-// TODO: notify the department head once approval notifications exist.
 func RequestSubscriptionQuotaIncrease(c *gin.Context) {
 	if !operation_setting.IsQuotaTierEnabled() {
 		common.ApiErrorT(c, "Quota tiers are not enabled")
 		return
 	}
-	plan, err := model.IncreaseUserSubscriptionQuota(c.GetInt("id"))
+	userId := c.GetInt("id")
+	plan, previousTotal, err := model.IncreaseUserSubscriptionQuota(userId)
 	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
+	// The increase stands even when the cloud platform cannot be reached.
+	gopool.Go(func() {
+		user, err := model.GetUserById(userId, false)
+		if err == nil {
+			err = service.NotifyQuotaIncrease(user, previousTotal, plan.TotalAmount)
+		}
+		if err != nil {
+			common.SysError(common.LogText("failed to send quota increase notice of user %d: %s", userId, err.Error()))
+		}
+	})
 	common.ApiSuccess(c, gin.H{
 		"plan_id":      plan.Id,
 		"plan_title":   plan.Title,

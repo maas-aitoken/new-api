@@ -97,7 +97,7 @@ func activeQuotaIncreaseSubs(t *testing.T, userId int) []UserSubscription {
 func testQuotaIncreaseClimbsTiersInPlace(t *testing.T) {
 	user := seedQuotaIncreaseUser(t, "quota-tier-user")
 
-	_, err := IncreaseUserSubscriptionQuota(user.Id)
+	_, _, err := IncreaseUserSubscriptionQuota(user.Id)
 	require.Error(t, err)
 	assert.Equal(t, "No subscription plan is available for a quota increase", err.Error())
 
@@ -122,9 +122,10 @@ func testQuotaIncreaseClimbsTiersInPlace(t *testing.T) {
 	require.NoError(t, err)
 	assert.EqualValues(t, 340, monthUsed)
 
-	plan, err := IncreaseUserSubscriptionQuota(user.Id)
+	plan, previousTotal, err := IncreaseUserSubscriptionQuota(user.Id)
 	require.NoError(t, err)
 	assert.Equal(t, v1.Id, plan.Id)
+	assert.Zero(t, previousTotal)
 	subs := activeQuotaIncreaseSubs(t, user.Id)
 	require.Len(t, subs, 1)
 	first := subs[0]
@@ -133,9 +134,10 @@ func testQuotaIncreaseClimbsTiersInPlace(t *testing.T) {
 	assert.EqualValues(t, 340, first.AmountUsed)
 	require.NoError(t, DB.Model(&first).Update("amount_used", 800).Error)
 
-	plan, err = IncreaseUserSubscriptionQuota(user.Id)
+	plan, previousTotal, err = IncreaseUserSubscriptionQuota(user.Id)
 	require.NoError(t, err)
 	assert.Equal(t, v2.Id, plan.Id)
+	assert.EqualValues(t, 1000, previousTotal)
 	subs = activeQuotaIncreaseSubs(t, user.Id)
 	require.Len(t, subs, 1)
 	second := subs[0]
@@ -148,16 +150,17 @@ func testQuotaIncreaseClimbsTiersInPlace(t *testing.T) {
 	assert.Equal(t, first.NextResetTime, second.NextResetTime)
 	assert.Equal(t, first.LastResetTime, second.LastResetTime)
 
-	plan, err = IncreaseUserSubscriptionQuota(user.Id)
+	plan, previousTotal, err = IncreaseUserSubscriptionQuota(user.Id)
 	require.NoError(t, err)
 	assert.Equal(t, v3.Id, plan.Id)
+	assert.EqualValues(t, 3000, previousTotal)
 	third := activeQuotaIncreaseSubs(t, user.Id)[0]
 	assert.Equal(t, first.Id, third.Id)
 	assert.Zero(t, third.AmountTotal)
 	assert.EqualValues(t, 800, third.AmountUsed)
 	assert.Zero(t, third.NextResetTime)
 
-	_, err = IncreaseUserSubscriptionQuota(user.Id)
+	_, _, err = IncreaseUserSubscriptionQuota(user.Id)
 	require.Error(t, err)
 	assert.Equal(t, "Already at the highest quota tier", err.Error())
 	assert.Len(t, activeQuotaIncreaseSubs(t, user.Id), 1)
@@ -186,9 +189,9 @@ func testQuotaIncreaseKeepsOriginalGroupForExpiry(t *testing.T) {
 	seedQuotaIncreasePlan(t, SubscriptionPlan{Title: "v1", TotalAmount: 1000, UpgradeGroup: "pro"}, true)
 	seedQuotaIncreasePlan(t, SubscriptionPlan{Title: "v2", TotalAmount: 3000, UpgradeGroup: "max"}, true)
 
-	_, err := IncreaseUserSubscriptionQuota(user.Id)
+	_, _, err := IncreaseUserSubscriptionQuota(user.Id)
 	require.NoError(t, err)
-	_, err = IncreaseUserSubscriptionQuota(user.Id)
+	_, _, err = IncreaseUserSubscriptionQuota(user.Id)
 	require.NoError(t, err)
 
 	var updated User
@@ -242,9 +245,10 @@ func testQuotaTierAssignsLowestTier(t *testing.T) {
 	assert.Equal(t, SubscriptionSourceQuotaTier, subs[0].Source)
 	assert.EqualValues(t, 1500, subs[0].AmountUsed)
 
-	plan, err := IncreaseUserSubscriptionQuota(user.Id)
+	plan, previousTotal, err := IncreaseUserSubscriptionQuota(user.Id)
 	require.NoError(t, err)
 	assert.Equal(t, v2.Id, plan.Id)
+	assert.EqualValues(t, 1000, previousTotal)
 
 	// Off: tier subscriptions neither bill nor show.
 	operation_setting.SetQuotaTierEnabled(false)
@@ -297,7 +301,7 @@ func testQuotaTierServesOnlyAutoPastQuota(t *testing.T) {
 	assert.EqualValues(t, 175, used())
 
 	// 175 of 100 becomes 175 of 300.
-	_, err = IncreaseUserSubscriptionQuota(user.Id)
+	_, _, err = IncreaseUserSubscriptionQuota(user.Id)
 	require.NoError(t, err)
 	assert.EqualValues(t, 175, used())
 	exhausted, err = UserQuotaTierExhausted(user.Id)

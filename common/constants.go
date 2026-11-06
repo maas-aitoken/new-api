@@ -141,6 +141,9 @@ var SsoUserListApiUrl = ""
 var SsoUserListPlatformId = ""
 var SsoUserListSecret = ""
 
+var QuotaIncreaseNotifyUrl = ""
+var QuotaIncreaseNotifyHeaders = ""
+
 var QuotaForNewUser = 0
 var QuotaForInviter = 0
 var QuotaForInvitee = 0

@@ -95,12 +95,14 @@ func switchSubscriptionPlanTx(tx *gorm.DB, sub *UserSubscription, previous *Subs
 // IncreaseUserSubscriptionQuota moves the user to the next larger enabled plan.
 // The largest active subscription switches plan in place so in-flight
 // settlements still find it; without one, the smallest plan is created.
-func IncreaseUserSubscriptionQuota(userId int) (*SubscriptionPlan, error) {
+// It also returns the quota of the tier moved off, 0 when the user had none.
+func IncreaseUserSubscriptionQuota(userId int) (*SubscriptionPlan, int64, error) {
 	if userId <= 0 {
-		return nil, errors.New("invalid userId")
+		return nil, 0, errors.New("invalid userId")
 	}
 	var next SubscriptionPlan
 	var upgradedId int
+	var previousTotal int64
 	groupChanged := false
 	err := DB.Transaction(func(tx *gorm.DB) error {
 		var userRow User
@@ -148,6 +150,8 @@ func IncreaseUserSubscriptionQuota(userId int) (*SubscriptionPlan, error) {
 		}
 
 		upgradedId = current.Id
+		// Read before the switch updates current in memory.
+		previousTotal = current.AmountTotal
 		var previous *SubscriptionPlan
 		for i := range plans {
 			if plans[i].Id == current.PlanId {
@@ -159,7 +163,7 @@ func IncreaseUserSubscriptionQuota(userId int) (*SubscriptionPlan, error) {
 		return err
 	})
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	if upgradedId > 0 {
 		_, _ = getSubscriptionPlanInfoCache().DeleteMany([]string{subscriptionPlanInfoCacheKey(upgradedId)})
@@ -169,5 +173,5 @@ func IncreaseUserSubscriptionQuota(userId int) (*SubscriptionPlan, error) {
 	}
 	// amount (0 = unlimited) is for the console notice.
 	RecordLog(userId, LogTypeSystem, common.NewMessage("Subscription quota increased, plan: {{plan}}", map[string]any{"plan": next.Title, "amount": next.TotalAmount}))
-	return &next, nil
+	return &next, previousTotal, nil
 }
