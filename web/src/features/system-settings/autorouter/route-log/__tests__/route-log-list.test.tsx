@@ -17,7 +17,13 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { render, screen, waitFor, within } from '@testing-library/react'
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { expect, test, vi } from 'vitest'
 
@@ -171,6 +177,74 @@ test('an empty result says there are no routing logs', async () => {
   mockApi([])
   renderList()
   expect(await screen.findByText('No routing logs found')).toBeVisible()
+})
+
+test('Refresh asks for the same page with the same filters again and spins until the answer arrives', async () => {
+  const user = userEvent.setup()
+  const get = mockApi([item(1)], 45)
+  renderList()
+  await screen.findByText('model-1')
+  await user.type(screen.getByLabelText('Model'), 'sonnet')
+  await user.click(screen.getByRole('button', { name: 'Search' }))
+  await waitFor(() => expect(listCalls(get)).toHaveLength(2))
+  await user.click(screen.getByRole('button', { name: 'Go to next page' }))
+  await waitFor(() => expect(listCalls(get)).toHaveLength(3))
+  await screen.findByText('model-1')
+
+  let answer: (value: { data: unknown }) => void = () => undefined
+  get.mockImplementationOnce(() => new Promise((resolve) => (answer = resolve)))
+  const refresh = screen.getByRole('button', { name: 'Refresh' })
+  await user.click(refresh)
+
+  await waitFor(() => expect(listCalls(get)).toHaveLength(4))
+  expect(listCalls(get)[3]).toEqual({ model: 'sonnet', p: 2, page_size: 20 })
+  expect(refresh).toHaveAttribute('aria-busy', 'true')
+  expect(refresh).toBeDisabled()
+  answer({
+    data: {
+      success: true,
+      data: { items: [item(3)], total: 45, page: 2, page_size: 20 },
+    },
+  })
+  expect(await screen.findByText('model-3')).toBeVisible()
+  expect(refresh).toHaveAttribute('aria-busy', 'false')
+  expect(refresh).toBeEnabled()
+})
+
+test('a time range is sent in Unix seconds only after Search, and Reset clears it', async () => {
+  const user = userEvent.setup()
+  const get = mockApi([item(1)])
+  renderList()
+  await screen.findByText('model-1')
+
+  await user.click(screen.getByRole('button', { name: 'Date Range' }))
+  fireEvent.change(screen.getByLabelText('Start Time'), {
+    target: { value: '2026-11-06T09:00:00' },
+  })
+  fireEvent.change(screen.getByLabelText('End Time'), {
+    target: { value: '2026-11-06T18:30:59' },
+  })
+  await user.click(screen.getByRole('button', { name: 'Confirm' }))
+  expect(
+    screen.getByRole('button', {
+      name: '2026-11-06 09:00:00 ~ 2026-11-06 18:30:59',
+    })
+  ).toBeVisible()
+  expect(listCalls(get)).toHaveLength(1)
+  await user.click(screen.getByRole('button', { name: 'Search' }))
+
+  await waitFor(() => expect(listCalls(get)).toHaveLength(2))
+  expect(listCalls(get)[1]).toEqual({
+    start_time: String(new Date(2026, 10, 6, 9, 0, 0).getTime() / 1000),
+    end_time: String(new Date(2026, 10, 6, 18, 30, 59).getTime() / 1000),
+    p: 1,
+    page_size: 20,
+  })
+
+  await user.click(screen.getByRole('button', { name: 'Reset' }))
+  await waitFor(() => expect(listCalls(get)).toHaveLength(3))
+  expect(listCalls(get)[2]).toEqual({ p: 1, page_size: 20 })
+  expect(screen.getByRole('button', { name: 'Date Range' })).toBeVisible()
 })
 
 test('a failed request shows the error with a retry', async () => {
