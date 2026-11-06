@@ -146,7 +146,7 @@ func capabilityBaseModel(modelName string) string {
 // 没有模型级声明视为不合格；shadow 模式只记录，不拦截。
 //
 // ignoreClientReasoning 为 true 时撇开客户端自己写的推理字段来判定：
-// 可信的 auto 判断会自己定档位并改写这些字段，用客户端原来的档位去淘汰候选没有意义。
+// 档位由 auto 的判断定下时会改写这些字段，用客户端原来的档位去淘汰候选没有意义。
 // 结论按（候选名，是否撇开推理）缓存，同一个请求里同一个候选的渠道集合不会变。
 func (g *CapabilityGate) AllowsAnyChannel(modelName string, channelIDs []int, ignoreClientReasoning bool) bool {
 	if g == nil {

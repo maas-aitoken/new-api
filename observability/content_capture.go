@@ -4,6 +4,8 @@ import (
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/relaykit/dto"
+	"github.com/QuantumNous/new-api/relaykit/relayconvert"
 	"github.com/QuantumNous/new-api/relaykit/types"
 )
 
@@ -24,6 +26,8 @@ func buildLangfuseInput(body []byte, format types.RelayFormat) ([]byte, bool) {
 		keys = []string{"system", "messages", "tools"}
 	case types.RelayFormatOpenAIResponses, types.RelayFormatOpenAIResponsesCompaction:
 		keys = []string{"instructions", "input", "tools"}
+	case types.RelayFormatGemini:
+		keys = geminiContextFieldKeys
 	default:
 		// Do not project non-target protocols into an OpenAI-shaped record.
 		// Their observability format is intentionally deferred to a later change.
@@ -46,6 +50,11 @@ func buildLangfuseInput(body []byte, format types.RelayFormat) ([]byte, bool) {
 	return encoded, true
 }
 
+// geminiContextFieldKeys are the conversation-context fields of a Gemini
+// generateContent request. Gemini accepts the system instruction in either
+// casing, and a passthrough body keeps whichever one the client sent.
+var geminiContextFieldKeys = []string{"systemInstruction", "system_instruction", "contents", "tools"}
+
 // contextFieldKeys lists the conversation-context fields each relay format
 // carries. They are the complement of buildLangfuseInput's whitelist: the
 // observability value for request parameters is everything else.
@@ -57,6 +66,8 @@ func contextFieldKeys(format types.RelayFormat) ([]string, bool) {
 		return []string{"system", "messages", "tools"}, true
 	case types.RelayFormatOpenAIResponses, types.RelayFormatOpenAIResponsesCompaction:
 		return []string{"instructions", "input", "tools"}, true
+	case types.RelayFormatGemini:
+		return geminiContextFieldKeys, true
 	default:
 		// Do not project non-target protocols into an OpenAI-shaped record.
 		// Their observability format is intentionally deferred to a later change.
@@ -118,6 +129,11 @@ func normalizeLangfuseOutput(body []byte) ([]byte, bool) {
 			}
 		}
 		if output == nil {
+			if _, ok := value["candidates"].([]any); ok {
+				output = geminiCandidatesToChatOutput(body)
+			}
+		}
+		if output == nil {
 			if content, ok := value["content"].([]any); ok {
 				output = []any{claudeContentToAssistantMessage(value, content)}
 			} else if _, hasRole := value["role"]; hasRole {
@@ -157,6 +173,28 @@ func filterChatChoices(choices []any) []any {
 		return nil
 	}
 	return result
+}
+
+// geminiCandidatesToChatOutput reads a Gemini generateContent response through
+// the converter the relay path uses to serve a Gemini upstream in OpenAI
+// format, so text, thoughts and function calls reach the trace in the same
+// assistant message shape as every other chat upstream.
+func geminiCandidatesToChatOutput(body []byte) []any {
+	var response dto.GeminiChatResponse
+	if err := common.Unmarshal(body, &response); err != nil {
+		return nil
+	}
+	encoded, err := common.Marshal(relayconvert.ResponseGeminiChat2OpenAI("", 0, &response))
+	if err != nil {
+		return nil
+	}
+	var converted struct {
+		Choices []any `json:"choices"`
+	}
+	if err := common.Unmarshal(encoded, &converted); err != nil {
+		return nil
+	}
+	return filterChatChoices(converted.Choices)
 }
 
 func filterAssistantMessage(message map[string]any) map[string]any {

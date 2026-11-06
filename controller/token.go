@@ -43,6 +43,8 @@ type tokenRequest struct {
 	// 不认识这个字段的老客户端改令牌时不会把偏好清掉。
 	AutoPreference        *string                       `json:"auto_preference"`
 	RoutingPreferenceMode *common.RoutingPreferenceMode `json:"routing_preference_mode"`
+	ProjectMembers        *[]int                        `json:"project_members"`
+	ProjectOwnerId        *int                          `json:"project_owner_id"`
 }
 
 // validAutoPreference 判断请求里的 auto_preference 是否可以写入：未传或空串（平台默认）都可以。
@@ -54,6 +56,10 @@ type tokenResponse struct {
 	*model.Token
 	AutoGroups     []string                     `json:"auto_groups"`
 	PreferenceMode common.RoutingPreferenceMode `json:"preference_mode"`
+	Owner          *model.UserBrief             `json:"owner,omitempty"`
+	ProjectMembers []model.UserBrief            `json:"project_members,omitempty"`
+	// MyRole owner / admin / member / leader。
+	MyRole string `json:"my_role,omitempty"`
 }
 
 func maxTokenQuota() int {
@@ -103,6 +109,78 @@ func getTokenRequestUserGroup(c *gin.Context) (string, error) {
 		return userGroup, nil
 	}
 	return model.GetUserGroup(c.GetInt("id"), false)
+}
+
+func applyTokenProjectMembers(c *gin.Context, token *model.Token, memberIds *[]int) bool {
+	if token.Scene != common.TokenSceneBusiness {
+		token.ProjectMembers = ""
+		return true
+	}
+	if memberIds != nil {
+		if err := token.SetProjectMembers(*memberIds); err != nil {
+			common.ApiError(c, err)
+			return false
+		}
+	}
+	members := token.GetProjectMembers()
+	if len(members) == 0 {
+		return true
+	}
+	missing, err := model.FindMissingUserIds(members)
+	if err != nil {
+		common.ApiError(c, err)
+		return false
+	}
+	if len(missing) > 0 {
+		common.ApiErrorT(c, "Some selected people do not exist or have been deleted")
+		return false
+	}
+	return true
+}
+
+func transferTokenOwner(c *gin.Context, token *model.Token, newOwnerId int) bool {
+	if newOwnerId <= 0 {
+		common.ApiErrorT(c, "Invalid key owner")
+		return false
+	}
+	if newOwnerId == token.UserId {
+		return true
+	}
+	if token.Scene != common.TokenSceneBusiness {
+		common.ApiErrorT(c, "Only business keys can be transferred")
+		return false
+	}
+
+	newOwner, err := model.GetUserById(newOwnerId, true)
+	if err != nil {
+		common.ApiErrorT(c, "The selected owner does not exist or has been deleted")
+		return false
+	}
+	if newOwner.Status != common.UserStatusEnabled {
+		common.ApiErrorT(c, "The selected owner's account is not enabled")
+		return false
+	}
+	if token.Group != "" {
+		if _, ok := service.GetUserUsableGroups(newOwner.Group)[token.Group]; !ok {
+			common.ApiErrorT(c, "The selected owner cannot use group {{group}}",
+				map[string]any{"group": token.Group})
+			return false
+		}
+	}
+
+	token.UserId = newOwnerId
+	members := token.GetProjectMembers()
+	kept := make([]int, 0, len(members))
+	for _, id := range members {
+		if id != newOwnerId {
+			kept = append(kept, id)
+		}
+	}
+	if err := token.SetProjectMembers(kept); err != nil {
+		common.ApiError(c, err)
+		return false
+	}
+	return true
 }
 
 func setTokenAutoGroups(c *gin.Context, token *model.Token, groups []string) bool {
@@ -181,6 +259,30 @@ func parseTokenFilter(c *gin.Context) (model.TokenFilter, bool) {
 		filter.Status = status
 	}
 
+	switch view := c.Query("view"); view {
+	case "", "personal":
+		filter.Scope = common.TokenScopePersonal
+	case "business":
+		filter.Scope = common.TokenScopeBusiness
+		filter.Scene = common.TokenSceneBusiness
+		isLeader, err := model.IsUserLeader(filter.UserId)
+		if err != nil {
+			common.ApiError(c, err)
+			return filter, false
+		}
+		if isLeader {
+			teamUserIds, err := model.GetLeaderTeamUserIds(filter.UserId)
+			if err != nil {
+				common.ApiError(c, err)
+				return filter, false
+			}
+			filter.TeamUserIds = teamUserIds
+		}
+	default:
+		common.ApiErrorT(c, "Invalid view filter")
+		return filter, false
+	}
+
 	return filter, true
 }
 
@@ -196,7 +298,7 @@ func GetAllTokens(c *gin.Context) {
 		return
 	}
 	pageInfo.SetTotal(int(total))
-	pageInfo.SetItems(buildMaskedTokenResponses(tokens))
+	pageInfo.SetItems(buildTokenListItems(tokens, filter.Scope, filter.UserId))
 	common.ApiSuccess(c, pageInfo)
 }
 
@@ -216,7 +318,7 @@ func SearchTokens(c *gin.Context) {
 		return
 	}
 	pageInfo.SetTotal(int(total))
-	pageInfo.SetItems(buildMaskedTokenResponses(tokens))
+	pageInfo.SetItems(buildTokenListItems(tokens, filter.Scope, filter.UserId))
 	common.ApiSuccess(c, pageInfo)
 }
 
@@ -227,12 +329,14 @@ func GetToken(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	token, err := model.GetTokenByIds(id, userId)
+	token, _, err := model.GetTokenForReveal(id, userId)
 	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
-	common.ApiSuccess(c, buildMaskedTokenResponse(token))
+	response := buildMaskedTokenResponse(token)
+	response.MyRole = model.TokenRoleFor(token, userId)
+	common.ApiSuccess(c, response)
 }
 
 func GetTokenAutoGroups(c *gin.Context) {
@@ -254,13 +358,19 @@ func GetTokenKey(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	token, err := model.GetTokenByIds(id, userId)
+	// 业务 Key 的管理员、成员，以及创建人的 leader 都可以取明文
+	token, actor, err := model.GetTokenForReveal(id, userId)
 	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
 	params := tokenAuditParams(c)
 	params["id"], params["name"] = token.Id, token.Name
+	if !actor.IsOwner {
+		// 非创建人取明文必须可归因
+		params["target_user_id"] = token.UserId
+		params["acted_as"] = model.TokenRoleFor(token, userId)
+	}
 	common.SetContextKey(c, constant.ContextKeyTokenAuditSucceeded, true)
 	common.ApiSuccess(c, gin.H{
 		"key": token.GetFullKey(),
@@ -442,6 +552,9 @@ func AddToken(c *gin.Context) {
 			return
 		}
 	}
+	if !applyTokenProjectMembers(c, &cleanToken, request.ProjectMembers) {
+		return
+	}
 
 	err = cleanToken.Insert()
 	if err != nil {
@@ -512,10 +625,15 @@ func UpdateToken(c *gin.Context) {
 			return
 		}
 	}
-	cleanToken, err := model.GetTokenByIds(token.Id, userId)
+	cleanToken, actor, err := model.GetTokenForWrite(token.Id, userId)
 	if err != nil {
 		common.ApiError(c, err)
 		return
+	}
+	if !actor.IsOwner {
+		// 非创建人代操作时留下可归因的审计字段
+		params["target_user_id"] = cleanToken.UserId
+		params["acted_as"] = model.TokenRoleFor(cleanToken, userId)
 	}
 	params["name"] = cleanToken.Name
 	previous := *cleanToken
@@ -551,6 +669,20 @@ func UpdateToken(c *gin.Context) {
 		cleanToken.Scene = common.NormalizeTokenScene(string(token.Scene))
 		cleanToken.RoutingMode = common.NormalizeTokenRoutingMode(string(token.RoutingMode))
 		cleanToken.Description = token.Description
+
+		if !applyTokenProjectMembers(c, cleanToken, request.ProjectMembers) {
+			return
+		}
+
+		if request.ProjectOwnerId != nil && *request.ProjectOwnerId != cleanToken.UserId {
+			if !actor.IsOwner {
+				common.ApiErrorT(c, "Only the key owner can transfer ownership")
+				return
+			}
+			if !transferTokenOwner(c, cleanToken, *request.ProjectOwnerId) {
+				return
+			}
+		}
 
 		if request.RoutingPreferenceMode != nil {
 			if err := cleanToken.SetRoutingPreferenceMode(*request.RoutingPreferenceMode); err != nil {
@@ -607,6 +739,8 @@ func UpdateToken(c *gin.Context) {
 			{"routing_mode", previous.RoutingMode != cleanToken.RoutingMode},
 			{"description", previous.Description != cleanToken.Description},
 			{"routing_preference", previous.RoutingPreference != cleanToken.RoutingPreference},
+			{"owner", previous.UserId != cleanToken.UserId},
+			{"project_members", previous.ProjectMembers != cleanToken.ProjectMembers},
 		} {
 			if field.changed {
 				changedFields = append(changedFields, field.name)
@@ -707,6 +841,8 @@ func ListUserTokens(c *gin.Context) {
 		return
 	}
 	filter.UserId = userId
+	filter.Scope = common.TokenScopeOwned
+	filter.TeamUserIds = nil
 	pageInfo := common.GetPageQuery(c)
 	tokens, total, err := model.ListTokens(filter, pageInfo.GetStartIdx(), pageInfo.GetPageSize())
 	if err != nil {
@@ -716,4 +852,91 @@ func ListUserTokens(c *gin.Context) {
 	pageInfo.SetTotal(int(total))
 	pageInfo.SetItems(buildMaskedTokenResponses(tokens))
 	common.ApiSuccess(c, pageInfo)
+}
+
+// attachTokenPeople 一次性批量查用户
+func attachTokenPeople(
+	responses []*tokenResponse,
+	tokens []*model.Token,
+	userId int,
+) []*tokenResponse {
+	idSet := make(map[int]struct{})
+	membersByToken := make(map[int][]int, len(tokens))
+	for _, token := range tokens {
+		idSet[token.UserId] = struct{}{}
+		var members []int
+		if token.IsProjectKey() {
+			members = token.GetProjectMembers()
+		}
+		membersByToken[token.Id] = members
+		for _, id := range members {
+			idSet[id] = struct{}{}
+		}
+	}
+	ids := make([]int, 0, len(idSet))
+	for id := range idSet {
+		ids = append(ids, id)
+	}
+	briefs, err := model.GetUserBriefsByIds(ids)
+	if err != nil {
+		common.SysError(common.LogText("failed to load token people: %s", err.Error()))
+		briefs = nil
+	}
+	for i, response := range responses {
+		if response == nil || response.Token == nil {
+			continue
+		}
+		response.MyRole = model.TokenRoleFor(tokens[i], userId)
+		if briefs == nil {
+			continue
+		}
+		if owner, ok := briefs[response.UserId]; ok {
+			response.Owner = &owner
+		}
+		for _, memberId := range membersByToken[response.Id] {
+			if brief, ok := briefs[memberId]; ok {
+				response.ProjectMembers = append(response.ProjectMembers, brief)
+			}
+		}
+	}
+	return responses
+}
+
+// buildTokenListItems 按 scope 决定是否回填人员信息
+func buildTokenListItems(tokens []*model.Token, scope common.TokenViewScope, userId int) []*tokenResponse {
+	responses := buildMaskedTokenResponses(tokens)
+	if scope == common.TokenScopeOwned {
+		return responses
+	}
+	return attachTokenPeople(responses, tokens, userId)
+}
+
+// GetKeyViewScope 当前用户在业务视图里是不是 leader
+func GetKeyViewScope(c *gin.Context) {
+	userId := c.GetInt("id")
+	isLeader, err := model.IsUserLeader(userId)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	memberCount := 0
+	if isLeader {
+		teamUserIds, err := model.GetLeaderTeamUserIds(userId)
+		if err != nil {
+			common.ApiError(c, err)
+			return
+		}
+		memberCount = len(teamUserIds)
+	}
+	common.ApiSuccess(c, gin.H{"is_leader": isLeader, "member_count": memberCount})
+}
+
+// SearchTokenMemberCandidates 供业务 Key 选管理员与项目成员用
+func SearchTokenMemberCandidates(c *gin.Context) {
+	candidates, err := model.SearchMemberCandidates(c.Query("keyword"))
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, candidates)
 }

@@ -751,7 +751,7 @@ func TestDistributeAutoWritesConvergedEffortIntoStoredBody(t *testing.T) {
 	}{
 		{
 			// 请求带 tools，渠道 3 不支持 tools，剩下的渠道最高声明到 high；难度要 xhigh，收敛到 high。
-			name: "chat: a trusted decision overrides the client's effort with the converged one",
+			name: "chat: a leaf task type overrides the client's effort with the converged one",
 			path: "/v1/chat/completions", taskType: "code.build", wantModel: "reasoner",
 			body:     `{"model":"auto","messages":` + chatMessages + `,"reasoning_effort":"low","tools":[` + chatTool + `]}`,
 			wantBody: `{"model":"reasoner","messages":` + chatMessages + `,"reasoning_effort":"high","tools":[` + chatTool + `]}`,
@@ -763,7 +763,7 @@ func TestDistributeAutoWritesConvergedEffortIntoStoredBody(t *testing.T) {
 			wantBody: `{"model":"no-think","messages":` + chatMessages + `}`,
 		},
 		{
-			name: "chat: without a trusted decision the client's effort is kept",
+			name: "chat: without a decision the client's effort is kept",
 			path: "/v1/chat/completions", wantModel: "reasoner",
 			body:     `{"model":"auto","messages":` + chatMessages + `,"reasoning_effort":"low"}`,
 			wantBody: `{"model":"reasoner","messages":` + chatMessages + `,"reasoning_effort":"low"}`,
@@ -843,7 +843,7 @@ func TestDistributeAutoPicksByQualityAndUserPrice(t *testing.T) {
 	pool := map[int][]string{1: {"opus-x"}, 2: {"sonnet-x"}, 3: {"ghost-x"}}
 	body := `{"model":"auto","messages":[{"role":"user","content":"fix the bug"}]}`
 
-	t.Run("a trusted decision takes the cheaper of the close models and skips the unpriced one", func(t *testing.T) {
+	t.Run("a leaf task type takes the cheaper of the close models and skips the unpriced one", func(t *testing.T) {
 		prepare(t, pool, []string{"opus-x"})
 		t.Setenv("JEV_ENDPOINT", fakeJevFor(t, "code.build"))
 		_, originalModel, recorder := serveAutoRoutingRequest(t, "/v1/chat/completions", 9801, body)
@@ -1106,12 +1106,35 @@ func TestDistributeAutoAsksTheSchedulerPreviewWhenItDecides(t *testing.T) {
 		assert.Equal(t, []int{1, 2}, allowed["pick-x"], "the preview gets the same channel scope as the real schedule")
 		assert.Equal(t, []string{"code.build", "code.build"}, workloads, "preview and schedule carry the same workload")
 
+		assert.Equal(t, &autorouter.PreviewOutcome{Status: service.SchedulerPreviewAnswered}, result.Pick.Preview)
+
 		previewChannel["pick-x"] = 2
 		result, _, recorder = serveAutoRoutingResult(t, 9832, body)
 		require.Equal(t, http.StatusNoContent, recorder.Code, recorder.Body.String())
 		pick := pickOf(t, result)
 		assert.Equal(t, 1.0, pick.CostMultiplier, "the scheduler would pick channel 2, which has no discount")
 		assert.Equal(t, 2, pick.ChannelID)
+	})
+
+	t.Run("a channel new-api cannot price at is estimated natively and says why", func(t *testing.T) {
+		prepare(t)
+		// 预览说 ok 却没给 new-api 认得的渠道（previewChannel 没设，回 channel_id 0）。
+		result, _, recorder := serveAutoRoutingResult(t, 9837, body)
+		require.Equal(t, http.StatusNoContent, recorder.Code, recorder.Body.String())
+		pick := pickOf(t, result)
+		assert.Equal(t, autorouter.CostSourceExpected, pick.CostSource)
+		assert.Equal(t, previewUnusableChannel, pick.Preview)
+	})
+
+	t.Run("a model the scheduler has not loaded says so and is estimated natively", func(t *testing.T) {
+		prepare(t)
+		previewStatus["pick-x"] = "not_cached"
+		result, _, recorder := serveAutoRoutingResult(t, 9836, body)
+		require.Equal(t, http.StatusNoContent, recorder.Code, recorder.Body.String())
+		pick := pickOf(t, result)
+		assert.Equal(t, autorouter.CostSourceExpected, pick.CostSource)
+		assert.Equal(t, service.SchedulerPreviewNotCached, pick.Preview)
+		assert.Equal(t, &autorouter.PreviewOutcome{Status: service.SchedulerPreviewAnswered}, result.Pick.Preview)
 	})
 
 	t.Run("a model the scheduler cannot place is never picked", func(t *testing.T) {
@@ -1136,6 +1159,8 @@ func TestDistributeAutoAsksTheSchedulerPreviewWhenItDecides(t *testing.T) {
 		pick := pickOf(t, result)
 		assert.InDelta(t, 0.625, pick.CostMultiplier, 1e-9)
 		assert.Equal(t, autorouter.CostSourceExpected, pick.CostSource)
+		assert.Empty(t, pick.Preview, "the whole preview went unanswered; the reason is on the pick")
+		assert.Equal(t, &autorouter.PreviewOutcome{Status: service.SchedulerPreviewUnsupported}, result.Pick.Preview)
 	})
 }
 

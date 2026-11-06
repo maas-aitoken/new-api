@@ -21,16 +21,16 @@ import type { RouteLogDetail } from './types'
 export type RouteProcessStepId =
   | 'request'
   | 'judgment'
-  | 'trust'
+  | 'validity'
   | 'continuation'
   | 'mode'
   | 'selection'
   | 'effort'
   | 'result'
 
-// A trust check only means something when the classifier answered, or when its
+// A validity check only means something when the classifier answered, or when its
 // failure decided the route. The other judgments never reach one.
-const JUDGMENTS_WITH_TRUST = new Set([
+const JUDGMENTS_WITH_VALIDITY = new Set([
   'live',
   'live_failed',
   'cache',
@@ -48,8 +48,8 @@ export function routeProcessSteps(
   if (!trace) return ['result']
 
   const steps: RouteProcessStepId[] = ['request', 'judgment']
-  if (trace.trust && JUDGMENTS_WITH_TRUST.has(trace.judgment)) {
-    steps.push('trust')
+  if (trace.validity && JUDGMENTS_WITH_VALIDITY.has(trace.judgment)) {
+    steps.push('validity')
   }
   if (trace.continuation) steps.push('continuation')
   // The cost weight only matters to a request that compared quality and price. One
