@@ -393,6 +393,35 @@ func TestGetUserQuotaTrendByDimension(t *testing.T) {
 	})
 }
 
+// "_" is literal and soft-deleted accounts match.
+func TestMatchUsageUserIdsByNameOrEmail(t *testing.T) {
+	resetUsageAnalyticsState(t)
+	users := []User{
+		{Id: 1, Username: "san_zhang", Email: "san_zhang@corp.example", DisplayName: "张三丰", Password: "password-1", AffCode: "aff-1"},
+		{Id: 2, Username: "si_li", Email: "Si_Li@Example.com", DisplayName: "李四", Password: "password-2", AffCode: "aff-2"},
+		{Id: 3, Username: "sanxzhang", DisplayName: "三丰", Password: "password-3", AffCode: "aff-3"},
+		{Id: 4, Username: "gone", Email: "gone@corp.example", DisplayName: "离职", Password: "password-4", AffCode: "aff-4"},
+	}
+	for i := range users {
+		require.NoError(t, DB.Create(&users[i]).Error)
+	}
+	require.NoError(t, DB.Delete(&User{}, 4).Error)
+
+	for keyword, want := range map[string][]int{
+		"SAN_":         {1},
+		"si_li@":       {2},
+		"example.COM":  {2},
+		"三丰":           {1, 3},
+		" 李四 ":         {2},
+		"corp.example": {1, 4},
+		"nobody-there": {},
+	} {
+		ids, err := MatchUsageUserIds(keyword)
+		require.NoError(t, err, keyword)
+		assert.Equal(t, want, ids, keyword)
+	}
+}
+
 func TestGetUsageOrgOptionsListsDistinctPaths(t *testing.T) {
 	resetUsageAnalyticsState(t)
 	users := []User{
@@ -408,7 +437,7 @@ func TestGetUsageOrgOptionsListsDistinctPaths(t *testing.T) {
 	}
 	require.NoError(t, DB.Delete(&User{}, 5).Error)
 
-	options, err := GetUsageOrgOptions()
+	options, err := GetUsageOrgOptions(nil)
 	require.NoError(t, err)
 	assert.Equal(t, []UsageOrgOption{
 		{},
@@ -416,6 +445,16 @@ func TestGetUsageOrgOptionsListsDistinctPaths(t *testing.T) {
 		{BusinessUnit: "BU-B", Department: "Core", Team: "Web"},
 		{BusinessUnit: "BU-C", Department: "Ops", Team: "Ops"},
 	}, options)
+
+	scoped, err := GetUsageOrgOptions([]int{2, 3})
+	require.NoError(t, err)
+	assert.Equal(t, []UsageOrgOption{
+		{BusinessUnit: "BU-A", Department: "Core", Team: "Core"},
+		{BusinessUnit: "BU-B", Department: "Core", Team: "Web"},
+	}, scoped)
+	none, err := GetUsageOrgOptions([]int{})
+	require.NoError(t, err)
+	assert.Empty(t, none)
 }
 
 func TestGetUsageAnalyticsGroupByUserModel(t *testing.T) {

@@ -25,26 +25,26 @@ func TestFetchClickHouseLogDSN(t *testing.T) {
 			name = "multiple configs"
 		}
 		t.Run(name, func(t *testing.T) {
-			payload := `{"clickhouse":{"cht_maas_log":{"database":"cht_maas_log","host":"192.0.2.20","password":"p@ss:/?#","port":9000,"user":"maas_test"}` + extra + `}}`
+			payload := `{"clickhouse":{"cht_maas_log":{"database":"app_logs","host":"192.0.2.20","password":"p@ss:/?#","port":9000,"user":"log_writer"}` + extra + `}}`
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				assert.Equal(t, "/v1/kv/database/autom/maas/clickhouse/maas_logs", r.URL.Path)
+				assert.Equal(t, "/v1/kv/database/example/clickhouse/logs", r.URL.Path)
 				assert.Equal(t, "test-token", r.Header.Get("X-Consul-Token"))
 				assert.Empty(t, r.URL.RawQuery, "token must not be sent in the query string")
 				fmt.Fprint(w, consulResponse(payload))
 			}))
 			defer server.Close()
 
-			dsn, err := fetchClickHouseLogDSN(context.Background(), server.Client(), server.URL, "test-token", "database/autom/maas/clickhouse/maas_logs", func(context.Context, clickHouseConfig) error { return nil })
+			dsn, err := fetchClickHouseLogDSN(context.Background(), server.Client(), server.URL, "test-token", "database/example/clickhouse/logs", func(context.Context, clickHouseConfig) error { return nil })
 			require.NoError(t, err)
 			parsed, err := url.Parse(dsn)
 			require.NoError(t, err)
 			require.NotNil(t, parsed.User)
 			password, _ := parsed.User.Password()
 			assert.Equal(t, "clickhouse", parsed.Scheme)
-			assert.Equal(t, "maas_test", parsed.User.Username())
+			assert.Equal(t, "log_writer", parsed.User.Username())
 			assert.Equal(t, "p@ss:/?#", password)
 			assert.Equal(t, "192.0.2.20:9000", parsed.Host)
-			assert.Equal(t, "/cht_maas_log", parsed.Path)
+			assert.Equal(t, "/app_logs", parsed.Path)
 		})
 	}
 }
@@ -80,12 +80,12 @@ func TestFetchClickHouseLogDSNErrors(t *testing.T) {
 // environment, so the target entry is resolved rather than hardcoded.
 func TestSelectClickHouseConfigResolution(t *testing.T) {
 	sole := clickHouseConfig{Database: "sandbox_logs", Host: "192.0.2.30", Password: "s", Port: 9000, User: "u"}
-	dflt := clickHouseConfig{Database: "cht_maas_log", Host: "192.0.2.31", Password: "s", Port: 9000, User: "u"}
+	dflt := clickHouseConfig{Database: "app_logs", Host: "192.0.2.31", Password: "s", Port: 9000, User: "u"}
 
 	t.Run("sole entry under any name", func(t *testing.T) {
-		name, config, err := selectClickHouseConfig(map[string]clickHouseConfig{"sandbox_maas_log": sole})
+		name, config, err := selectClickHouseConfig(map[string]clickHouseConfig{"sandbox_logs_key": sole})
 		require.NoError(t, err)
-		assert.Equal(t, "sandbox_maas_log", name)
+		assert.Equal(t, "sandbox_logs_key", name)
 		assert.Equal(t, sole, config)
 	})
 
@@ -104,13 +104,13 @@ func TestConsulKVURL(t *testing.T) {
 		addr string
 		want string
 	}{
-		{addr: "consul-uc-a.intsig.net:8500", want: "http://consul-uc-a.intsig.net:8500/v1/kv/database/autom/maas/clickhouse/maas_logs"},
-		{addr: "http://consul-uc-a.intsig.net:8500", want: "http://consul-uc-a.intsig.net:8500/v1/kv/database/autom/maas/clickhouse/maas_logs"},
-		{addr: "https://consul-uc-a.intsig.net:8501/", want: "https://consul-uc-a.intsig.net:8501/v1/kv/database/autom/maas/clickhouse/maas_logs"},
-		{addr: "127.0.0.1:8500", want: "http://127.0.0.1:8500/v1/kv/database/autom/maas/clickhouse/maas_logs"},
+		{addr: "consul.example.internal:8500", want: "http://consul.example.internal:8500/v1/kv/database/example/clickhouse/logs"},
+		{addr: "http://consul.example.internal:8500", want: "http://consul.example.internal:8500/v1/kv/database/example/clickhouse/logs"},
+		{addr: "https://consul.example.internal:8501/", want: "https://consul.example.internal:8501/v1/kv/database/example/clickhouse/logs"},
+		{addr: "127.0.0.1:8500", want: "http://127.0.0.1:8500/v1/kv/database/example/clickhouse/logs"},
 	} {
 		t.Run(tt.addr, func(t *testing.T) {
-			got, err := consulKVURL(tt.addr, "database/autom/maas/clickhouse/maas_logs")
+			got, err := consulKVURL(tt.addr, "database/example/clickhouse/logs")
 			require.NoError(t, err)
 			assert.Equal(t, tt.want, got)
 		})
@@ -258,10 +258,10 @@ func TestFetchClickHouseLogDSNHostList(t *testing.T) {
 }
 
 func TestFetchClickHouseLogDSNConfiguredKey(t *testing.T) {
-	for _, key := range []string{"ch_maas_log", " ch_maas_log ", "missing"} {
+	for _, key := range []string{"prod_logs_key", " prod_logs_key ", "missing"} {
 		t.Run(key, func(t *testing.T) {
 			t.Setenv("CONSUL_CLICKHOUSE_CONFIG_KEY", key)
-			payload := `{"clickhouse":{"ch_maas_log":{"database":"prod_logs","host":"192.0.2.10,192.0.2.11","password":"secret","port":9000,"user":"logger"},"cht_maas_log":{"database":"test_logs","host":"localhost","password":"secret","port":9000,"user":"logger"}}}`
+			payload := `{"clickhouse":{"prod_logs_key":{"database":"prod_logs","host":"192.0.2.10,192.0.2.11","password":"secret","port":9000,"user":"logger"},"cht_maas_log":{"database":"test_logs","host":"localhost","password":"secret","port":9000,"user":"logger"}}}`
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				fmt.Fprint(w, consulResponse(payload))
 			}))
@@ -282,9 +282,9 @@ func TestFetchClickHouseLogDSNConfiguredKey(t *testing.T) {
 
 func TestSelectClickHouseConfigBlankKey(t *testing.T) {
 	t.Setenv("CONSUL_CLICKHOUSE_CONFIG_KEY", "  ")
-	name, _, err := selectClickHouseConfig(map[string]clickHouseConfig{"ch_maas_log": {}})
+	name, _, err := selectClickHouseConfig(map[string]clickHouseConfig{"prod_logs_key": {}})
 	require.NoError(t, err)
-	assert.Equal(t, "ch_maas_log", name)
+	assert.Equal(t, "prod_logs_key", name)
 }
 
 // ckdriver.OpenDB rejects pool limits passed through Options and returns a

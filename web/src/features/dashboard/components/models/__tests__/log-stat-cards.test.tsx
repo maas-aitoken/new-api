@@ -25,6 +25,7 @@ import { TooltipProvider } from '@/components/ui/tooltip'
 import type {
   DashboardFilters,
   UsageAnalyticsSummary,
+  UsageOrgFilter,
 } from '@/features/dashboard/types'
 import { ROLE } from '@/lib/roles'
 import { useAuthStore } from '@/stores/auth-store'
@@ -71,7 +72,7 @@ function respondWithSummary(summary: UsageAnalyticsSummary) {
 
 const queryClients: QueryClient[] = []
 
-function renderCards(role: number) {
+function renderCards(role: number, orgFilter?: UsageOrgFilter) {
   useAuthStore.getState().auth.setUser({ id: 1, username: 'tester', role })
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
@@ -80,7 +81,7 @@ function renderCards(role: number) {
   render(
     <QueryClientProvider client={queryClient}>
       <TooltipProvider>
-        <LogStatCards filters={FILTERS} />
+        <LogStatCards filters={FILTERS} orgFilter={orgFilter} />
       </TooltipProvider>
     </QueryClientProvider>
   )
@@ -143,6 +144,37 @@ describe('LogStatCards analytics cards', () => {
     expect(get).toHaveBeenCalledWith('/api/data/analytics', {
       params: expect.objectContaining({ group_by: 'summary' }),
     })
+  })
+
+  test('an organization filter scopes both the volume and the summary requests', async () => {
+    respondWithSummary(SUMMARY)
+    renderCards(ROLE.ADMIN, { business_unit: 'BU-A', department: '' })
+
+    const usersCard = screen.getByRole('group', { name: 'Active users' })
+    expect(await within(usersCard).findByText('7')).toBeInTheDocument()
+    const paramsOf = (url: string) =>
+      get.mock.calls
+        .filter(([calledUrl]) => calledUrl === url)
+        .map(([, config]) => config.params)
+    for (const params of [
+      ...paramsOf('/api/data'),
+      ...paramsOf('/api/data/analytics'),
+    ]) {
+      expect(params.business_unit).toBe('BU-A')
+      expect(params).not.toHaveProperty('department')
+    }
+    expect(paramsOf('/api/data')).toHaveLength(1)
+  })
+
+  test('regular users never send an organization filter', async () => {
+    respondWithSummary(SUMMARY)
+    renderCards(ROLE.USER, { business_unit: 'BU-A' })
+
+    const successCard = screen.getByRole('group', { name: 'Success rate' })
+    expect(await within(successCard).findByText('95%')).toBeInTheDocument()
+    for (const [, config] of get.mock.calls) {
+      expect(config.params).not.toHaveProperty('business_unit')
+    }
   })
 
   test('regular users query their own summary and get no active users card', async () => {

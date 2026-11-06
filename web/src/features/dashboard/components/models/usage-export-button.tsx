@@ -26,6 +26,7 @@ import { getUsageAnalytics } from '@/features/dashboard/api'
 import {
   getDashboardDurationMinutes,
   getDefaultDays,
+  orgFilterParams,
 } from '@/features/dashboard/lib'
 import {
   buildUsageSheets,
@@ -33,8 +34,12 @@ import {
   USAGE_EXPORT_GROUPINGS,
   usageExportFileName,
   type UsageExportDatasets,
+  type UsageExportGroupBy,
 } from '@/features/dashboard/lib/usage-export'
-import type { DashboardFilters } from '@/features/dashboard/types'
+import type {
+  DashboardFilters,
+  UsageOrgFilter,
+} from '@/features/dashboard/types'
 import { computeTimeRange } from '@/lib/time'
 
 const XLSX_MIME_TYPE =
@@ -42,6 +47,8 @@ const XLSX_MIME_TYPE =
 
 interface UsageExportButtonProps {
   filters: DashboardFilters
+  org?: UsageOrgFilter
+  groupings?: readonly UsageExportGroupBy[]
 }
 
 export function UsageExportButton(props: UsageExportButtonProps) {
@@ -51,16 +58,18 @@ export function UsageExportButton(props: UsageExportButtonProps) {
   const handleExport = async () => {
     setExporting(true)
     try {
+      const groupings = props.groupings ?? USAGE_EXPORT_GROUPINGS
       const timeRange = computeTimeRange(
         getDefaultDays(props.filters.time_granularity),
         props.filters.start_timestamp,
         props.filters.end_timestamp
       )
       const entries = await Promise.all(
-        USAGE_EXPORT_GROUPINGS.map(async (groupBy) => {
+        groupings.map(async (groupBy) => {
           const response = await getUsageAnalytics(
             {
               ...timeRange,
+              ...orgFilterParams(props.org ?? {}),
               group_by: groupBy,
               username: props.filters.username || undefined,
             },
@@ -73,7 +82,11 @@ export function UsageExportButton(props: UsageExportButtonProps) {
       const datasets = Object.fromEntries(entries) as UsageExportDatasets
 
       const bytes = await buildUsageWorkbook(
-        buildUsageSheets(datasets, getDashboardDurationMinutes(props.filters))
+        buildUsageSheets(
+          datasets,
+          getDashboardDurationMinutes(props.filters),
+          groupings
+        )
       )
       const url = URL.createObjectURL(
         new Blob([bytes], { type: XLSX_MIME_TYPE })

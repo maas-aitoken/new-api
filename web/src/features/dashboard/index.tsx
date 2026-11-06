@@ -40,6 +40,7 @@ import { ModelsChartPreferences } from './components/models/models-chart-prefere
 import { ModelsFilter } from './components/models/models-filter-dialog'
 import { UsageExportButton } from './components/models/usage-export-button'
 import { OverviewDashboard } from './components/overview/overview-dashboard'
+import { UserAnalyticsToolbar } from './components/users/user-analytics-toolbar'
 import { DEFAULT_TIME_GRANULARITY } from './constants'
 import {
   buildDefaultDashboardFilters,
@@ -48,6 +49,7 @@ import {
   getSavedGranularity,
   saveChartPreferences,
 } from './lib'
+import { USER_USAGE_EXPORT_GROUPINGS } from './lib/usage-export'
 import {
   type DashboardSectionId,
   DASHBOARD_DEFAULT_SECTION,
@@ -236,9 +238,20 @@ export function Dashboard() {
         timeGranularity: granularity,
         selectedRange: getDefaultDays(granularity),
         topUserLimit: 10,
+        dimension: 'user',
+        org: {},
       }
     }
   )
+  // Shared by the user page cards and export.
+  const userDashboardFilters = useMemo<DashboardFilters>(() => {
+    const { start, end } = getRollingDateRange(userChartsFilters.selectedRange)
+    return {
+      start_timestamp: start,
+      end_timestamp: end,
+      time_granularity: userChartsFilters.timeGranularity,
+    }
+  }, [userChartsFilters.selectedRange, userChartsFilters.timeGranularity])
   const [flowSensitiveVisible, setFlowSensitiveVisible] = useState(true)
   const [iselfVisible, setIselfVisible] = useState(false)
 
@@ -323,6 +336,14 @@ export function Dashboard() {
         {isAdmin && <UsageExportButton filters={modelFilters} />}
       </>
     ) : null
+  const userActions =
+    activeSection === 'users' && isAdmin ? (
+      <UsageExportButton
+        filters={userDashboardFilters}
+        org={userChartsFilters.org}
+        groupings={USER_USAGE_EXPORT_GROUPINGS}
+      />
+    ) : null
   const flowActions =
     activeSection === 'flow' ? (
       <>
@@ -374,7 +395,7 @@ export function Dashboard() {
           {t('iSelf data')}
         </Button>
       )}
-      {modelActions ?? flowActions}
+      {modelActions ?? flowActions ?? userActions}
     </>
   )
 
@@ -469,11 +490,27 @@ export function Dashboard() {
           )}
           {activeSection === 'users' && (
             <>
-              <FadeIn>
+              <UserAnalyticsToolbar
+                filters={userChartsFilters}
+                onFiltersChange={setUserChartsFilters}
+                showOrgFilter={isAdmin}
+              />
+              {isAdmin && (
+                <FadeIn>
+                  <Suspense fallback={<LogStatCardsFallback />}>
+                    <LazyLogStatCards
+                      filters={userDashboardFilters}
+                      orgFilter={userChartsFilters.org}
+                    />
+                  </Suspense>
+                </FadeIn>
+              )}
+              <FadeIn delay={0.05}>
                 <Suspense fallback={<ModelChartsFallback />}>
                   <LazyUserCharts
                     filters={userChartsFilters}
                     onFiltersChange={setUserChartsFilters}
+                    showDimensions={isAdmin}
                   />
                 </Suspense>
               </FadeIn>
@@ -482,6 +519,7 @@ export function Dashboard() {
                   <Suspense fallback={<ModelMetricsFallback />}>
                     <LazyUserUsageTable
                       selectedRange={userChartsFilters.selectedRange}
+                      org={userChartsFilters.org}
                     />
                   </Suspense>
                 </FadeIn>

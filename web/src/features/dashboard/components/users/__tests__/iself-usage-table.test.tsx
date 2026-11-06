@@ -23,6 +23,8 @@ const row: IselfUsageRow = {
   quota: 150,
   input_tokens: 30,
   completion_tokens: 15,
+  cache_read_tokens: 12,
+  cache_write_tokens: 6,
   token_used: 45,
   last_called_at: 1900,
 }
@@ -108,6 +110,43 @@ test('pending requests show skeletons and failed requests show an error instead 
   expect(screen.queryByText('No iSelf usage in this time range')).toBeNull()
   reject(new Error('offline'))
   expect(await screen.findByText('Failed to load')).toBeInTheDocument()
+})
+
+test('the cache hit rate column shows cache reads over input by default', async () => {
+  get.mockResolvedValue({ data: { success: true, data: [row] } })
+  renderTable()
+  await screen.findByText('alice@example.com')
+
+  expect(
+    screen.getByRole('columnheader', { name: 'Cache hit rate' })
+  ).toBeInTheDocument()
+  expect(screen.getByText('40%')).toBeInTheDocument()
+})
+
+test('cache read and write columns stay hidden until enabled from the View menu', async () => {
+  get.mockResolvedValue({ data: { success: true, data: [row] } })
+  const user = userEvent.setup()
+  renderTable()
+  await screen.findByText('alice@example.com')
+  expect(screen.queryByRole('columnheader', { name: 'Cache Read' })).toBeNull()
+  expect(screen.queryByRole('columnheader', { name: 'Cache Write' })).toBeNull()
+
+  await user.click(screen.getByRole('button', { name: 'View' }))
+  await user.click(
+    await screen.findByRole('menuitemcheckbox', { name: 'Cache Read' })
+  )
+  await user.click(
+    await screen.findByRole('menuitemcheckbox', { name: 'Cache Write' })
+  )
+
+  expect(
+    screen.getByRole('columnheader', { name: 'Cache Read' })
+  ).toBeInTheDocument()
+  expect(
+    screen.getByRole('columnheader', { name: 'Cache Write' })
+  ).toBeInTheDocument()
+  expect(screen.getByText('12')).toBeInTheDocument()
+  expect(screen.getByText('6')).toBeInTheDocument()
 })
 
 test('sorting the email column orders the recorded emails', async () => {

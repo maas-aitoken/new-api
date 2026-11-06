@@ -9,6 +9,7 @@ import (
 	"unicode"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/system_setting"
 	"github.com/gin-gonic/gin"
@@ -65,7 +66,7 @@ func SsoHoidcCallback(c *gin.Context) {
 	// Reporting line and org ids are left to the SSO user sync task.
 	user, err := service.ProvisionSsoUser(
 		strconv.Itoa(userInfo.Uid), userInfo.Email, userInfo.Name, userInfo.Avatar, userInfo.DepartmentTreePathStr,
-		"", "", 0, 0, 0, 0, 0, 0,
+		"", "", 0, 0, 0, 0, 0, nil,
 		common.HoidcAllowSignup,
 	)
 	if err != nil {
@@ -89,6 +90,7 @@ func SsoHoidcCallback(c *gin.Context) {
 	service.WriteRefreshCookie(c, bundle.RefreshToken)
 
 	c.Set("login_method", "sso_hoidc")
+	model.UpdateUserLastLoginAt(user.Id)
 	recordLoginAudit(user, c)
 
 	// The frontends restore the session from the refresh cookie, so the access

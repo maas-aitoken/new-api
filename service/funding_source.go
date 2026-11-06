@@ -74,6 +74,17 @@ func (w *WalletFunding) Refund() error {
 }
 
 // ---------------------------------------------------------------------------
+// BusinessFunding — 额度档位下的业务场景：只记录费用
+// ---------------------------------------------------------------------------
+
+type BusinessFunding struct{}
+
+func (BusinessFunding) Source() string       { return BillingSourceBusiness }
+func (BusinessFunding) PreConsume(int) error { return nil }
+func (BusinessFunding) Settle(int) error     { return nil }
+func (BusinessFunding) Refund() error        { return nil }
+
+// ---------------------------------------------------------------------------
 // SubscriptionFunding — 订阅资金来源实现
 // ---------------------------------------------------------------------------
 
@@ -81,6 +92,7 @@ type SubscriptionFunding struct {
 	requestId      string
 	userId         int
 	modelName      string
+	autoRouted     bool  // 请求由 auto 模型选路；额度档位用完后仍可使用
 	amount         int64 // 预扣的订阅额度（subConsume）
 	subscriptionId int
 	preConsumed    int64
@@ -95,7 +107,7 @@ func (s *SubscriptionFunding) Source() string { return BillingSourceSubscription
 
 func (s *SubscriptionFunding) PreConsume(_ int) error {
 	// amount 参数被忽略，使用内部 s.amount（已在构造时根据 preConsumedQuota 计算）
-	res, err := model.PreConsumeUserSubscription(s.requestId, s.userId, s.modelName, 0, s.amount)
+	res, err := model.PreConsumeUserSubscription(s.requestId, s.userId, s.modelName, 0, s.amount, s.autoRouted)
 	if err != nil {
 		return err
 	}

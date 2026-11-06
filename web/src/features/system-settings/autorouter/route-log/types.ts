@@ -143,8 +143,10 @@ export type RouteTraceReason = {
   examples?: string[]
 }
 
-export type RouteTraceTrust = {
-  reason?: string
+export type RouteTraceValidity = {
+  /** Empty for a valid decision: 'no_decision', 'no_difficulty' or 'invalid_task_type' otherwise. */
+  error?: string
+  /** Rankings tried, most specific first; none when the task type is unknown. */
   profiles?: string[]
 }
 
@@ -192,7 +194,7 @@ export type RouteTrace = {
   request: RouteTraceRequest
   judgment: string
   unroutable?: { reasons: RouteTraceReason[] }
-  trust?: RouteTraceTrust
+  validity?: RouteTraceValidity
   mode?: RouteTraceMode
   continuation?: RouteTraceContinuation
   effort?: RouteTraceEffort

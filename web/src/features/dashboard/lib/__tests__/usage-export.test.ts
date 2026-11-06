@@ -22,6 +22,7 @@ import type { UsageAnalyticsRow } from '../../types'
 import {
   buildUsageSheets,
   buildUsageWorkbook,
+  USER_USAGE_EXPORT_GROUPINGS,
   usageExportFileName,
   type UsageExportDatasets,
   type UsageExportSheet,
@@ -84,17 +85,84 @@ describe('buildUsageSheets', () => {
 
   test('leads each sheet with the dimensions of its grouping', () => {
     const sheets = buildUsageSheets(datasets(), 60)
+    const userDimensions = [
+      'User ID',
+      'Username',
+      'Display Name',
+      'Email',
+      'Business unit',
+      'Department',
+      'Team',
+    ]
 
     expect(
       sheets.map((sheet) =>
-        sheet.columns.slice(0, 4).map((column) => column.header)
+        sheet.columns
+          .slice(
+            0,
+            sheet.columns.findIndex((c) => c.header === 'Requests')
+          )
+          .map((column) => column.header)
       )
     ).toEqual([
-      ['Model', 'Users', 'Requests', 'Amount'],
-      ['User ID', 'Username', 'Display Name', 'Requests'],
-      ['User ID', 'Username', 'Display Name', 'Model'],
-      ['Channel ID', 'Channel', 'Model', 'Requests'],
+      ['Model', 'Users'],
+      userDimensions,
+      [...userDimensions, 'Model'],
+      ['Channel ID', 'Channel', 'Model'],
     ])
+  })
+
+  test('user analytics groupings export organization rollups before users', () => {
+    const sheets = buildUsageSheets(
+      {
+        business_unit: [
+          usageRow({ business_unit: 'BU-A', user_count: 2, request_count: 9 }),
+          usageRow({ business_unit: '', request_count: 1 }),
+        ],
+        department: [
+          usageRow({
+            business_unit: 'BU-A',
+            department: 'Core',
+            user_count: 2,
+          }),
+        ],
+        user: [
+          usageRow({
+            user_id: 1,
+            username: 'alice',
+            email: 'alice@example.com',
+            business_unit: 'BU-A',
+            department: 'Core',
+            team: '',
+          }),
+        ],
+      },
+      60,
+      USER_USAGE_EXPORT_GROUPINGS
+    )
+
+    expect(sheets.map((sheet) => sheet.name)).toEqual([
+      'Business units',
+      'Departments',
+      'Teams',
+      'Users',
+      'User x Model',
+    ])
+    const [businessUnits, departments, teams, users] = sheets
+    expect(businessUnits.columns.slice(0, 3).map((c) => c.header)).toEqual([
+      'Business unit',
+      'Users',
+      'Requests',
+    ])
+    expect(businessUnits.rows.map((row) => row.slice(0, 3))).toEqual([
+      ['BU-A', 2, 9],
+      ['Unassigned', null, 1],
+    ])
+    expect(departments.rows[0].slice(0, 3)).toEqual(['BU-A', 'Core', 2])
+    expect(teams.rows).toEqual([])
+    expect(cellByHeader(users, 0, 'Email')).toBe('alice@example.com')
+    expect(cellByHeader(users, 0, 'Department')).toBe('Core')
+    expect(cellByHeader(users, 0, 'Team')).toBeNull()
   })
 
   test('exports the formatted amount without raw quota in every sheet', () => {

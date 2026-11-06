@@ -76,7 +76,7 @@ const routed: RouteLog = {
     trace: {
       request: { protocol: 'anthropic', human_turns: 2, text_runes: 80 },
       judgment: 'live',
-      trust: { profiles: ['code.build', 'code'] },
+      validity: { profiles: ['code.build', 'code'] },
       effort: { difficulty: 3, base: 'high', threshold: 0.5, benefit: 0.2 },
       ladder: [
         {
@@ -121,7 +121,7 @@ test('a recorded log shows its steps in order, from the request to the result', 
   const titles = [
     'Request',
     'Classification',
-    'Trust check',
+    'Validity check',
     'Model selection',
     'Reasoning effort',
     'Result',
@@ -385,7 +385,7 @@ test('a continued request names the previous model and says its effort was held'
       trace: {
         request: { human_turns: 3, text_runes: 20, previous_runes: 30, truncated: true },
         judgment: 'cache',
-        trust: { profiles: ['code.build'] },
+        validity: { profiles: ['code.build'] },
         continuation: { previous: 'coder', task_change: 0.2, threshold: 0.5, continued: true },
         effort: { difficulty: 1, base: 'low', threshold: 0.5, floored: true, benefit: 0.1 },
       },
@@ -473,7 +473,7 @@ test.each([
   }
 )
 
-test('an untrusted classification says why and that the previous route is kept', async () => {
+test('a classifier failure says there was no decision and that the default models were used', async () => {
   mockLog({
     ...logItem,
     detail: {
@@ -485,7 +485,7 @@ test('an untrusted classification says why and that the previous route is kept',
       trace: {
         request: { human_turns: 1, text_runes: 9 },
         judgment: 'live_failed',
-        trust: { reason: 'no_decision' },
+        validity: { error: 'no_decision' },
         ladder: [{ profile: 'general', models: 2, outcome: 'first_available', model: 'general' }],
       },
     },
@@ -495,13 +495,32 @@ test('an untrusted classification says why and that the previous route is kept',
   expect(await screen.findByText('Classifier failed')).toBeVisible()
   expect(screen.getByText('jev failed: timeout')).toBeVisible()
   expect(screen.getByText('The classifier gave no answer')).toBeVisible()
-  expect(
-    screen.getByText('An untrusted answer keeps the previous route, or uses the default models.')
-  ).toBeVisible()
+  expect(screen.queryByText('Valid')).not.toBeInTheDocument()
   expect(screen.getByText('First servable model in list order')).toBeVisible()
 })
 
-test('an unknown task type says so and keeps the previous route', async () => {
+test.each([
+  ['no_difficulty', 'The answer carries no difficulty'],
+  ['invalid_task_type', 'The task type is none of the options'],
+])('an invalid answer with error %s says why', async (error, label) => {
+  mockLog({
+    ...logItem,
+    detail: {
+      trace: {
+        request: { human_turns: 1, text_runes: 9 },
+        judgment: 'live',
+        validity: { error },
+        ladder: [{ profile: 'general', models: 2, outcome: 'first_available', model: 'general' }],
+      },
+    },
+  })
+  renderDrawer({})
+
+  expect(await screen.findByText(label)).toBeVisible()
+  expect(screen.queryByText('Valid')).not.toBeInTheDocument()
+})
+
+test('an unknown task type is a valid answer with no ranking, and the previous route is kept', async () => {
   mockLog({
     ...logItem,
     task_type: 'unknown',
@@ -511,18 +530,39 @@ test('an unknown task type says so and keeps the previous route', async () => {
       trace: {
         request: { human_turns: 2, text_runes: 2, previous_runes: 30 },
         judgment: 'live',
-        trust: { reason: 'unknown_task' },
+        validity: {},
         ladder: [{ profile: 'code.build', outcome: 'inherited', model: 'coder' }],
       },
     },
   })
   renderDrawer({})
 
-  expect(await screen.findByText('The task type is unknown')).toBeVisible()
-  expect(
-    screen.getByText('An untrusted answer keeps the previous route, or uses the default models.')
-  ).toBeVisible()
+  expect(await screen.findByText('Valid')).toBeVisible()
+  expect(screen.queryByText('Rankings to try, most specific first')).not.toBeInTheDocument()
   expect(screen.getByText('Kept the previous route')).toBeVisible()
+})
+
+test('an effort held at the previous one and then raised by the benefit lists the hold first', async () => {
+  mockLog({
+    ...logItem,
+    task_type: 'unknown',
+    effort: 'xhigh',
+    detail: {
+      result: { resolved_model: 'coder', model: 'coder', effort: 'xhigh', source: 'jev', effort_override: true },
+      trace: {
+        request: { human_turns: 2, text_runes: 40, previous_runes: 30 },
+        judgment: 'live',
+        validity: {},
+        effort: { difficulty: 1, base: 'low', threshold: 0.5, benefit: 0.7, floored: true, upgraded: true },
+        ladder: [{ profile: 'code.build', outcome: 'inherited', model: 'coder' }],
+      },
+    },
+  })
+  renderDrawer({})
+
+  const held = await screen.findByText('Held at the previous effort')
+  const raised = screen.getByText('Raised one step by the larger-model benefit')
+  expect(held.compareDocumentPosition(raised) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
 })
 
 const tiers = { capability: 0, balanced: 0.07, cost: 0.3 }
@@ -550,7 +590,7 @@ function adaptiveLog(mode: RouteTraceMode): RouteLog {
       trace: {
         request: { protocol: 'chat', human_turns: 1, text_runes: 30 },
         judgment: 'live',
-        trust: { profiles: ['code.build'] },
+        validity: { profiles: ['code.build'] },
         mode,
         ladder: [{ profile: 'code.build', models: 2, outcome: 'compared', model: 'haiku' }],
       },
@@ -558,7 +598,7 @@ function adaptiveLog(mode: RouteTraceMode): RouteLog {
   }
 }
 
-test('an adaptive request shows how its cost weight was judged, between the trust check and the model selection', async () => {
+test('an adaptive request shows how its cost weight was judged, between the validity check and the model selection', async () => {
   mockLog(
     adaptiveLog({
       shares: { capability: 0.1, balanced: 0.55, cost: 0.35 },
@@ -570,7 +610,7 @@ test('an adaptive request shows how its cost weight was judged, between the trus
   renderDrawer({})
 
   expect(await screen.findByText('Judged from the request')).toBeVisible()
-  const titles = ['Trust check', 'Cost preference', 'Model selection']
+  const titles = ['Validity check', 'Cost preference', 'Model selection']
   titles.slice(1).forEach((title, index) => {
     expect(
       screen.getByText(titles[index]).compareDocumentPosition(screen.getByText(title)) &

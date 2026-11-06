@@ -9,6 +9,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/logger"
+	"github.com/QuantumNous/new-api/observability"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relay/helper"
 	"github.com/QuantumNous/new-api/relaykit/dto"
@@ -94,6 +95,11 @@ func GeminiHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *typ
 		if err != nil {
 			return types.NewErrorWithStatusCode(err, types.ErrorCodeReadRequestBodyFailed, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
 		}
+		if otelRuntime := observability.FromContext(c.Request.Context()); otelRuntime != nil {
+			if storedBytes, bytesErr := storage.Bytes(); bytesErr == nil {
+				otelRuntime.RecordInput(c.Request.Context(), storedBytes, info.GetFinalRequestRelayFormat())
+			}
+		}
 		requestBody = common.NewReplayableBodyReader(storage)
 	} else {
 		// 使用 ConvertGeminiRequest 转换请求格式
@@ -113,6 +119,9 @@ func GeminiHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *typ
 			if err != nil {
 				return newAPIErrorFromParamOverride(err)
 			}
+		}
+		if otelRuntime := observability.FromContext(c.Request.Context()); otelRuntime != nil {
+			otelRuntime.RecordInput(c.Request.Context(), jsonData, info.GetFinalRequestRelayFormat())
 		}
 
 		logger.LogDebug(c, "Gemini request body: %s", jsonData)
