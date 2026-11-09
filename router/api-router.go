@@ -48,6 +48,7 @@ func SetApiRouter(router *gin.Engine) {
 		{
 			perfMetricsRoute.GET("/summary", controller.GetPerfMetricsSummary)
 			perfMetricsRoute.GET("/availability", middleware.UserAuth(), controller.GetModelAvailability)
+			perfMetricsRoute.GET("/health", middleware.UserAuth(), controller.GetModelHealth)
 			perfMetricsRoute.GET("", controller.GetPerfMetrics)
 		}
 		apiRouter.GET("/rankings", middleware.HeaderNavModuleAuth("rankings"), controller.GetRankings)

@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -37,13 +38,13 @@ func seedUsageAnalyticsFixture(t *testing.T) {
 	t.Helper()
 	// Both users sit in a "Core" department, under different business units.
 	require.NoError(t, DB.Create(&User{Id: 1, Username: "alice", Password: "password-1", DisplayName: "Alice A", AffCode: "aff-alice",
-		Email: "alice@example.com", Status: common.UserStatusEnabled,
+		Email: "alice@example.com", Status: common.UserStatusEnabled, Avatar: "https://avatar.example.com/alice.png",
 		SecondaryOrganization: "BU-A", TertiaryOrganization: "Core", Team: "Core", OrgStr: "BU-A/Core"}).Error)
 	require.NoError(t, DB.Create(&User{Id: 2, Username: "bob", Password: "password-2", AffCode: "aff-bob",
 		Email: "bob@example.com", Status: common.UserStatusResigned,
 		SecondaryOrganization: "BU-B", TertiaryOrganization: "Core", Team: "Web", OrgStr: "BU-B/Core/Web"}).Error)
-	require.NoError(t, DB.Create(&Channel{Id: 1, Name: "east", Key: "k1"}).Error)
-	require.NoError(t, DB.Create(&Channel{Id: 2, Name: "west", Key: "k2"}).Error)
+	require.NoError(t, DB.Create(&Channel{Id: 1, Name: "east", Type: constant.ChannelTypeAnthropic, Key: "k1"}).Error)
+	require.NoError(t, DB.Create(&Channel{Id: 2, Name: "west", Type: constant.ChannelTypeOpenAI, Key: "k2"}).Error)
 
 	rows := []QuotaData{
 		{UserID: 1, Username: "alice", ModelName: "gpt-a", ChannelID: 1, CreatedAt: analyticsH1, Count: 5, Quota: 500, TokenUsed: 1000,
@@ -467,6 +468,7 @@ func TestGetUsageAnalyticsGroupByUserModel(t *testing.T) {
 	type userModelRow struct {
 		username     string
 		displayName  string
+		avatar       string
 		modelName    string
 		requestCount int64
 		quota        int64
@@ -476,19 +478,21 @@ func TestGetUsageAnalyticsGroupByUserModel(t *testing.T) {
 		require.NotNil(t, row.UserID)
 		require.NotNil(t, row.Username)
 		require.NotNil(t, row.DisplayName)
+		require.NotNil(t, row.Avatar)
 		require.NotNil(t, row.ModelName)
-		got = append(got, userModelRow{*row.Username, *row.DisplayName, *row.ModelName, row.RequestCount, row.Quota})
+		got = append(got, userModelRow{*row.Username, *row.DisplayName, *row.Avatar, *row.ModelName, row.RequestCount, row.Quota})
 	}
+	const aliceAvatar = "https://avatar.example.com/alice.png"
 	assert.Equal(t, []userModelRow{
-		{username: "alice", displayName: "Alice A", modelName: "gpt-a", requestCount: 5, quota: 500},
+		{username: "alice", displayName: "Alice A", avatar: aliceAvatar, modelName: "gpt-a", requestCount: 5, quota: 500},
 		{username: "bob", modelName: "gpt-a", requestCount: 7, quota: 350},
-		{username: "alice", displayName: "Alice A", modelName: "gpt-b", requestCount: 3, quota: 200},
+		{username: "alice", displayName: "Alice A", avatar: aliceAvatar, modelName: "gpt-b", requestCount: 3, quota: 200},
 		{username: "bob", modelName: "gpt-b", requestCount: 2, quota: 80},
 		{username: "carol", modelName: "gpt-c"},
 	}, got)
 }
 
-func TestGetUsageAnalyticsGroupByModelChannelJoinsChannelName(t *testing.T) {
+func TestGetUsageAnalyticsGroupByModelChannelJoinsChannel(t *testing.T) {
 	resetUsageAnalyticsState(t)
 	seedUsageAnalyticsFixture(t)
 
@@ -499,6 +503,7 @@ func TestGetUsageAnalyticsGroupByModelChannelJoinsChannelName(t *testing.T) {
 		modelName    string
 		channelID    int
 		channelName  string
+		channelType  int
 		requestCount int64
 		failedCount  int64
 	}
@@ -507,16 +512,18 @@ func TestGetUsageAnalyticsGroupByModelChannelJoinsChannelName(t *testing.T) {
 		require.NotNil(t, row.ModelName)
 		require.NotNil(t, row.ChannelID)
 		require.NotNil(t, row.ChannelName)
+		require.NotNil(t, row.ChannelType)
 		assert.Nil(t, row.UserID)
 		assert.Nil(t, row.Username)
-		got = append(got, modelChannelRow{*row.ModelName, *row.ChannelID, *row.ChannelName, row.RequestCount, row.FailedCount})
+		got = append(got, modelChannelRow{*row.ModelName, *row.ChannelID, *row.ChannelName, *row.ChannelType, row.RequestCount, row.FailedCount})
 	}
+	anthropic, openAI := constant.ChannelTypeAnthropic, constant.ChannelTypeOpenAI
 	assert.Equal(t, []modelChannelRow{
-		{modelName: "gpt-a", channelID: 1, channelName: "east", requestCount: 8, failedCount: 1},
-		{modelName: "gpt-a", channelID: 2, channelName: "west", requestCount: 4},
-		{modelName: "gpt-b", channelID: 2, channelName: "west", requestCount: 3},
-		{modelName: "gpt-b", channelID: 1, channelName: "east", requestCount: 2},
-		// Missing channels retain an empty name.
+		{modelName: "gpt-a", channelID: 1, channelName: "east", channelType: anthropic, requestCount: 8, failedCount: 1},
+		{modelName: "gpt-a", channelID: 2, channelName: "west", channelType: openAI, requestCount: 4},
+		{modelName: "gpt-b", channelID: 2, channelName: "west", channelType: openAI, requestCount: 3},
+		{modelName: "gpt-b", channelID: 1, channelName: "east", channelType: anthropic, requestCount: 2},
+		// Missing channels retain an empty name and type 0.
 		{modelName: "gpt-c", channelID: 9, channelName: "", failedCount: 2},
 	}, got)
 }
