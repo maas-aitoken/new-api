@@ -327,6 +327,12 @@ func InitResources() error {
 		}
 	}
 
+	// 一次请求加载 Consul 初始配置，优先于环境变量；读取失败时回退环境变量
+	logDSN, err := common.LoadConsulConfig()
+	if err != nil {
+		return fmt.Errorf("load log database configuration: %w", err)
+	}
+
 	// 加载环境变量
 	common.InitEnv()
 
@@ -337,10 +343,6 @@ func InitResources() error {
 
 	service.InitHttpClient()
 
-	logDSN, err := common.LoadLogSQLDSN()
-	if err != nil {
-		return fmt.Errorf("load log database configuration: %w", err)
-	}
 	// Initialize SQL Database
 	err = model.InitDB()
 	if err != nil {
