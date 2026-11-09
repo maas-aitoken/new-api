@@ -26,6 +26,7 @@ import (
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting"
+	"github.com/QuantumNous/new-api/setting/autorouter_setting"
 	"github.com/QuantumNous/new-api/setting/config"
 	"github.com/QuantumNous/new-api/setting/model_setting"
 	"github.com/alicebob/miniredis/v2"
@@ -226,6 +227,59 @@ func TestResponsesWSRequestRunnerRejectsRevokedCredentials(t *testing.T) {
 			assert.Equal(t, tc.status, apiError.StatusCode)
 			assert.False(t, called)
 			assert.NotContains(t, apiError.Error(), token.Key)
+		})
+	}
+}
+
+// Responses WebSocket 自己选渠道、按客户端写的模型直接调，智能路由 key 在这里写具体模型就绕开了 auto，
+// 所以平台开着 auto 时握手就拒绝（普通 HTTP 403，不升级）；锁定模型 key、平台关了 auto 时照常升级。
+func TestResponsesWebSocketRefusesSmartRoutingKeysWhileAutoIsOn(t *testing.T) {
+	require.NoError(t, i18n.Init())
+	routerSetting := autorouter_setting.GetAutoRouterSetting()
+	for _, tc := range []struct {
+		name    string
+		mode    common.TokenRoutingMode
+		autoOn  bool
+		refused bool
+	}{
+		{name: "smart key, auto on", mode: common.TokenRoutingModeSmart, autoOn: true, refused: true},
+		{name: "locked key, auto on", mode: common.TokenRoutingModeFixed, autoOn: true},
+		{name: "smart key, auto off", mode: common.TokenRoutingModeSmart, autoOn: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, token := setupResponsesWSRequestTest(t)
+			require.NoError(t, model.DB.Model(token).Updates(map[string]any{"scene": "office", "routing_mode": string(tc.mode)}).Error)
+			saved := routerSetting.Enabled
+			routerSetting.Enabled = tc.autoOn
+			t.Cleanup(func() { routerSetting.Enabled = saved })
+
+			done := make(chan struct{})
+			engine := gin.New()
+			engine.GET("/v1/responses", middleware.TokenAuth(), func(c *gin.Context) {
+				defer close(done)
+				ResponsesWebSocket(c)
+			})
+			gateway := httptest.NewServer(engine)
+			defer gateway.Close()
+			client, response, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(gateway.URL, "http")+"/v1/responses",
+				http.Header{"Authorization": []string{"Bearer sk-" + token.Key}})
+			if tc.refused {
+				require.ErrorIs(t, err, websocket.ErrBadHandshake)
+				require.NotNil(t, response)
+				body, readErr := io.ReadAll(response.Body)
+				require.NoError(t, readErr)
+				assert.Equal(t, http.StatusForbidden, response.StatusCode)
+				assert.Contains(t, string(body), "WebSocket")
+			} else {
+				require.NoError(t, err)
+				assert.Equal(t, http.StatusSwitchingProtocols, response.StatusCode)
+				require.NoError(t, client.Close())
+			}
+			select {
+			case <-done:
+			case <-time.After(5 * time.Second):
+				t.Fatal("the websocket handler did not return")
+			}
 		})
 	}
 }

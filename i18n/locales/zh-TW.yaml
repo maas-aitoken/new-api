@@ -23,6 +23,7 @@ distributor.token_no_model_access: "該令牌無權存取任何模型"
 distributor.token_model_forbidden: "該令牌無權存取模型 {{.Model}}"
 distributor.token_auto_forbidden: "該令牌為鎖定模型，不能使用智慧路由（model: auto），請指定具體模型名稱，或把金鑰改成智慧路由"
 distributor.smart_key_gemini_unsupported: "該令牌為智慧路由，不支援 Gemini 原生格式，請改用 /v1/chat/completions、/v1/responses 或 /v1/messages，或使用鎖定模型的令牌"
+distributor.smart_key_completions_unsupported: "該令牌為智慧路由，不支援 /v1/completions，請改用 /v1/chat/completions、/v1/responses 或 /v1/messages，或使用鎖定模型的令牌"
 distributor.model_name_required: "未指定模型名稱，模型名稱不能為空"
 distributor.invalid_playground_request: "無效的playground請求，{{.Error}}"
 distributor.group_access_denied: "無權存取該分組"
@@ -42,6 +43,7 @@ relay.group_upstream_saturated: "目前分組上游負載已飽和，請稍後�
 relay.retry_get_channel_failed: "獲取分組 {{.Group}} 下模型 {{.Model}} 的可用管道失敗（retry）：{{.Error}}"
 relay.retry_no_available_channel: "分組 {{.Group}} 下模型 {{.Model}} 的可用管道不存在（retry）"
 relay.access_token_unsupported: "暫不支援使用 access token"
+relay.smart_key_responses_websocket_unsupported: "該令牌為智慧路由，不支援 Responses WebSocket，請透過 HTTP 呼叫 /v1/responses，或使用鎖定模型的令牌"
 
 # Emails and the name of the token created at registration
 user.default_token_name: "{{.Username}}的初始令牌"
