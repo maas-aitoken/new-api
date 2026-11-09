@@ -32,7 +32,7 @@ func setupAutoRouterControllerTest(t *testing.T) *gorm.DB {
 	dsn := fmt.Sprintf("file:%s?mode=memory&cache=shared", strings.ReplaceAll(t.Name(), "/", "_"))
 	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{})
 	require.NoError(t, err)
-	require.NoError(t, db.AutoMigrate(&model.SystemTask{}, &model.SystemTaskLock{}, &model.Option{}, &model.AuditLog{}, &model.User{}, &model.AutoRouteLog{}))
+	require.NoError(t, db.AutoMigrate(&model.SystemTask{}, &model.SystemTaskLock{}, &model.Option{}, &model.AuditLog{}, &model.User{}, &model.AutoRouteLog{}, &model.Ability{}))
 
 	previousDB, previousLogDB, previousOptions := model.DB, model.LOG_DB, common.OptionMap
 	model.DB, model.LOG_DB, common.OptionMap = db, db, map[string]string{}
@@ -243,6 +243,54 @@ func TestAutoRouterRankingEditSavesTurnsRefreshOffAndRefusesStaleOrRacingSaves(t
 	var audits int64
 	require.NoError(t, db.Model(&model.AuditLog{}).Where("action = ?", "autorouter.rank_edit").Count(&audits).Error)
 	assert.EqualValues(t, 1, audits, "被拒的保存不记审计")
+}
+
+// 榜单里绝大多数模型网关上没有，编辑页靠 served 标出网关有启用渠道的那些：
+// 裸名或任一档位后缀名有启用的渠道就算，同一个模型在每个画像里都一样。
+func TestAutoRouterRankingMarksModelsTheGatewayServes(t *testing.T) {
+	db := setupAutoRouterControllerTest(t)
+	shipped, err := autorouter_setting.ShippedOptions()
+	require.NoError(t, err)
+	require.NoError(t, config.GlobalConfig.LoadFromDB(shipped))
+	listed := autorouter_setting.GetAutoRouterSetting().TaskModels["code.build"]
+	require.GreaterOrEqual(t, len(listed), 3)
+	bare, suffixed, missing := listed[0], listed[1], listed[2]
+	require.NoError(t, db.Create(&[]model.Ability{
+		{Group: "default", Model: bare, ChannelId: 1, Enabled: true},
+		{Group: "default", Model: suffixed + "-high", ChannelId: 2, Enabled: true},
+	}).Error)
+
+	response := callAutoRouterHandler(t, GetAutoRouterRanking)
+	require.True(t, response.Success, response.Message)
+	var ranking struct {
+		Profiles []struct {
+			Profile string `json:"profile"`
+			Models  []struct {
+				Model  string   `json:"model"`
+				Score  *float64 `json:"score"`
+				Served bool     `json:"served"`
+			} `json:"models"`
+		} `json:"profiles"`
+	}
+	require.NoError(t, common.Unmarshal(response.Data, &ranking))
+	seen := map[string]int{}
+	for _, profile := range ranking.Profiles {
+		for _, entry := range profile.Models {
+			switch entry.Model {
+			case bare, suffixed:
+				assert.True(t, entry.Served, "%s/%s", profile.Profile, entry.Model)
+			case missing:
+				assert.False(t, entry.Served, "%s/%s", profile.Profile, entry.Model)
+			}
+			if profile.Profile == "code.build" && entry.Model == bare {
+				assert.NotNil(t, entry.Score, "加了 served 之后 model、score 仍是同一层的字段")
+			}
+			seen[entry.Model]++
+		}
+	}
+	assert.Positive(t, seen[bare])
+	assert.Positive(t, seen[suffixed])
+	assert.Positive(t, seen[missing])
 }
 
 func callAutoRouteLogHandler(t *testing.T, handler gin.HandlerFunc, target string, params gin.Params) tokenAPIResponse {

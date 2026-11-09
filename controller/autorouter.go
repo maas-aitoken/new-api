@@ -46,6 +46,19 @@ func GetAutoRouterStatus(c *gin.Context) {
 	common.ApiSuccess(c, status)
 }
 
+// autoRouterRankedModel 是榜单里的一行，多带 Served：网关上有没有启用的渠道服务这个模型
+// （裸名或任一档位后缀名）。它只看渠道启用与否，不看令牌白名单、分组、能力声明和价格，
+// 所以只是粗略的提示，一个请求实际能不能选中它还要看这些。
+type autoRouterRankedModel struct {
+	autorouter_setting.RankingEntry
+	Served bool `json:"served"`
+}
+
+type autoRouterRankedProfile struct {
+	Profile string                  `json:"profile"`
+	Models  []autoRouterRankedModel `json:"models"`
+}
+
 // GetAutoRouterRanking returns the ranking the router routes by right now,
 // which is the embedded one while the stored ranking predates the task types.
 // 每个画像都列出来（库里缺的画像给空列表），这正是手工编辑保存时要交回的画像集合；
@@ -53,11 +66,25 @@ func GetAutoRouterStatus(c *gin.Context) {
 func GetAutoRouterRanking(c *gin.Context) {
 	setting := autorouter_setting.GetAutoRouterSetting()
 	ranking := setting.Ranking()
+	enabled := make(map[string]bool)
+	for _, name := range model.GetEnabledModels() {
+		enabled[name] = true
+	}
+	isEnabled := func(name string) bool { return enabled[name] }
+
+	profiles := make([]autoRouterRankedProfile, 0, len(autorouter.RankingProfiles()))
+	for _, profile := range ranking.Profiles() {
+		models := make([]autoRouterRankedModel, 0, len(profile.Models))
+		for _, entry := range profile.Models {
+			models = append(models, autoRouterRankedModel{RankingEntry: entry, Served: autorouter.ModelAvailable(entry.Model, isEnabled)})
+		}
+		profiles = append(profiles, autoRouterRankedProfile{Profile: profile.Profile, Models: models})
+	}
 	common.ApiSuccess(c, gin.H{
 		"current":          setting.RankingCurrent(),
 		"taxonomy_version": autorouter.TaxonomyVersion,
 		"sources":          ranking.Sources,
-		"profiles":         ranking.Profiles(),
+		"profiles":         profiles,
 	})
 }
 
