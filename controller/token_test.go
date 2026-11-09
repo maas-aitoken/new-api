@@ -375,6 +375,10 @@ func runTokenMigrationCompatibilityTest(t *testing.T, db *gorm.DB, dialect strin
 	assert.False(t, migratedToken.AllowUserQuotaQuery, "tokens created before the upgrade keep user quota queries off")
 	require.True(t, db.Migrator().HasColumn(&model.Token{}, "auto_preference"))
 	assert.Empty(t, migratedToken.AutoPreference, "tokens created before the upgrade follow the platform default preference")
+	require.True(t, db.Migrator().HasColumn(&model.Token{}, "routing_mode"))
+	assert.Empty(t, migratedToken.RoutingMode, "tokens created before the upgrade keep calling the models they could call, they are not moved to smart routing")
+	assert.False(t, migratedToken.UsesSmartRouting())
+	assert.Equal(t, common.TokenSceneOffice, migratedToken.Scene)
 
 	inserted := model.Token{
 		UserId:             8,
@@ -420,6 +424,49 @@ func TestTokenAutoMigrateUsesVarchar128KeyColumn(t *testing.T) {
 func TestTokenMigrationFromChar48ToVarchar128(t *testing.T) {
 	db := openTokenControllerTestDB(t)
 	runTokenMigrationCompatibilityTest(t, db, "sqlite", nil)
+}
+
+// 测试环境（dev 镜像）的库里 routing_mode 列已经建好，默认值是当时的 'smart'。升级后已有行原样保留，
+// 但默认值要改成空：新建令牌不传 routing_mode 时 GORM 不写这一列、取数据库默认值，默认值留着 'smart'
+// 的话，旧控制台和脚本建的令牌都会变成智能路由。SQLite 上改默认值是整表重建，唯一索引要留下来，
+// 再迁移一次也不能再改表。
+func TestTokenRoutingModeDefaultMovesOffSmartOnUpgrade(t *testing.T) {
+	db := openTokenControllerTestDB(t)
+	// 只有 routing_mode 的默认值与现在的 model.Token 不同；缺的列迁移时直接加。
+	type devToken struct {
+		Id          int            `gorm:"primaryKey"`
+		UserId      int            `gorm:"index"`
+		Key         string         `gorm:"column:key;type:varchar(128);uniqueIndex"`
+		Status      int            `gorm:"default:1"`
+		Name        string         `gorm:"index"`
+		ExpiredTime int64          `gorm:"default:-1"`
+		Scene       string         `gorm:"type:varchar(16);default:'office'"`
+		RoutingMode string         `gorm:"type:varchar(16);default:'smart'"`
+		DeletedAt   gorm.DeletedAt `gorm:"index"`
+	}
+	require.NoError(t, db.Table("tokens").AutoMigrate(&devToken{}))
+	require.NoError(t, db.Table("tokens").Create(&devToken{
+		UserId: 7, Key: "dev-row-key", Status: common.TokenStatusEnabled, Name: "dev-row", ExpiredTime: -1,
+	}).Error)
+
+	migrateTokenControllerTestDB(t, db)
+
+	var existing model.Token
+	require.NoError(t, db.First(&existing, "name = ?", "dev-row").Error)
+	assert.Equal(t, common.TokenRoutingModeSmart, existing.RoutingMode, "existing rows keep what they hold")
+
+	fresh := model.Token{UserId: 7, Key: "fresh-token-key", Name: "fresh", Status: common.TokenStatusEnabled, ExpiredTime: -1}
+	require.NoError(t, db.Create(&fresh).Error)
+	var reloaded model.Token
+	require.NoError(t, db.First(&reloaded, fresh.Id).Error)
+	assert.Empty(t, reloaded.RoutingMode, "a token created without a routing mode is locked to its models")
+	assert.Error(t, db.Create(&model.Token{UserId: 8, Key: "fresh-token-key", Name: "duplicate"}).Error, "keys stay unique after the rebuild")
+
+	var before, after int
+	require.NoError(t, db.Raw("PRAGMA schema_version").Scan(&before).Error)
+	migrateTokenControllerTestDB(t, db)
+	require.NoError(t, db.Raw("PRAGMA schema_version").Scan(&after).Error)
+	assert.Equal(t, before, after, "a second migration must not alter the table again")
 }
 
 func TestTokenMigrationFromChar48ToVarchar128MySQL(t *testing.T) {
@@ -702,6 +749,84 @@ func TestTokenAutoPreferenceOnCreateAndUpdate(t *testing.T) {
 				require.NoError(t, common.Unmarshal(response.Data, &returned))
 				assert.Equal(t, tc.want, returned.AutoPreference)
 			}
+		})
+	}
+}
+
+// 场景、模型配置方式和描述是 MaaS 加的字段，new-api 自带控制台和老脚本不传：
+// 更新时没传必须保留原值，否则在旧控制台改一次，业务 key 就变成办公 key。
+// 没传 routing_mode 建的令牌存空值（锁定模型），业务 key 一律锁定模型。
+func TestTokenRoutingFieldsOnCreateAndUpdate(t *testing.T) {
+	type fields struct {
+		scene       common.TokenScene
+		routingMode common.TokenRoutingMode
+		description string
+	}
+	for _, tc := range []struct {
+		name    string
+		target  string
+		stored  *fields        // nil creates the token through the API
+		request map[string]any // only the routing fields; a missing key is omitted from the request
+		want    fields
+	}{
+		{name: "create without the fields is an office key locked to its models", target: "/api/token/",
+			want: fields{scene: common.TokenSceneOffice}},
+		{name: "create a smart routing key", target: "/api/token/",
+			request: map[string]any{"scene": "office", "routing_mode": "smart", "description": "notes"},
+			want:    fields{scene: common.TokenSceneOffice, routingMode: common.TokenRoutingModeSmart, description: "notes"}},
+		{name: "create with an unknown routing mode stores an empty one", target: "/api/token/",
+			request: map[string]any{"routing_mode": "turbo"},
+			want:    fields{scene: common.TokenSceneOffice}},
+		{name: "a business key is always locked to its models", target: "/api/token/",
+			request: map[string]any{"scene": "business", "routing_mode": "smart"},
+			want:    fields{scene: common.TokenSceneBusiness, routingMode: common.TokenRoutingModeFixed}},
+		{name: "update without the fields keeps a smart office key", target: "/api/token/",
+			stored: &fields{scene: common.TokenSceneOffice, routingMode: common.TokenRoutingModeSmart, description: "notes"},
+			want:   fields{scene: common.TokenSceneOffice, routingMode: common.TokenRoutingModeSmart, description: "notes"}},
+		{name: "update without the fields keeps a business key", target: "/api/token/",
+			stored: &fields{scene: common.TokenSceneBusiness, routingMode: common.TokenRoutingModeFixed, description: "notes"},
+			want:   fields{scene: common.TokenSceneBusiness, routingMode: common.TokenRoutingModeFixed, description: "notes"}},
+		{name: "update without the fields keeps an empty routing mode", target: "/api/token/",
+			stored: &fields{scene: common.TokenSceneOffice},
+			want:   fields{scene: common.TokenSceneOffice}},
+		{name: "update changes the routing mode and clears the description", target: "/api/token/",
+			stored:  &fields{scene: common.TokenSceneOffice, routingMode: common.TokenRoutingModeSmart, description: "notes"},
+			request: map[string]any{"routing_mode": "fixed", "description": ""},
+			want:    fields{scene: common.TokenSceneOffice, routingMode: common.TokenRoutingModeFixed}},
+		{name: "moving a smart key to the business scene locks it", target: "/api/token/",
+			stored:  &fields{scene: common.TokenSceneOffice, routingMode: common.TokenRoutingModeSmart},
+			request: map[string]any{"scene": "business"},
+			want:    fields{scene: common.TokenSceneBusiness, routingMode: common.TokenRoutingModeFixed}},
+		{name: "status update leaves them alone", target: "/api/token/?status_only=true",
+			stored:  &fields{scene: common.TokenSceneOffice, routingMode: common.TokenRoutingModeSmart, description: "notes"},
+			request: map[string]any{"scene": "business", "routing_mode": "fixed", "description": ""},
+			want:    fields{scene: common.TokenSceneOffice, routingMode: common.TokenRoutingModeSmart, description: "notes"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			db := setupTokenControllerTestDB(t)
+			body := map[string]any{"name": "routing-fields", "expired_time": -1, "unlimited_quota": true, "status": common.TokenStatusEnabled}
+			maps.Copy(body, tc.request)
+			var recorder *httptest.ResponseRecorder
+			if tc.stored == nil {
+				var ctx *gin.Context
+				ctx, recorder = newAuthenticatedContext(t, http.MethodPost, tc.target, body, 1)
+				AddToken(ctx)
+			} else {
+				token := seedToken(t, db, 1, "routing-fields", "routing-fields-key")
+				require.NoError(t, db.Model(token).UpdateColumns(map[string]any{
+					"scene": string(tc.stored.scene), "routing_mode": string(tc.stored.routingMode), "description": tc.stored.description,
+				}).Error)
+				body["id"] = token.Id
+				var ctx *gin.Context
+				ctx, recorder = newAuthenticatedContext(t, http.MethodPut, tc.target, body, 1)
+				UpdateToken(ctx)
+			}
+			response := decodeAPIResponse(t, recorder)
+			require.True(t, response.Success, response.Message)
+
+			var saved model.Token
+			require.NoError(t, db.Where("name = ?", "routing-fields").First(&saved).Error)
+			assert.Equal(t, tc.want, fields{scene: saved.Scene, routingMode: saved.RoutingMode, description: saved.Description})
 		})
 	}
 }
@@ -1136,14 +1261,16 @@ func TestTokenListFiltersBySceneRoutingAndStatus(t *testing.T) {
 			wantNames: []string{"f-biz-fixed-expired", "f-biz-smart-on"},
 		},
 		{
-			name:      "routing mode smart includes rows with an empty routing mode",
+			// 与 Token.UsesSmartRouting 一致：只有办公场景显式设成 smart 的才算智能路由。
+			name:      "routing mode smart is only an office key set to smart",
 			query:     "&routing_mode=smart",
-			wantNames: []string{"f-biz-smart-on", "f-legacy-empty", "f-office-smart-on"},
+			wantNames: []string{"f-office-smart-on"},
 		},
 		{
-			name:      "routing mode fixed",
+			// 空值是升级前的旧令牌，保持原来的行为，即锁定模型；业务 key 一律锁定模型。
+			name:      "routing mode fixed includes an empty routing mode and every business key",
 			query:     "&routing_mode=fixed",
-			wantNames: []string{"f-biz-fixed-expired", "f-office-fixed-off"},
+			wantNames: []string{"f-biz-fixed-expired", "f-biz-smart-on", "f-legacy-empty", "f-office-fixed-off"},
 		},
 		{
 			name:      "status disabled",
@@ -1157,7 +1284,7 @@ func TestTokenListFiltersBySceneRoutingAndStatus(t *testing.T) {
 		},
 		{
 			name:      "combination with no match",
-			query:     "&scene=office&routing_mode=fixed&status=1",
+			query:     "&scene=business&routing_mode=smart",
 			wantNames: nil,
 		},
 	} {

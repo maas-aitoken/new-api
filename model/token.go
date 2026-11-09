@@ -43,9 +43,11 @@ type Token struct {
 	// 允许用此令牌查询所属用户的额度；新建令牌默认开启，已有令牌升级后保持关闭
 	AllowUserQuotaQuery bool `json:"allow_user_quota_query"`
 	// MaaS 改造字段
-	Scene       common.TokenScene       `json:"scene" gorm:"type:varchar(16);default:'office'"`
-	Description string                  `json:"description" gorm:"type:varchar(255);default:''"`
-	RoutingMode common.TokenRoutingMode `json:"routing_mode" gorm:"type:varchar(16);default:'smart'"`
+	Scene       common.TokenScene `json:"scene" gorm:"type:varchar(16);default:'office'"`
+	Description string            `json:"description" gorm:"type:varchar(255);default:''"`
+	// 默认值必须是空：加这一列时已有令牌全部取默认值，空值等同锁定模型，保持原来的行为。
+	// 写成 smart 会让所有旧令牌的对话请求都被改成 auto。
+	RoutingMode common.TokenRoutingMode `json:"routing_mode" gorm:"type:varchar(16);default:''"`
 	// RPM 为该令牌每分钟允许的请求数：0 继承平台级配置（TokenRequestRateLimitCount），
 	// -1 表示该令牌不限流，正数为该令牌自己的上限
 	RPM            int    `json:"rpm" gorm:"default:0"`
@@ -206,6 +208,12 @@ func (token *Token) IsProjectKey() bool {
 	return token.Scene == common.TokenSceneBusiness
 }
 
+// UsesSmartRouting 判断令牌是否走智能路由：只有办公场景且显式设成 smart 的才算。
+// 业务 key 一律锁定模型，库里即使存着 smart（早期前端给业务 key 默认提交 smart）也不算。
+func (token *Token) UsesSmartRouting() bool {
+	return token.RoutingMode == common.TokenRoutingModeSmart && token.Scene != common.TokenSceneBusiness
+}
+
 // IsProjectMember 判断 userId 是否在该业务 Key 的成员列表里
 func (token *Token) IsProjectMember(userId int) bool {
 	if userId <= 0 || !token.IsProjectKey() {
@@ -292,11 +300,14 @@ func (f TokenFilter) apply(query *gorm.DB) *gorm.DB {
 	case common.TokenSceneOffice:
 		query = query.Where("(scene IS NULL OR scene <> ?)", string(common.TokenSceneBusiness))
 	}
+	// 两个分支互为补集，口径与 UsesSmartRouting 一致：空值和业务 key 都归到锁定模型。
 	switch f.RoutingMode {
 	case common.TokenRoutingModeFixed:
-		query = query.Where("routing_mode = ?", string(common.TokenRoutingModeFixed))
+		query = query.Where("(routing_mode IS NULL OR routing_mode <> ? OR scene = ?)",
+			string(common.TokenRoutingModeSmart), string(common.TokenSceneBusiness))
 	case common.TokenRoutingModeSmart:
-		query = query.Where("(routing_mode IS NULL OR routing_mode <> ?)", string(common.TokenRoutingModeFixed))
+		query = query.Where("routing_mode = ? AND (scene IS NULL OR scene <> ?)",
+			string(common.TokenRoutingModeSmart), string(common.TokenSceneBusiness))
 	}
 	if f.Status != 0 {
 		query = query.Where("status = ?", f.Status)

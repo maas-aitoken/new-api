@@ -17,6 +17,7 @@ import (
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 
 	"github.com/gin-gonic/gin"
+	"github.com/samber/lo"
 	"github.com/shopspring/decimal"
 )
 
@@ -45,6 +46,11 @@ type tokenRequest struct {
 	RoutingPreferenceMode *common.RoutingPreferenceMode `json:"routing_preference_mode"`
 	ProjectMembers        *[]int                        `json:"project_members"`
 	ProjectOwnerId        *int                          `json:"project_owner_id"`
+	// 这三个是 MaaS 加的字段，new-api 自带控制台和老脚本不传，用指针区分“未传”。
+	// 更新时没传就保留原值，否则在旧控制台改一次，业务 key 会变成办公 key、项目成员和描述被清空。
+	Scene       *string `json:"scene"`
+	RoutingMode *string `json:"routing_mode"`
+	Description *string `json:"description"`
 }
 
 // validAutoPreference 判断请求里的 auto_preference 是否可以写入：未传或空串（平台默认）都可以。
@@ -552,9 +558,13 @@ func AddToken(c *gin.Context) {
 		Group:              token.Group,
 		CrossGroupRetry:    token.CrossGroupRetry,
 		AutoGroups:         token.AutoGroups,
-		Scene:              common.NormalizeTokenScene(string(token.Scene)),
-		RoutingMode:        common.NormalizeTokenRoutingMode(string(token.RoutingMode)),
-		Description:        token.Description,
+		// 没传 routing_mode 的令牌存空值，即锁定模型：旧控制台、脚本建的令牌行为不变。
+		Scene:       common.NormalizeTokenScene(lo.FromPtr(request.Scene)),
+		RoutingMode: common.NormalizeTokenRoutingMode(lo.FromPtr(request.RoutingMode)),
+		Description: lo.FromPtr(request.Description),
+	}
+	if cleanToken.Scene == common.TokenSceneBusiness {
+		cleanToken.RoutingMode = common.TokenRoutingModeFixed
 	}
 	cleanToken.AllowUserQuotaQuery = request.AllowUserQuotaQuery == nil || *request.AllowUserQuotaQuery
 	if request.AutoPreference != nil {
@@ -681,9 +691,18 @@ func UpdateToken(c *gin.Context) {
 		}
 		cleanToken.Group = token.Group
 		cleanToken.CrossGroupRetry = token.CrossGroupRetry
-		cleanToken.Scene = common.NormalizeTokenScene(string(token.Scene))
-		cleanToken.RoutingMode = common.NormalizeTokenRoutingMode(string(token.RoutingMode))
-		cleanToken.Description = token.Description
+		if request.Scene != nil {
+			cleanToken.Scene = common.NormalizeTokenScene(*request.Scene)
+		}
+		if request.RoutingMode != nil {
+			cleanToken.RoutingMode = common.NormalizeTokenRoutingMode(*request.RoutingMode)
+		}
+		if cleanToken.Scene == common.TokenSceneBusiness {
+			cleanToken.RoutingMode = common.TokenRoutingModeFixed
+		}
+		if request.Description != nil {
+			cleanToken.Description = *request.Description
+		}
 
 		if !applyTokenProjectMembers(c, cleanToken, request.ProjectMembers) {
 			return
