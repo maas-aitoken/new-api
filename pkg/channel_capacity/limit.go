@@ -41,15 +41,20 @@ type PollStatus struct {
 // pollStatusTTL 远长于轮询间隔：主节点停了以后管理页还能看到最后一次结果。
 const pollStatusTTL = 24 * time.Hour
 
+// resetRequestTTL 是重置请求等主节点来取的最长时间，远长于轮询间隔；
+// 主节点停了很久才回来时，那时的状态早已不是要重置的那份，请求作废也无妨。
+const resetRequestTTL = 24 * time.Hour
+
 type memoryLimitEntry struct {
 	limit     PublishedLimit
 	expiresAt time.Time
 }
 
 var (
-	memoryLimitMu  sync.Mutex
-	memoryLimits   = make(map[string]memoryLimitEntry)
-	memoryStatuses = make(map[string]PollStatus)
+	memoryLimitMu       sync.Mutex
+	memoryLimits        = make(map[string]memoryLimitEntry)
+	memoryStatuses      = make(map[string]PollStatus)
+	memoryResetRequests = make(map[string]bool)
 )
 
 // PublishLimit 写入容量池的动态额度，ttl 后自动失效。
@@ -192,4 +197,35 @@ func ReadStatuses(poolIDs []string) (map[string]PollStatus, error) {
 		result[poolID] = status
 	}
 	return result, nil
+}
+
+// RequestReset 请主节点丢掉容量池的计算状态（学到的换算比例和上调平滑），下一轮按账号
+// 现状重算、直接发布。状态只在主节点内存里，管理请求可能落在任何节点，所以经 Redis 转交；
+// 没有 Redis 时只有落在主节点上的请求有效，与动态额度本身只在主节点可见一致。
+func RequestReset(poolID string) error {
+	if !Shared() {
+		memoryLimitMu.Lock()
+		memoryResetRequests[poolID] = true
+		memoryLimitMu.Unlock()
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), snapshotTimeout)
+	defer cancel()
+	return common.RDB.Set(ctx, poolKey(poolID, "reset"), "1", resetRequestTTL).Err()
+}
+
+// TakeResetRequest 取走容量池的重置请求，有请求时返回 true。取走即删除，同一次请求只生效一次；
+// 连点几次在主节点下一轮之前只算一次。
+func TakeResetRequest(poolID string) (bool, error) {
+	if !Shared() {
+		memoryLimitMu.Lock()
+		defer memoryLimitMu.Unlock()
+		requested := memoryResetRequests[poolID]
+		delete(memoryResetRequests, poolID)
+		return requested, nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), snapshotTimeout)
+	defer cancel()
+	deleted, err := common.RDB.Del(ctx, poolKey(poolID, "reset")).Result()
+	return deleted > 0, err
 }

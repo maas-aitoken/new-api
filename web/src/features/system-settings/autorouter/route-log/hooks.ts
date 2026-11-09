@@ -32,6 +32,8 @@ export const EMPTY_ROUTE_LOG_FILTERS: RouteLogFilters = {
   task_type: '',
   outcome: '',
   judgment: '',
+  start_time: '',
+  end_time: '',
 }
 
 /** Empty filters are left out of the request instead of being sent as blanks. */

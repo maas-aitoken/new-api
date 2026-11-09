@@ -53,6 +53,9 @@ export type RouteLogFilters = {
   task_type: string
   outcome: '' | RouteLogOutcome
   judgment: string
+  /** 时间范围的起止，Unix 秒的十进制字符串，两端都含；空串表示不限。 */
+  start_time: string
+  end_time: string
 }
 
 export type RouteDecision = {

@@ -111,6 +111,20 @@ test('each channel row shows its counting pool usage against the pool quota with
   expect(unlimited[3].textContent).toBe('7 / ∞')
 })
 
+test('the endpoint table sits inside a scrolling area, since the page frame clips what overflows', async () => {
+  apiClient.get = vi.fn<ApiGet>(async () => ({
+    data: { success: true, data: monitor },
+  }))
+  await renderMonitor()
+
+  // Main 是 overflow-hidden 的页面框，自己不滚；端点一多，表格必须落在会纵向滚动的容器里。
+  const frame = screen.getByRole('main')
+  expect(frame).toHaveClass('overflow-hidden')
+  const scroller = screen.getByRole('table').closest('.overflow-y-auto')
+  expect(scroller).not.toBeNull()
+  expect(frame).toContainElement(scroller as HTMLElement)
+})
+
 test('typing a channel id in the filter reloads the monitor scoped to that channel', async () => {
   const get = vi.fn<ApiGet>(async () => ({
     data: { success: true, data: monitor },

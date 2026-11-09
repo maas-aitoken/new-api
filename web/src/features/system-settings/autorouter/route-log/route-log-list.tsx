@@ -16,6 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+import { RefreshCw } from 'lucide-react'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
@@ -27,9 +28,12 @@ import {
 } from '@/components/data-table'
 import { EmptyState } from '@/components/empty-state'
 import { ErrorState } from '@/components/error-state'
+import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
 import { Skeleton } from '@/components/ui/skeleton'
+import { CompactDateTimeRangePicker } from '@/features/usage-logs/components/compact-date-time-range-picker'
+import { cn } from '@/lib/utils'
 
 import {
   EMPTY_ROUTE_LOG_FILTERS,
@@ -42,6 +46,15 @@ import { useRouteLogColumns } from './route-log-columns'
 import type { RouteLogFilters, RouteLogItem, RouteLogOutcome } from './types'
 
 const EMPTY_ITEMS: RouteLogItem[] = []
+
+// 筛选值是字符串（空串表示不限），时间范围存成 Unix 秒，与后端的 start_time / end_time 一致。
+function dateOf(seconds: string) {
+  return seconds === '' ? undefined : new Date(Number(seconds) * 1000)
+}
+
+function secondsOf(date?: Date) {
+  return date ? String(Math.floor(date.getTime() / 1000)) : ''
+}
 const JUDGMENTS = [
   'live',
   'live_failed',
@@ -123,8 +136,36 @@ export function RouteLogList() {
         }
         onSearch={search}
         onReset={reset}
+        preActions={
+          <Button
+            type='button'
+            variant='outline'
+            size='icon'
+            aria-label={t('Refresh')}
+            aria-busy={logsQuery.isFetching}
+            disabled={logsQuery.isFetching}
+            onClick={() => void logsQuery.refetch()}
+          >
+            <RefreshCw
+              aria-hidden
+              className={cn(logsQuery.isFetching && 'animate-spin')}
+            />
+          </Button>
+        }
         customSearch={
           <>
+            <CompactDateTimeRangePicker
+              className='sm:w-auto'
+              start={dateOf(draft.start_time)}
+              end={dateOf(draft.end_time)}
+              onChange={({ start, end }) =>
+                setDraft((previous) => ({
+                  ...previous,
+                  start_time: secondsOf(start),
+                  end_time: secondsOf(end),
+                }))
+              }
+            />
             {field('request_id', t('Request ID'))}
             {field('user_id', t('User ID'))}
             {field('model', t('Model'))}

@@ -86,6 +86,26 @@ func SaveCapacityPool(c *gin.Context) {
 	common.ApiSuccess(c, gin.H{"id": pool.Id})
 }
 
+// ResetCapacityPool 丢掉容量池学到的换算比例和上调平滑，主节点下一轮按账号现状重算并直接发布：
+// POST /api/channel/resource_pools/capacity_pools/:id/reset。配置和成员不变。
+func ResetCapacityPool(c *gin.Context) {
+	id, err := strconv.Atoi(c.Param("id"))
+	if err != nil || id <= 0 {
+		common.ApiErrorMsg(c, "invalid capacity pool id")
+		return
+	}
+	if _, err := model.GetCapacityPoolById(id); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	if err := channelcapacity.RequestReset(channelcapacity.CapacityPoolID(id)); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	service.WakeCapacityPoolPoller()
+	common.ApiSuccess(c, nil)
+}
+
 // DeleteCapacityPool 删除容量池，成员回到各自的 model_limits。
 func DeleteCapacityPool(c *gin.Context) {
 	id, err := strconv.Atoi(c.Param("id"))

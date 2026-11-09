@@ -196,6 +196,7 @@ var accessTokenRouteRules = map[string]accessTokenRouteRule{
 	// router/api-router.go: /api/autorouter
 	"GET /api/autorouter/status":           accessTokenScopeRule("option:read"),
 	"GET /api/autorouter/ranking":          accessTokenScopeRule("option:read"),
+	"PUT /api/autorouter/ranking":          accessTokenScopeRule("option:write"),
 	"POST /api/autorouter/ranking/refresh": accessTokenScopeRule("option:write"),
 	"POST /api/autorouter/ranking/restore": accessTokenScopeRule("option:write"),
 	"GET /api/auto-route-logs/":            accessTokenScopeRule("log:read"),

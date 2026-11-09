@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Gauge, Pencil, Plus, Trash2, UserPlus } from 'lucide-react'
+import { Gauge, Pencil, Plus, RotateCcw, Trash2, UserPlus } from 'lucide-react'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
@@ -51,6 +51,7 @@ import {
   getCapacityPoolCapacity,
   getCapacityPools,
   removeCapacityPoolMember,
+  resetCapacityPool,
   type CapacityDimensionDetail,
   type CapacityPool,
   type CapacityPoolCapacity,
@@ -171,6 +172,7 @@ function CapacityPoolCard(props: {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
   const [confirmDelete, setConfirmDelete] = useState(false)
+  const [confirmReset, setConfirmReset] = useState(false)
   const [addingMembers, setAddingMembers] = useState(false)
   const pool = props.pool
   const capacity = props.capacity
@@ -184,6 +186,15 @@ function CapacityPoolCard(props: {
       await invalidate()
       setConfirmDelete(false)
       toast.success(t('Capacity pool deleted'))
+    },
+  })
+  const reset = useMutation({
+    mutationFn: () => resetCapacityPool(pool.id),
+    onSuccess: () => {
+      setConfirmReset(false)
+      toast.success(
+        t('Reset requested. It takes effect at the next recomputation.')
+      )
     },
   })
   const removeMember = useMutation({
@@ -230,6 +241,14 @@ function CapacityPoolCard(props: {
             onClick={props.onEdit}
           >
             <Pencil />
+          </Button>
+          <Button
+            variant='ghost'
+            size='icon'
+            aria-label={t('Reset')}
+            onClick={() => setConfirmReset(true)}
+          >
+            <RotateCcw />
           </Button>
           <Button
             variant='ghost'
@@ -352,6 +371,17 @@ function CapacityPoolCard(props: {
         confirmText={t('Delete')}
         isLoading={remove.isPending}
         handleConfirm={() => remove.mutate()}
+      />
+      <ConfirmDialog
+        open={confirmReset}
+        onOpenChange={setConfirmReset}
+        title={t('Reset capacity pool {{name}}?', { name: pool.name })}
+        desc={t(
+          'The ratio learned from our traffic is dropped and the next recomputation publishes the limit from the accounts as they are now, without the 25% per round cap on rises. Pacing then learns again from new traffic. The config and members stay.'
+        )}
+        confirmText={t('Reset')}
+        isLoading={reset.isPending}
+        handleConfirm={() => reset.mutate()}
       />
       <CapacityPoolMemberDialog
         open={addingMembers}

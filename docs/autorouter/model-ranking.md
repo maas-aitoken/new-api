@@ -455,21 +455,21 @@ w 从 0.07 调到 0.075，下限降低，`mimo-v2.6-pro`（0.9288 分，0.54 美
 沿用系统任务 `autorouter_rank`：master 节点在数据库租约下按 `rank_refresh_interval_hours`（默认 24，最小 1）执行，依次写入 `task_models`、`task_scores`、`default_models`、`rank_sources`，其他节点经配置同步生效，不需要重启。任一来源失败或任一画像没有模型时不写配置，线上保留上一份榜单。
 
 - **启用条件**：`autorouter_setting.enabled` 与 `rank_refresh_enabled` 为 true，且有 Artificial Analysis 的 key，以及 Design Arena 或 OpenRouter 的 key 之一。key 优先取系统设置（Auto 路由 → 基础）里存的值，没存时回退到同名环境变量，见下表。OpenRouter 模型列表是公开接口，不需要 key。
-- **管理**：系统设置（Auto 路由 → 榜单）可以看当前生效的榜单、立即刷新、恢复内置榜单；jev 的地址、模型、密钥和三个榜单来源的 key 也在界面里配。`*_api_key` 类选项只写不读，选项接口不会返回它们的值，状态接口只说明每个值来自选项、环境变量还是没设。
+- **管理**：系统设置（Auto 路由 → 榜单）可以看当前生效的榜单、手工编辑（第 8.1 节）、立即刷新、恢复内置榜单；jev 的地址、模型、密钥和三个榜单来源的 key 也在界面里配。`*_api_key` 类选项只写不读，选项接口不会返回它们的值，状态接口只说明每个值来自选项、环境变量还是没设。
 - **网络**：网关需能访问 `openrouter.ai`、`livebench.ai`、`hf-mirror.com`、`artificialanalysis.ai`、`www.designarena.ai`。不再逐模型查询端点延迟，一次刷新通常在一分钟内完成。
 - **数据新鲜度**：按 OpenRouter 目录的上架时间（`created`）取每个来源评过分的最新 10 个候选（`-stale-probe`），某项指标在这 10 个里都没有数据时视为停更，本轮不参与打分，记入 `rank_sources.stale_metrics` 和刷新记录。来源评过分的候选不足 10 个时不做判断；视觉指标只看支持图像输入的候选。
 - **分类版本**：`rank_sources` 记录 `taxonomy_version`。启动或配置同步时若已存的版本与代码中的分类不一致，运行时改用内置 `task_models.json`，并立即触发一次刷新，不等周期。`task_scores` 与 `task_models` 按同一个版本判定，一起退回内置的，避免旧分类下的分数配上新分类的列表。
 
 | 配置项 | 默认值 | 说明 |
 | --- | --- | --- |
-| `autorouter_setting.rank_refresh_enabled` | `true` | 是否定时刷新 |
+| `autorouter_setting.rank_refresh_enabled` | `true` | 是否定时刷新；保存手工编辑的榜单时自动设为 `false` |
 | `autorouter_setting.rank_refresh_interval_hours` | `24` | 刷新周期，单位小时 |
 | `autorouter_setting.task_models` | 内置榜单 | 画像名 → 模型列表 |
 | `autorouter_setting.task_scores` | 内置榜单 | 画像名 → 模型 → 榜单分，第 7.3 节比较用；与 `task_models` 一起生成、一起刷新 |
 | `autorouter_setting.default_models` | 内置榜单 | 默认模型列表 |
 | `autorouter_setting.default_preference` | `balanced` | 令牌没设 auto 偏好时用的偏好：`capability`、`balanced`、`cost`、`adaptive`；不认识的值按 `balanced` |
 | `autorouter_setting.cost_weights` | `{"capability":0,"balanced":0.07,"cost":0.3}` | 第 7.3 节三个固定偏好的 w：为了价格最多让出的榜单分；JSON 里没写的偏好用内置值，负数和 NaN 按 0，大于 1 按 1；只接受这三个键，`adaptive` 没有自己的 w，写进来会被拒绝，自适应请求从这三个 w 里折算 |
-| `autorouter_setting.rank_sources` | 内置榜单 | 各来源快照日期、生成时间、`taxonomy_version` |
+| `autorouter_setting.rank_sources` | 内置榜单 | 各来源快照日期、生成时间、`taxonomy_version`；手工编辑保存后多一项 `edited_at`，刷新和恢复内置会连同改动一起换掉 |
 | `autorouter_setting.jev_endpoint`、`jev_model`、`jev_api_key` | 空 | jev 的地址、模型和密钥；为空时分别回退到环境变量 `JEV_ENDPOINT`、`JEV_MODEL`、`JEV_API_KEY`。写入前服务端校验：地址必须是 http/https，密钥和模型不能含空白或换行 |
 | `autorouter_setting.artificial_analysis_api_key`、`design_arena_api_key`、`openrouter_api_key` | 空 | 三个榜单来源的 key；为空时回退到下面同名的环境变量 |
 | `autorouter_setting.route_log_mode` | `decisions` | 第 7.5 节：选路日志记哪些请求，`off`、`decisions`、`all` |
@@ -479,6 +479,16 @@ w 从 0.07 调到 0.075，下限降低，`mimo-v2.6-pro`（0.9288 分，0.54 美
 | 环境变量 `OPENROUTER_API_KEY` | 无 | 未设置 `DESIGN_ARENA_API_KEY` 时读取 OpenRouter 转发的 Design Arena 数据 |
 
 `modelrank` 命令行同步调整：新增 `-aa-key-env`（默认 `ARTIFICIAL_ANALYSIS_API_KEY`）、`-da-key-env`（默认 `DESIGN_ARENA_API_KEY`）、`-openrouter-key-env`（默认 `OPENROUTER_API_KEY`）、`-artificial-analysis`、`-design-arena`（接口地址），去掉 `-api-key-env`；去掉 `-usage-bonus`、`-latency-tolerance`。输出文件的 `weights` 改为 `profiles`（画像名 → 指标列表），`evidence` 记录每个模型在各画像下的分数、有数据的指标数和各指标归一化值。
+
+### 8.1 手工编辑
+
+管理员可以在系统设置（Auto 路由 → 榜单 → 显示榜单 → 编辑榜单）里直接改榜单：改分、把模型从某个画像里移除、调整没有分数的模型的顺序，以及把一个模型（包括只有网关上才有的私有模型）一次加进多个画像。保存时 `PUT /api/autorouter/ranking` 把整份榜单写回 `task_models`、`task_scores`、`default_models`、`rank_sources` 四项，同一个事务里把 `rank_refresh_enabled` 设为 `false`，免得下一次定时刷新把改动整个覆盖。之后点“立即刷新”或“恢复内置榜单”仍会替换手工改动，界面在这两步之前都会确认；恢复内置不会重新打开定时刷新。
+
+- **校验**：画像必须正好是 12 个二级类加 `code`、`data`、`general`。`general` 的列表写进 `default_models` 和 `task_scores.general`，不写进 `task_models`（写进去会多出一份与 `default_models` 重复的一级列表）。`general` 不能清空，它是最后一层兜底；其它画像可以清空，清空后退到一级类的列表或 `default_models`。模型名去掉首尾空白，同一画像里不能重复，不能是 `auto`，不能含换行或控制字符；分数为空（只当兜底）或 0 到 1。库里存的是旧分类下的榜单时，编辑页看到和改的是运行时在用的内置那份，保存后直接生效。
+- **冲突与刷新**：保存要带进入编辑时看到的 `rank_sources.generated_at` 和 `edited_at`，与当前榜单对不上（期间被刷新、恢复内置或别人保存过）就拒绝，要重新加载再改；刷新任务进行中、或内容与当前榜单完全一样时也拒绝。审计动作 `autorouter.rank_edit` 记下改了哪些画像，以及新增、移除、改分的模型数。
+- **分数和顺序**：有分数的模型按第 7.3 节比较质量和价格，列表顺序只在比不出结果时才起作用（第 7.2 节）。所以编辑页里有分数的模型自动按分数从高到低排（同分保持原顺序），没有分数的只当兜底、排在后面，顺序由管理员定。改过 `general` 之后，它的兜底顺序从“帕累托前沿按价格升序”（第 7.1 节）变成按分数排；没改过的画像原样写回。
+- **私有模型**：要让 auto 选到一个榜单外的模型，它必须进列表并且有分数，只进列表不给分只能当兜底。分数按画像归一，尺度差很多（按 2026-10-28 的内置榜单，0.90 在 `code.frontend` 排第 2/114，在 `data.business` 排第 24/146），所以添加对话框让管理员选一个榜单里的参照模型，按“参照分 + 偏移”填各画像的分数，并显示会排第几、比网关上能用的最高分低多少、能进哪几档偏好的比较。这个估算只看渠道启用与否，不看价格、令牌白名单和分组。**私有模型要先在网关定价**：没定价时自用模式按默认倍率报价（约 $75/M），手工给的分再高，均衡档和成本优先也可能因为价格选更便宜的模型。
+- **网关有没有**：`GET /api/autorouter/ranking` 的每个模型带 `served`：网关上有启用的渠道服务它（裸名或任一档位后缀名），判定与选路的 `ModelAvailable` 相同。编辑页用它标记模型，并可以只看网关有的模型。
 
 ## 9. 代码改动
 
@@ -513,6 +523,9 @@ w 从 0.07 调到 0.075，下限降低，`mimo-v2.6-pro`（0.9288 分，0.54 美
 | `pkg/autorouter/select.go`、`policy.go`、`trace.go` | `Candidates.Costs`：带定下来之后一次取齐比较成本，折扣与同分取舍都按比较成本；`Excluded` 的模型离开带；跳过原因 `scheduler_no_candidate`；`band` 多出成本相关字段 |
 | `middleware/auto_route_cost.go`、`middleware/distributor.go` | 实现 `Costs`：调度器预览或原生规则定渠道、按首次命中的分组报价、乘渠道费用倍率；预览说没有渠道的模型记进这次请求的拒绝原因 |
 | `web/src/features/system-settings/autorouter/route-log/` | 候选表在估算过渠道时多“费用倍率”“比较成本”两列，跳过原因多一项；没用上调度器预览时在表上方说明原因，单个模型没用上时写在它的倍率下面 |
+| `pkg/autorouter/jev.go`、`setting/autorouter_setting/ranking_edit.go`、`config.go` | 第 8.1 节：`RankingProfiles()` 列出全部画像；`EditedRanking` 校验整份手工榜单、与当前榜单比出改动，返回要写的四项榜单和关掉的定时刷新；`Ranking.Profiles()` 是读写共用的画像列表；`encodeOptions` 与恢复内置共用 |
+| `controller/autorouter.go`、`controller/audit.go`、`router/api-router.go`、`middleware/access_token_routes.go` | `PUT /api/autorouter/ranking`（刷新进行中拒绝、审计 `autorouter.rank_edit`、访问令牌作用域 `option:write`）；`GET /api/autorouter/ranking` 按全部画像列出并给每个模型加 `served` |
+| `web/src/features/system-settings/autorouter/` | 榜单编辑（`ranking-viewer.tsx`、`ranking-table.tsx`、`ranking-add-dialog.tsx`，纯逻辑在 `ranking-draft.ts`）；状态卡标出手工编辑过的榜单，立即刷新前确认 |
 
 ## 10. 已知限制
 
@@ -535,3 +548,6 @@ w 从 0.07 调到 0.075，下限降低，`mimo-v2.6-pro`（0.9288 分，0.54 美
 - **只估首次尝试**：同一档里有几个渠道时用命中概率的期望，单次请求实际落到的渠道倍率可能不同；重试走原生选路、可能换渠道，不在估算里。
 - **预览与正式调度之间隔着几毫秒**：准入是只读的，这期间别的请求改了计数池用量，两次可能选不同的渠道，`band` 里的 `channel_id` 和使用日志里实际的渠道对照就能量出这个比例。预览给出的渠道不会当作偏好渠道传给正式调度（那会被 Scheduler 记成会话亲和命中）。没被 Scheduler 加载过的模型先按原生规则估，被真实流量加载后才走预览。
 - **能力收窄按撇开客户端推理字段的口径估**：档位由判断定下时，最终写进请求体的档位还会再收窄一次渠道，估算时还不知道这个档位，个别渠道可能估进去了、实际却被淘汰。
+- **手工编辑与定时刷新二选一**：保存手工编辑会关掉定时刷新，公开榜单的新模型和新分数从此进不来；之后任何一次刷新或恢复内置都会把手工改动整个换掉。手工给的分数是一次性的快照，公开榜单变了不会跟着变。
+- **编辑页的“网关有”和可选范围只是粗估**：只看渠道启用与否，不看令牌白名单、分组、能力声明和价格，一个请求实际能不能选中某个模型以选路日志为准。
+- **多节点下保存有几秒延迟**：处理保存请求的节点立刻生效，其他节点等下一次选项同步（`SYNC_FREQUENCY`，默认 60 秒），这期间仍按旧榜单选路。冲突检查比的是处理请求那个节点上的榜单，两位管理员在同步间隔内通过不同节点各自保存时，后一次可能没被拦住。

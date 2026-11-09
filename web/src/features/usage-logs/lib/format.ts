@@ -492,6 +492,8 @@ const AUDIT_TEMPLATES: Record<string, string> = {
   'option.update': 'Updated system setting {{key}}',
   'autorouter.rank_refresh': 'Started an auto router leaderboard refresh',
   'autorouter.rank_restore': 'Restored the built-in auto router ranking',
+  'autorouter.rank_edit':
+    'Edited the auto router ranking by hand: {{profiles}} (added {{added}}, removed {{removed}}, rescored {{rescored}})',
   'option.passkey_domains':
     'Updated Passkey domains: removed {{domains}}; affected {{known}}; unknown {{unknown}}',
   'option.passkey_domains_confirmed':

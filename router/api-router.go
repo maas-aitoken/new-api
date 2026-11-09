@@ -487,6 +487,7 @@ func SetApiRouter(router *gin.Engine) {
 		{
 			autoRouterRoute.GET("/status", controller.GetAutoRouterStatus)
 			autoRouterRoute.GET("/ranking", controller.GetAutoRouterRanking)
+			autoRouterRoute.PUT("/ranking", controller.UpdateAutoRouterRanking)
 			autoRouterRoute.POST("/ranking/refresh", controller.RefreshAutoRouterRanking)
 			autoRouterRoute.POST("/ranking/restore", controller.RestoreAutoRouterRanking)
 		}
