@@ -892,6 +892,52 @@ func TestSmartRoutingKeyRejectsAPoolAutoCannotChooseFrom(t *testing.T) {
 	})
 }
 
+// 列表里的本月用量来自看板的小时汇总表 quota_data，只算本自然月、按令牌汇总；
+// 汇总表查不到时字段不返回，前端显示占位而不是 0。
+func TestTokenListShowsThisMonthsUsage(t *testing.T) {
+	db := setupTokenControllerTestDB(t)
+	busy := seedToken(t, db, 1, "busy-token", "busy1234busy5678")
+	seedToken(t, db, 1, "idle-token", "idle1234idle5678")
+
+	listUsage := func() map[string]map[string]any {
+		t.Helper()
+		ctx, recorder := newAuthenticatedContext(t, http.MethodGet, "/api/token/?p=1&size=10", nil, 1)
+		GetAllTokens(ctx)
+		response := decodeAPIResponse(t, recorder)
+		require.True(t, response.Success, response.Message)
+		var page struct {
+			Items []map[string]any `json:"items"`
+		}
+		require.NoError(t, common.Unmarshal(response.Data, &page))
+		byName := map[string]map[string]any{}
+		for _, item := range page.Items {
+			byName[item["name"].(string)] = item
+		}
+		return byName
+	}
+
+	// 没有汇总表：列表照常返回，用量字段不出现。
+	items := listUsage()
+	require.Len(t, items, 2)
+	assert.NotContains(t, items["busy-token"], "monthly_calls")
+
+	require.NoError(t, db.AutoMigrate(&model.QuotaData{}))
+	now := time.Now()
+	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location()).Unix()
+	require.NoError(t, db.Create(&[]model.QuotaData{
+		{TokenID: busy.Id, CreatedAt: monthStart, Count: 3, Quota: 300},
+		{TokenID: busy.Id, CreatedAt: monthStart + 3600, Count: 2, Quota: 50},
+		{TokenID: busy.Id, CreatedAt: monthStart + 7200, Count: 0, Quota: 0, FailedCount: 4}, // 最终失败不计次数
+		{TokenID: busy.Id, CreatedAt: monthStart - 3600, Count: 9, Quota: 900},               // 上个月
+	}).Error)
+
+	items = listUsage()
+	assert.EqualValues(t, 5, items["busy-token"]["monthly_calls"])
+	assert.EqualValues(t, 350, items["busy-token"]["monthly_quota"])
+	assert.EqualValues(t, 0, items["idle-token"]["monthly_calls"], "a key without calls this month shows 0, not a placeholder")
+	assert.EqualValues(t, 0, items["idle-token"]["monthly_quota"])
+}
+
 func TestGetTokenUsageFollowsTheUserQuotaSwitchAndIPWhitelist(t *testing.T) {
 	for _, tc := range []struct {
 		name          string

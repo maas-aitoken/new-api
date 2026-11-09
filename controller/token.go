@@ -5,6 +5,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
@@ -79,6 +80,10 @@ type tokenResponse struct {
 	// MyRole owner / member / leader。
 	MyRole       string `json:"my_role,omitempty"`
 	EffectiveRPM int    `json:"effective_rpm"`
+	// 本月（服务器本地时区的自然月）成功调用次数和消耗额度，只在列表接口里有；
+	// 指针为 nil 表示没查到（汇总表查询失败），前端显示占位而不是 0。
+	MonthlyCalls *int64 `json:"monthly_calls,omitempty"`
+	MonthlyQuota *int64 `json:"monthly_quota,omitempty"`
 }
 
 func effectiveTokenRPM(rpm int) int {
@@ -956,13 +961,39 @@ func attachTokenPeople(
 	return responses
 }
 
-// buildTokenListItems 按 scope 决定是否回填人员信息
+// buildTokenListItems 按 scope 决定是否回填人员信息，并回填本月用量
 func buildTokenListItems(tokens []*model.Token, scope common.TokenViewScope, userId int) []*tokenResponse {
 	responses := buildMaskedTokenResponses(tokens)
+	attachTokenMonthlyUsage(responses)
 	if scope == common.TokenScopeOwned {
 		return responses
 	}
 	return attachTokenPeople(responses, tokens, userId)
+}
+
+// attachTokenMonthlyUsage 一次查出这一页令牌本月的调用次数和额度。查询失败只记日志，
+// 字段留空，列表照常返回。
+func attachTokenMonthlyUsage(responses []*tokenResponse) {
+	ids := make([]int, 0, len(responses))
+	for _, response := range responses {
+		if response != nil && response.Token != nil {
+			ids = append(ids, response.Id)
+		}
+	}
+	now := time.Now()
+	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location()).Unix()
+	usage, err := model.GetTokensUsageSince(ids, monthStart)
+	if err != nil {
+		common.SysError(common.LogText("failed to load token monthly usage: %s", err.Error()))
+		return
+	}
+	for _, response := range responses {
+		if response == nil || response.Token == nil {
+			continue
+		}
+		row := usage[response.Id]
+		response.MonthlyCalls, response.MonthlyQuota = &row.Calls, &row.Quota
+	}
 }
 
 // GetKeyViewScope 当前用户在业务视图里是不是 leader
