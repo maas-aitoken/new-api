@@ -30,6 +30,8 @@ type StatusOverrides = {
   rankKeysReady?: boolean
   rankingCurrent?: boolean
   refresh?: { status: SystemTaskStatus; error?: string }
+  /** The ranking was saved from the editor, which stamps edited_at. */
+  edited?: boolean
 }
 
 function mockStatus(overrides: StatusOverrides = {}) {
@@ -42,7 +44,11 @@ function mockStatus(overrides: StatusOverrides = {}) {
         rank_keys_ready: overrides.rankKeysReady ?? true,
         ranking_current: overrides.rankingCurrent ?? true,
         taxonomy_version: '3',
-        rank_sources: { generated_at: '2026-10-28', livebench: '20261025' },
+        rank_sources: {
+          generated_at: '2026-10-28',
+          livebench: '20261025',
+          ...(overrides.edited ? { edited_at: '2026-11-09T00:30:00Z' } : {}),
+        },
         sources: {},
         rank_refresh: overrides.refresh && {
           id: 1,
@@ -123,6 +129,26 @@ test('restoring the built-in ranking asks first and only then posts', async () =
 
   await waitFor(() =>
     expect(api.post).toHaveBeenCalledWith('/api/autorouter/ranking/restore')
+  )
+})
+
+test('a hand-edited ranking is flagged, and refreshing over it asks first', async () => {
+  const user = userEvent.setup()
+  mockStatus({ edited: true })
+  vi.spyOn(api, 'post').mockResolvedValue({
+    data: { success: true, data: { created: true, task: { task_id: 'systask_2' } } },
+  })
+  renderStatus()
+
+  expect(await screen.findByText('Edited by hand')).toBeVisible()
+  await user.click(screen.getByRole('button', { name: 'Refresh now' }))
+  const dialog = await screen.findByRole('alertdialog')
+  expect(api.post).not.toHaveBeenCalled()
+
+  await user.click(within(dialog).getByRole('button', { name: 'Refresh now' }))
+
+  await waitFor(() =>
+    expect(api.post).toHaveBeenCalledWith('/api/autorouter/ranking/refresh')
   )
 })
 

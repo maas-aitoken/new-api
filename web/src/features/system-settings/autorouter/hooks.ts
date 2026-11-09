@@ -31,7 +31,9 @@ import {
   getAutoRouterStatus,
   refreshAutoRouterRanking,
   restoreAutoRouterRanking,
+  saveAutoRouterRanking,
 } from './api'
+import type { AutoRouterRankingEdit } from './types'
 
 export const AUTOROUTER_STATUS_KEY = ['autorouter-status']
 export const AUTOROUTER_RANKING_KEY = ['autorouter-ranking']
@@ -105,6 +107,28 @@ export function useRefreshAutoRouterRanking() {
         error,
         i18next.t('Failed to start the leaderboard refresh')
       ),
+  })
+}
+
+/**
+ * Saves a hand-edited ranking. The server turns periodic refresh off in the same
+ * write, so the options are reloaded too and the refresh switch shows it.
+ */
+export function useSaveAutoRouterRanking() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async (edit: AutoRouterRankingEdit) =>
+      requireServerSuccess(await saveAutoRouterRanking(edit)),
+    onSuccess: async () => {
+      toast.success(i18next.t('Ranking saved'))
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: AUTOROUTER_RANKING_KEY }),
+        queryClient.invalidateQueries({ queryKey: AUTOROUTER_STATUS_KEY }),
+        queryClient.invalidateQueries({ queryKey: ['system-options'] }),
+      ])
+    },
+    onError: (error: Error) =>
+      handleServerError(error, i18next.t('Failed to save the ranking')),
   })
 }
 
