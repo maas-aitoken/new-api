@@ -20,6 +20,7 @@ import (
 	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting/autorouter_setting"
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
@@ -829,6 +830,66 @@ func TestTokenRoutingFieldsOnCreateAndUpdate(t *testing.T) {
 			assert.Equal(t, tc.want, fields{scene: saved.Scene, routingMode: saved.RoutingMode, description: saved.Description})
 		})
 	}
+}
+
+// 智能路由 key 的模型池里没有一个 auto 能选的模型时，它的对话请求会全部失败，保存时就拒绝。
+func TestSmartRoutingKeyRejectsAPoolAutoCannotChooseFrom(t *testing.T) {
+	routerSetting := autorouter_setting.GetAutoRouterSetting()
+	saved := *routerSetting
+	t.Cleanup(func() { *routerSetting = saved })
+	routerSetting.Enabled = true
+	routerSetting.TaskModels = map[string][]string{}
+	routerSetting.DefaultModels = []string{"ranked-model"}
+
+	for _, tc := range []struct {
+		name     string
+		request  map[string]any
+		disabled bool // the platform has turned auto off
+		rejected bool
+	}{
+		{name: "a pool with a ranked model", request: map[string]any{"routing_mode": "smart", "model_limits_enabled": true, "model_limits": "ranked-model,private-model"}},
+		{name: "a pool with only unranked models", request: map[string]any{"routing_mode": "smart", "model_limits_enabled": true, "model_limits": "private-model,auto"}, rejected: true},
+		{name: "no pool", request: map[string]any{"routing_mode": "smart"}},
+		{name: "a locked key may hold unranked models", request: map[string]any{"routing_mode": "fixed", "model_limits_enabled": true, "model_limits": "private-model"}},
+		{name: "a business key is locked whatever it asks for", request: map[string]any{"scene": "business", "routing_mode": "smart", "model_limits_enabled": true, "model_limits": "private-model"}},
+		{name: "auto turned off passes the client's model through", request: map[string]any{"routing_mode": "smart", "model_limits_enabled": true, "model_limits": "private-model"}, disabled: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			routerSetting.Enabled = !tc.disabled
+			db := setupTokenControllerTestDB(t)
+			body := map[string]any{"name": "smart-pool", "expired_time": -1, "unlimited_quota": true, "status": common.TokenStatusEnabled}
+			maps.Copy(body, tc.request)
+			ctx, recorder := newAuthenticatedContext(t, http.MethodPost, "/api/token/", body, 1)
+			AddToken(ctx)
+
+			response := decodeAPIResponse(t, recorder)
+			assert.Equal(t, !tc.rejected, response.Success, response.Message)
+			var count int64
+			require.NoError(t, db.Model(&model.Token{}).Where("name = ?", "smart-pool").Count(&count).Error)
+			if tc.rejected {
+				assert.Zero(t, count, "a rejected key is not created")
+			} else {
+				assert.EqualValues(t, 1, count)
+			}
+		})
+	}
+
+	t.Run("an update is checked too", func(t *testing.T) {
+		routerSetting.Enabled = true
+		db := setupTokenControllerTestDB(t)
+		token := seedToken(t, db, 1, "smart-pool", "smart-pool-key")
+		require.NoError(t, db.Model(token).UpdateColumns(map[string]any{"routing_mode": "smart"}).Error)
+		body := map[string]any{"id": token.Id, "name": "smart-pool", "expired_time": -1, "unlimited_quota": true,
+			"model_limits_enabled": true, "model_limits": "private-model"}
+		ctx, recorder := newAuthenticatedContext(t, http.MethodPut, "/api/token/", body, 1)
+		UpdateToken(ctx)
+
+		response := decodeAPIResponse(t, recorder)
+		assert.False(t, response.Success)
+		var reloaded model.Token
+		require.NoError(t, db.First(&reloaded, token.Id).Error)
+		assert.False(t, reloaded.ModelLimitsEnabled, "the rejected pool is not saved")
+	})
 }
 
 func TestGetTokenUsageFollowsTheUserQuotaSwitchAndIPWhitelist(t *testing.T) {

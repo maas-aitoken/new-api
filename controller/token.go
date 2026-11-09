@@ -14,6 +14,7 @@ import (
 	"github.com/QuantumNous/new-api/pkg/autorouter"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting"
+	"github.com/QuantumNous/new-api/setting/autorouter_setting"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 
 	"github.com/gin-gonic/gin"
@@ -51,6 +52,17 @@ type tokenRequest struct {
 	Scene       *string `json:"scene"`
 	RoutingMode *string `json:"routing_mode"`
 	Description *string `json:"description"`
+}
+
+// smartRoutingPoolUsable 判断智能路由 key 的模型池里有没有 auto 能选的模型；池子里一个都选不出时，
+// 这个 key 的对话请求会全部失败，所以保存时就拒绝。不限模型或平台关了 auto 时不检查。
+func smartRoutingPoolUsable(token *model.Token) bool {
+	if !token.UsesSmartRouting() || !token.ModelLimitsEnabled || !autorouter_setting.GetAutoRouterSetting().Enabled {
+		return true
+	}
+	// AutoRouterListed 在列表里已有 auto 时返回 false；auto 不是池子的成员，先去掉。
+	pool := slices.DeleteFunc(token.GetModelLimits(), func(name string) bool { return name == autorouter.AutoModel })
+	return service.AutoRouterListed(pool)
 }
 
 // validAutoPreference 判断请求里的 auto_preference 是否可以写入：未传或空串（平台默认）都可以。
@@ -580,6 +592,10 @@ func AddToken(c *gin.Context) {
 	if !applyTokenProjectMembers(c, &cleanToken, request.ProjectMembers) {
 		return
 	}
+	if !smartRoutingPoolUsable(&cleanToken) {
+		common.ApiErrorT(c, "None of the selected models can be chosen by smart routing. Add a ranked model or switch to fixed model")
+		return
+	}
 
 	err = cleanToken.Insert()
 	if err != nil {
@@ -732,6 +748,10 @@ func UpdateToken(c *gin.Context) {
 			if !setTokenAutoGroups(c, cleanToken, request.AutoGroups.Groups) {
 				return
 			}
+		}
+		if !smartRoutingPoolUsable(cleanToken) {
+			common.ApiErrorT(c, "None of the selected models can be chosen by smart routing. Add a ranked model or switch to fixed model")
+			return
 		}
 	}
 	err = cleanToken.Update()

@@ -503,6 +503,7 @@ func TestDistributeRoutesUsedUpQuotaTierThroughAuto(t *testing.T) {
 		c.Set("id", user.Id)
 		common.SetContextKey(c, constant.ContextKeyTokenModelLimitEnabled, true)
 		common.SetContextKey(c, constant.ContextKeyTokenModelLimit, map[string]bool{"fixed": true})
+		common.SetContextKey(c, constant.ContextKeyTokenRoutingMode, common.TokenRoutingModeFixed)
 	}
 	body := `{"model":"fixed","messages":[{"role":"user","content":"hello"}]}`
 
@@ -517,6 +518,12 @@ func TestDistributeRoutesUsedUpQuotaTierThroughAuto(t *testing.T) {
 	assert.Equal(t, "general", originalModel)
 	assert.JSONEq(t, `{"model":"general","messages":[{"role":"user","content":"hello"}]}`, stored)
 
+	// 锁定模型 key 本来拒绝客户端传的 auto；档位用完时服务端已经强制走 auto，这时不拦。
+	_, originalModel, recorder = serveAutoRoutingRequestIn(t, "/v1/chat/completions", "default", 9611,
+		`{"model":"auto","messages":[{"role":"user","content":"hello"}]}`, asTierUser)
+	require.Equal(t, http.StatusNoContent, recorder.Code, recorder.Body.String())
+	assert.Equal(t, "general", originalModel)
+
 	// A business-scene key does not use the quota, so it keeps its model.
 	stored, originalModel, recorder = serveAutoRoutingRequestIn(t, "/v1/chat/completions", "default", 9612, body, asTierUser, func(c *gin.Context) {
 		common.SetContextKey(c, constant.ContextKeyTokenScene, common.TokenSceneBusiness)
@@ -524,6 +531,77 @@ func TestDistributeRoutesUsedUpQuotaTierThroughAuto(t *testing.T) {
 	require.Equal(t, http.StatusNoContent, recorder.Code, recorder.Body.String())
 	assert.Equal(t, "fixed", originalModel)
 	assert.Equal(t, body, stored)
+}
+
+// 智能路由 key 的对话请求不管传什么模型都改走 auto，模型池是 auto 的候选范围；
+// embedding 这类 auto 不支持的接口按模型池直接调。
+func TestDistributeSmartKeyRoutesChatThroughAuto(t *testing.T) {
+	setupAutoRoutingDistribute(t, []string{"general", "pool-model"}, map[int][]string{1: {"general", "pool-model", "embed-model"}})
+	useModelPrices(t, map[string]float64{"general": 1, "pool-model": 1, "embed-model": 1})
+	smartKey := func(c *gin.Context) {
+		common.SetContextKey(c, constant.ContextKeyTokenRoutingMode, common.TokenRoutingModeSmart)
+	}
+	smartKeyWithPool := func(c *gin.Context) {
+		smartKey(c)
+		common.SetContextKey(c, constant.ContextKeyTokenModelLimitEnabled, true)
+		common.SetContextKey(c, constant.ContextKeyTokenModelLimit, map[string]bool{"pool-model": true, "embed-model": true})
+	}
+
+	stored, originalModel, recorder := serveAutoRoutingRequestIn(t, "/v1/chat/completions", "default", 9621,
+		`{"model":"embed-model","messages":[{"role":"user","content":"hello"}]}`, smartKey)
+	require.Equal(t, http.StatusNoContent, recorder.Code, recorder.Body.String())
+	assert.Equal(t, "general", originalModel, "the model the client names is replaced by auto's choice")
+	assert.JSONEq(t, `{"model":"general","messages":[{"role":"user","content":"hello"}]}`, stored)
+
+	_, originalModel, recorder = serveAutoRoutingRequestIn(t, "/v1/chat/completions", "default", 9622,
+		`{"model":"general","messages":[{"role":"user","content":"hello"}]}`, smartKeyWithPool)
+	require.Equal(t, http.StatusNoContent, recorder.Code, recorder.Body.String())
+	assert.Equal(t, "pool-model", originalModel, "a model outside the pool may be named, auto still chooses inside the pool")
+
+	embedBody := `{"model":"embed-model","input":"hello"}`
+	stored, originalModel, recorder = serveAutoRoutingRequestIn(t, "/v1/embeddings", "default", 9623, embedBody, smartKeyWithPool)
+	require.Equal(t, http.StatusNoContent, recorder.Code, recorder.Body.String())
+	assert.Equal(t, "embed-model", originalModel)
+	assert.Equal(t, embedBody, stored, "auto does not serve embeddings, the pool model is called as named")
+
+	_, _, recorder = serveAutoRoutingRequestIn(t, "/v1/embeddings", "default", 9624, `{"model":"general","input":"hello"}`, smartKeyWithPool)
+	assert.Equal(t, http.StatusForbidden, recorder.Code, "outside auto the pool is still the key's whitelist")
+}
+
+// 锁定模型 key（含旧令牌的空值，上下文里都是 fixed）拒绝客户端传的 auto；平台关了 auto 时
+// "auto" 只是普通模型名，不按这条规则拒绝。
+func TestDistributeLockedKeyRejectsAuto(t *testing.T) {
+	lockedKey := func(c *gin.Context) {
+		common.SetContextKey(c, constant.ContextKeyTokenRoutingMode, common.TokenRoutingModeFixed)
+	}
+
+	t.Run("auto is refused, a named model is served", func(t *testing.T) {
+		setupAutoRoutingDistribute(t, []string{"general"}, map[int][]string{1: {"general"}})
+		useModelPrices(t, map[string]float64{"general": 1})
+
+		_, _, recorder := serveAutoRoutingRequestIn(t, "/v1/chat/completions", "default", 9631,
+			`{"model":"auto","messages":[{"role":"user","content":"hello"}]}`, lockedKey)
+		assert.Equal(t, http.StatusForbidden, recorder.Code)
+		assert.Contains(t, recorder.Body.String(), "model: auto")
+
+		body := `{"model":"general","messages":[{"role":"user","content":"hello"}]}`
+		stored, originalModel, recorder := serveAutoRoutingRequestIn(t, "/v1/chat/completions", "default", 9632, body, lockedKey)
+		require.Equal(t, http.StatusNoContent, recorder.Code, recorder.Body.String())
+		assert.Equal(t, "general", originalModel)
+		assert.Equal(t, body, stored)
+	})
+
+	t.Run("with auto turned off auto is an ordinary model name", func(t *testing.T) {
+		setupAutoRoutingDistribute(t, []string{"general"}, map[int][]string{1: {"general", "auto"}})
+		useModelPrices(t, map[string]float64{"general": 1, "auto": 1})
+		autorouter_setting.GetAutoRouterSetting().Enabled = false
+
+		body := `{"model":"auto","messages":[{"role":"user","content":"hello"}]}`
+		stored, originalModel, recorder := serveAutoRoutingRequestIn(t, "/v1/chat/completions", "default", 9633, body, lockedKey)
+		require.Equal(t, http.StatusNoContent, recorder.Code, recorder.Body.String())
+		assert.Equal(t, "auto", originalModel)
+		assert.Equal(t, body, stored)
+	})
 }
 
 func TestDistributeNonAutoRequestKeepsStoredBody(t *testing.T) {

@@ -85,6 +85,7 @@ func Distribute() func(c *gin.Context) {
 		// 其他接口由计费拦截。业务场景的 key 不受限。
 		scene, _ := common.GetContextKeyType[common.TokenScene](c, constant.ContextKeyTokenScene)
 		businessKey := scene == common.TokenSceneBusiness
+		tierForcedAuto := false
 		if shouldSelectChannel && !pinned && !businessKey && service.IsAutoRouterRequest(c, autorouter.AutoModel) {
 			exhausted, err := model.UserQuotaTierExhausted(c.GetInt("id"))
 			if err != nil {
@@ -94,6 +95,20 @@ func Distribute() func(c *gin.Context) {
 				common.SetContextKey(c, constant.ContextKeyTokenModelLimitEnabled, false)
 				common.SetContextKey(c, constant.ContextKeyTokenAutoPreference, "")
 				common.SetContextKey(c, constant.ContextKeyTokenRoutingPreference, nil)
+				tierForcedAuto = true
+			}
+		}
+		// 令牌的模型配置方式（只在令牌鉴权的请求上有）。智能路由 key 在 chat / responses / messages 上
+		// 不管客户端传什么模型都改走 auto，模型池仍是 auto 的候选范围；embedding、图片等 auto 不支持的
+		// 接口按模型池直接调。锁定模型 key（含旧令牌的空值）拒绝客户端传的 auto，但平台关了 auto 时
+		// "auto" 只是普通模型名，照常按白名单判断；额度档位用完时服务端强制的 auto 不拦。
+		if routingMode, ok := common.GetContextKeyType[common.TokenRoutingMode](c, constant.ContextKeyTokenRoutingMode); ok && shouldSelectChannel && !pinned && !tierForcedAuto {
+			switch {
+			case routingMode == common.TokenRoutingModeSmart && service.IsAutoRouterRequest(c, autorouter.AutoModel):
+				modelRequest.Model = autorouter.AutoModel
+			case routingMode != common.TokenRoutingModeSmart && service.IsAutoRouterRequest(c, modelRequest.Model):
+				abortWithOpenAiMessage(c, http.StatusForbidden, i18n.T(c, i18n.MsgDistributorTokenAutoForbidden))
+				return
 			}
 		}
 		autoRouting := shouldSelectChannel && service.IsAutoRouterRequest(c, modelRequest.Model)

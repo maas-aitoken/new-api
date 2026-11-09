@@ -4681,6 +4681,7 @@
     "None": "无",
     "None (plugin declaration)": "无（插件声明）",
     "None of the ranked models can serve this request, so the classifier was not called.": "榜单里没有任何模型能服务这个请求，所以没有调用分类器。",
+    "None of the selected models can be chosen by smart routing. Add a ranked model or switch to fixed model": "所选模型都不在智能路由的可选范围内，请加入榜单上的模型，或改成锁定模型",
     "noreply@example.com": "noreply@example.com",
     "Normalized:": "已归一化：",
     "Not allowed by the key's model list": "不在密钥的可用模型列表里",

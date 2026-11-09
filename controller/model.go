@@ -21,6 +21,7 @@ import (
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting/autorouter_setting"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	"github.com/gin-gonic/gin"
@@ -267,8 +268,19 @@ func ListModels(c *gin.Context, modelType int) {
 	if len(ownerGroups) > 0 {
 		ownerByModel = getPreferredModelOwners(userModelNames, ownerGroups)
 	}
+	// 列表与 Distribute 对令牌模型配置方式的处理一致：智能路由 key 的对话请求一律改走 auto，
+	// 所以只列 auto（auto 选不出模型时为空）；Gemini 原生接口 auto 不支持，照常列模型池。
+	// 锁定模型 key 不列 auto。平台关了 auto 时两种 key 都照常列模型池。
+	listAuto := service.AutoRouterListed(userModelNames)
+	listModels := true
+	if routingMode, ok := common.GetContextKeyType[common.TokenRoutingMode](c, constant.ContextKeyTokenRoutingMode); ok {
+		smartRouted := routingMode == common.TokenRoutingModeSmart && modelType != constant.ChannelTypeGemini &&
+			autorouter_setting.GetAutoRouterSetting().Enabled
+		listAuto = listAuto && smartRouted
+		listModels = !smartRouted
+	}
 	userOpenAiModels := make([]dto.OpenAIModels, 0, len(userModelNames)+1)
-	if service.AutoRouterListed(userModelNames) {
+	if listAuto {
 		userOpenAiModels = append(userOpenAiModels, dto.OpenAIModels{
 			Id:      autorouter.AutoModel,
 			Object:  "model",
@@ -279,8 +291,10 @@ func ListModels(c *gin.Context, modelType int) {
 			},
 		})
 	}
-	for _, modelName := range userModelNames {
-		userOpenAiModels = append(userOpenAiModels, buildOpenAIModel(modelName, ownerByModel))
+	if listModels {
+		for _, modelName := range userModelNames {
+			userOpenAiModels = append(userOpenAiModels, buildOpenAIModel(modelName, ownerByModel))
+		}
 	}
 
 	switch modelType {
