@@ -289,6 +289,7 @@ var accessTokenRouteRules = map[string]accessTokenRouteRule{
 	"GET /api/data/peak-tpm":                    accessTokenScopeRule("log:read"),
 	"GET /api/data/peak-tpm/self":               accessTokenScopeRule("usage:read"),
 	"GET /api/perf-metrics/availability":        accessTokenAnyRule,
+	"GET /api/perf-metrics/health":              accessTokenAnyRule,
 
 	// router/api-router.go: /api/group, /api/prefill_group
 	"GET /api/group/":               accessTokenScopeRule("group:read"),

@@ -22,22 +22,10 @@ func GetModelAvailability(c *gin.Context) {
 		minutes = parsed
 	}
 
-	// nil allows all models; an empty set allows none.
-	var allowedModels map[string]struct{}
-	if c.GetInt("role") < common.RoleAdminUser {
-		user, err := model.GetUserCache(c.GetInt("id"))
-		if err != nil {
-			common.ApiError(c, err)
-			return
-		}
-		groupNames := make([]string, 0)
-		for group := range service.GetUserUsableGroups(user.Group) {
-			groupNames = append(groupNames, group)
-		}
-		allowedModels = make(map[string]struct{})
-		for _, modelName := range service.GetGroupsEnabledModels(groupNames) {
-			allowedModels[modelName] = struct{}{}
-		}
+	allowedModels, err := visibleHealthModels(c)
+	if err != nil {
+		common.ApiError(c, err)
+		return
 	}
 
 	window, err := model.GetRecentModelAvailability(minutes, allowedModels)
@@ -48,4 +36,42 @@ func GetModelAvailability(c *gin.Context) {
 	}
 	window.ErrorLogEnabled = constant.ErrorLogEnabled
 	common.ApiSuccess(c, window)
+}
+
+// GetModelHealth returns each model's health bar summed over its channels.
+func GetModelHealth(c *gin.Context) {
+	allowedModels, err := visibleHealthModels(c)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+
+	window, err := model.GetRecentModelHealth(allowedModels)
+	if err != nil {
+		common.SysError("failed to query model health: " + err.Error())
+		common.ApiErrorMsg(c, "failed to query model health")
+		return
+	}
+	common.ApiSuccess(c, window)
+}
+
+// visibleHealthModels limits non-admins to the models of their usable groups.
+// nil allows all models; an empty set allows none.
+func visibleHealthModels(c *gin.Context) (map[string]struct{}, error) {
+	if c.GetInt("role") >= common.RoleAdminUser {
+		return nil, nil
+	}
+	user, err := model.GetUserCache(c.GetInt("id"))
+	if err != nil {
+		return nil, err
+	}
+	groupNames := make([]string, 0)
+	for group := range service.GetUserUsableGroups(user.Group) {
+		groupNames = append(groupNames, group)
+	}
+	allowedModels := make(map[string]struct{})
+	for _, modelName := range service.GetGroupsEnabledModels(groupNames) {
+		allowedModels[modelName] = struct{}{}
+	}
+	return allowedModels, nil
 }

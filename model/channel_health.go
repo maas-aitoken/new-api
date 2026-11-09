@@ -3,6 +3,9 @@ package model
 import (
 	"errors"
 	"fmt"
+	"sort"
+	"sync"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 )
@@ -109,4 +112,121 @@ func GetChannelHealthBuckets(channelIds []int, startTs int64) (map[int][]Channel
 		}
 	}
 	return result, nil
+}
+
+// ModelHealth is one model's channel health bar summed over its channels.
+type ModelHealth struct {
+	ModelName string                `json:"model_name"`
+	Buckets   []ChannelHealthBucket `json:"buckets"`
+}
+
+// ModelHealthWindow lists the models with traffic in the window, sorted by name.
+type ModelHealthWindow struct {
+	Models       []ModelHealth `json:"models"`
+	BlockCount   int           `json:"block_count"`
+	BlockSeconds int           `json:"block_seconds"`
+	StartTs      int64         `json:"start_ts"`
+}
+
+// The query covers every model, so all callers share one result.
+const modelHealthCacheTTL = 30 * time.Second
+
+var (
+	modelHealthCacheMu      sync.Mutex
+	modelHealthCache        ModelHealthWindow
+	modelHealthCacheExpires time.Time
+)
+
+// GetRecentModelHealth covers the window ending at the current minute.
+// nil allowedModels keeps every model; an empty set keeps none.
+func GetRecentModelHealth(allowedModels map[string]struct{}) (ModelHealthWindow, error) {
+	now := time.Now()
+	endTs := now.Unix() / 60 * 60
+	startTs := endTs - int64(ChannelHealthBlockCount)*int64(ChannelHealthBlockSeconds)
+
+	modelHealthCacheMu.Lock()
+	window, expires := modelHealthCache, modelHealthCacheExpires
+	modelHealthCacheMu.Unlock()
+	if !now.Before(expires) || window.StartTs != startTs {
+		models, err := queryModelHealth(startTs, endTs)
+		if err != nil {
+			return ModelHealthWindow{}, err
+		}
+		window = ModelHealthWindow{
+			Models:       models,
+			BlockCount:   ChannelHealthBlockCount,
+			BlockSeconds: ChannelHealthBlockSeconds,
+			StartTs:      startTs,
+		}
+		modelHealthCacheMu.Lock()
+		modelHealthCache, modelHealthCacheExpires = window, now.Add(modelHealthCacheTTL)
+		modelHealthCacheMu.Unlock()
+	}
+
+	// Do not let caller filters mutate the shared cache.
+	filtered := make([]ModelHealth, 0, len(window.Models))
+	for _, item := range window.Models {
+		if allowedModels != nil {
+			if _, allowed := allowedModels[item.ModelName]; !allowed {
+				continue
+			}
+		}
+		filtered = append(filtered, item)
+	}
+	window.Models = filtered
+	return window, nil
+}
+
+// queryModelHealth counts like the channel bar (consume = success, error = failure,
+// per attempt) and sums per model; rows without a channel or model are skipped.
+func queryModelHealth(startTs, endTs int64) ([]ModelHealth, error) {
+	bucketExpr, err := channelHealthBucketExpr(startTs, ChannelHealthBlockSeconds)
+	if err != nil {
+		return nil, err
+	}
+
+	var rows []struct {
+		ModelName   string
+		Type        int
+		BucketIndex int
+		Total       int64
+	}
+	err = LOG_DB.Table("logs").
+		Select("model_name, type, "+bucketExpr+", count(*) AS total").
+		Where("created_at >= ? AND created_at < ?", startTs, endTs).
+		Where("type IN ?", []int{LogTypeConsume, LogTypeError}).
+		Where("channel_id > 0").
+		Where("model_name <> ''").
+		Group("model_name, type, bucket_index").
+		Scan(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+
+	byModel := make(map[string][]ChannelHealthBucket)
+	for _, row := range rows {
+		if row.BucketIndex < 0 || row.BucketIndex >= ChannelHealthBlockCount || row.Total <= 0 {
+			continue
+		}
+		buckets, ok := byModel[row.ModelName]
+		if !ok {
+			buckets = make([]ChannelHealthBucket, ChannelHealthBlockCount)
+			byModel[row.ModelName] = buckets
+		}
+		switch row.Type {
+		case LogTypeConsume:
+			buckets[row.BucketIndex].Success += row.Total
+		case LogTypeError:
+			buckets[row.BucketIndex].Failed += row.Total
+		}
+	}
+
+	models := make([]ModelHealth, 0, len(byModel))
+	for name, buckets := range byModel {
+		models = append(models, ModelHealth{ModelName: name, Buckets: buckets})
+	}
+	sort.Slice(models, func(i, j int) bool {
+		return models[i].ModelName < models[j].ModelName
+	})
+	return models, nil
 }

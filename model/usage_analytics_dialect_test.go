@@ -80,6 +80,7 @@ func runUsageAnalyticsDialectSuite(t *testing.T, dbType common.DatabaseType, mai
 		"failure flush increments":   TestLogQuotaDataFinalFailureAccumulatesAcrossFlushes,
 		"legacy readers skip failed": TestLegacyQuotaDataReadersSkipFailureOnlyRows,
 		"availability":               testModelAvailabilityOnLogDB,
+		"model health":               TestQueryModelHealthSumsChannelsPerModel,
 		"iself usage":                TestGetIselfUsageAnalytics,
 		"iself cache tokens":         TestGetIselfUsageAnalyticsCacheTokens,
 		"iself attribution":          TestIselfUsageIsAttributedToTheEmailAccount,
@@ -150,6 +151,7 @@ func TestUsageAnalyticsClickHouseLogDB(t *testing.T) {
 	for name, run := range map[string]func(*testing.T){
 		"peak tpm":           TestGetPeakTPMTakesHourlyMaxOfMinuteTotals,
 		"availability":       testModelAvailabilityOnLogDB,
+		"model health":       TestQueryModelHealthSumsChannelsPerModel,
 		"iself usage":        TestGetIselfUsageAnalytics,
 		"iself cache tokens": TestGetIselfUsageAnalyticsCacheTokens,
 		"relay log email":    TestRecordRelayLogsPreservesIselfEmail,
