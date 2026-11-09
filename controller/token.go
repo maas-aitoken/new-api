@@ -58,8 +58,22 @@ type tokenResponse struct {
 	PreferenceMode common.RoutingPreferenceMode `json:"preference_mode"`
 	Owner          *model.UserBrief             `json:"owner,omitempty"`
 	ProjectMembers []model.UserBrief            `json:"project_members,omitempty"`
-	// MyRole owner / admin / member / leader。
-	MyRole string `json:"my_role,omitempty"`
+	// MyRole owner / member / leader。
+	MyRole       string `json:"my_role,omitempty"`
+	EffectiveRPM int    `json:"effective_rpm"`
+}
+
+func effectiveTokenRPM(rpm int) int {
+	if rpm < 0 {
+		return -1
+	}
+	if rpm > 0 {
+		return rpm
+	}
+	if setting.TokenRequestRateLimitEnabled && setting.TokenRequestRateLimitCount > 0 {
+		return setting.TokenRequestRateLimitCount
+	}
+	return -1
 }
 
 func maxTokenQuota() int {
@@ -90,6 +104,7 @@ func buildMaskedTokenResponse(token *model.Token) *tokenResponse {
 		Token:          &maskedToken,
 		AutoGroups:     autoGroups,
 		PreferenceMode: token.GetRoutingPreferenceMode(),
+		EffectiveRPM:   effectiveTokenRPM(token.RPM),
 	}
 }
 
