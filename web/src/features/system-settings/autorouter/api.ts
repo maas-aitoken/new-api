@@ -20,6 +20,7 @@ import { api } from '@/lib/api'
 
 import type {
   AutoRouterRanking,
+  AutoRouterRankingEdit,
   AutoRouterRefreshResult,
   AutoRouterResponse,
   AutoRouterStatus,
@@ -35,6 +36,14 @@ export async function getAutoRouterStatus() {
 export async function getAutoRouterRanking() {
   const res = await api.get<AutoRouterResponse<AutoRouterRanking>>(
     '/api/autorouter/ranking'
+  )
+  return res.data
+}
+
+export async function saveAutoRouterRanking(edit: AutoRouterRankingEdit) {
+  const res = await api.put<AutoRouterResponse<null>>(
+    '/api/autorouter/ranking',
+    edit
   )
   return res.data
 }

@@ -77,6 +77,12 @@ export type AutoRouterRankedModel = {
   model: string
   /** Null for a model the list names but the scores do not cover. */
   score: number | null
+  /**
+   * Whether an enabled channel on the gateway serves the model, bare or with an
+   * effort suffix. Token allowlists, groups, capabilities and prices are not
+   * considered, so a request may still be unable to use it.
+   */
+  served: boolean
 }
 
 export type AutoRouterRankedProfile = {
@@ -89,6 +95,19 @@ export type AutoRouterRanking = {
   taxonomy_version: string
   sources: Record<string, string> | null
   profiles: AutoRouterRankedProfile[]
+}
+
+/**
+ * A hand-edited ranking: every profile with its full list. base carries the
+ * generated_at and edited_at the editor loaded, so the server can refuse a save
+ * over a ranking that changed in the meantime.
+ */
+export type AutoRouterRankingEdit = {
+  base: { generated_at: string; edited_at: string }
+  profiles: {
+    profile: string
+    models: { model: string; score: number | null }[]
+  }[]
 }
 
 export type AutoRouterRefreshResult = {

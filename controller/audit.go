@@ -54,6 +54,7 @@ var auditContentTemplates = map[string]string{
 
 	"autorouter.rank_refresh": "Started an auto router leaderboard refresh",
 	"autorouter.rank_restore": "Restored the built-in auto router ranking",
+	"autorouter.rank_edit":    "Edited the auto router ranking by hand: ${profiles} (added ${added}, removed ${removed}, rescored ${rescored})",
 
 	"channel.create":             "Created channel ${name} (type ${type}, count ${count})",
 	"channel.update":             "Updated channel ${name} (ID: ${id})",
