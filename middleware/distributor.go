@@ -23,6 +23,7 @@ import (
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting/autorouter_setting"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 
@@ -100,12 +101,18 @@ func Distribute() func(c *gin.Context) {
 		}
 		// 令牌的模型配置方式（只在令牌鉴权的请求上有）。智能路由 key 在 chat / responses / messages 上
 		// 不管客户端传什么模型都改走 auto，模型池仍是 auto 的候选范围；embedding、图片等 auto 不支持的
-		// 接口按模型池直接调。锁定模型 key（含旧令牌的空值）拒绝客户端传的 auto，但平台关了 auto 时
-		// "auto" 只是普通模型名，照常按白名单判断；额度档位用完时服务端强制的 auto 不拦。
+		// 接口按模型池直接调。Gemini 原生格式（/v1beta/models/{模型}:generateContent）的模型名在 URL 里，
+		// auto 改写不了，智能路由 key 用它在路径里写个具体模型就能绕开 auto，所以平台开着 auto 时整种格式
+		// 都拒绝。锁定模型 key（含旧令牌的空值）拒绝客户端传的 auto，但平台关了 auto 时 "auto" 只是普通
+		// 模型名，照常按白名单判断；额度档位用完时服务端强制的 auto 不拦。
 		if routingMode, ok := common.GetContextKeyType[common.TokenRoutingMode](c, constant.ContextKeyTokenRoutingMode); ok && shouldSelectChannel && !pinned && !tierForcedAuto {
 			switch {
 			case routingMode == common.TokenRoutingModeSmart && service.IsAutoRouterRequest(c, autorouter.AutoModel):
 				modelRequest.Model = autorouter.AutoModel
+			case routingMode == common.TokenRoutingModeSmart && autorouter_setting.GetAutoRouterSetting().Enabled &&
+				relayconstant.Path2RelayMode(c.Request.URL.Path) == relayconstant.RelayModeGemini:
+				abortWithOpenAiMessage(c, http.StatusForbidden, i18n.T(c, i18n.MsgDistributorSmartKeyGeminiUnsupported))
+				return
 			case routingMode != common.TokenRoutingModeSmart && service.IsAutoRouterRequest(c, modelRequest.Model):
 				abortWithOpenAiMessage(c, http.StatusForbidden, i18n.T(c, i18n.MsgDistributorTokenAutoForbidden))
 				return

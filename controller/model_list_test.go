@@ -496,8 +496,8 @@ func TestListModelsTokenLimitUsesResolvedCustomAutoGroups(t *testing.T) {
 }
 
 // /v1/models 与 Distribute 对令牌模型配置方式的处理一致：智能路由 key 的对话请求都改走 auto，
-// 所以只列 auto；锁定模型 key（含旧令牌）拒绝 auto，所以不列 auto；Gemini 原生接口 auto 不支持，
-// 智能路由 key 也照常列模型池；平台关了 auto 时两种 key 都只列模型池。
+// 所以只列 auto；锁定模型 key（含旧令牌）拒绝 auto，所以不列 auto；Gemini 原生格式对智能路由 key
+// 整个拒绝，列表为空，锁定模型 key 照常列模型池；平台关了 auto 时两种 key 都只列模型池。
 func TestListModelsFollowsTheKeyRoutingMode(t *testing.T) {
 	withSelfUseModeEnabled(t)
 	routerSetting := autorouter_setting.GetAutoRouterSetting()
@@ -522,9 +522,11 @@ func TestListModelsFollowsTheKeyRoutingMode(t *testing.T) {
 		{name: "without a key", modelType: constant.ChannelTypeOpenAI, want: []string{"auto", "zz-embed-model", "zz-ranked-model"}},
 		{name: "smart routing key", mode: common.TokenRoutingModeSmart, modelType: constant.ChannelTypeOpenAI, want: []string{"auto"}},
 		{name: "smart routing key, anthropic format", mode: common.TokenRoutingModeSmart, modelType: constant.ChannelTypeAnthropic, want: []string{"auto"}},
-		{name: "smart routing key, gemini native", mode: common.TokenRoutingModeSmart, modelType: constant.ChannelTypeGemini, want: []string{"zz-embed-model", "zz-ranked-model"}},
+		{name: "smart routing key, gemini native", mode: common.TokenRoutingModeSmart, modelType: constant.ChannelTypeGemini, want: []string{}},
 		{name: "locked key", mode: common.TokenRoutingModeFixed, modelType: constant.ChannelTypeOpenAI, want: []string{"zz-embed-model", "zz-ranked-model"}},
+		{name: "locked key, gemini native", mode: common.TokenRoutingModeFixed, modelType: constant.ChannelTypeGemini, want: []string{"zz-embed-model", "zz-ranked-model"}},
 		{name: "smart routing key with auto turned off", mode: common.TokenRoutingModeSmart, modelType: constant.ChannelTypeOpenAI, disabled: true, want: []string{"zz-embed-model", "zz-ranked-model"}},
+		{name: "smart routing key with auto turned off, gemini native", mode: common.TokenRoutingModeSmart, modelType: constant.ChannelTypeGemini, disabled: true, want: []string{"zz-embed-model", "zz-ranked-model"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			routerSetting.Enabled = !tc.disabled

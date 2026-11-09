@@ -436,7 +436,8 @@ func serveAutoRoutingRequest(t *testing.T, path string, tokenID int, body string
 func serveAutoRoutingRequestIn(t *testing.T, path, usingGroup string, tokenID int, body string, setup ...func(*gin.Context)) (stored string, originalModel string, recorder *httptest.ResponseRecorder) {
 	t.Helper()
 	router := gin.New()
-	router.POST(path, RequestId(), func(c *gin.Context) {
+	// 用通配路由：Gemini 原生路径（/v1beta/models/x:generateContent）不能直接注册成路由模式。
+	router.POST("/*any", RequestId(), func(c *gin.Context) {
 		common.SetContextKey(c, constant.ContextKeyUsingGroup, usingGroup)
 		common.SetContextKey(c, constant.ContextKeyUserGroup, "default")
 		common.SetContextKey(c, constant.ContextKeyTokenId, tokenID)
@@ -602,6 +603,43 @@ func TestDistributeLockedKeyRejectsAuto(t *testing.T) {
 		assert.Equal(t, "auto", originalModel)
 		assert.Equal(t, body, stored)
 	})
+}
+
+// Gemini 原生格式的模型名在 URL 里，auto 改写不了：智能路由 key 在路径里写具体模型就能绕开 auto，
+// 所以平台开着 auto 时整种格式都拒绝（包括 embedContent，embedding 走 /v1/embeddings）。
+// 锁定模型 key 不受影响；平台关了 auto 时智能路由 key 照常按模型池直接调。
+func TestDistributeSmartKeyCannotBypassAutoThroughTheNativeGeminiFormat(t *testing.T) {
+	setupAutoRoutingDistribute(t, []string{"general"}, map[int][]string{1: {"general", "private-model"}})
+	useModelPrices(t, map[string]float64{"general": 1, "private-model": 1})
+	keyOf := func(mode common.TokenRoutingMode) func(*gin.Context) {
+		return func(c *gin.Context) {
+			common.SetContextKey(c, constant.ContextKeyTokenRoutingMode, mode)
+		}
+	}
+	body := `{"contents":[{"role":"user","parts":[{"text":"hello"}]}]}`
+
+	for _, path := range []string{
+		"/v1beta/models/private-model:generateContent",
+		"/v1beta/models/private-model:streamGenerateContent",
+		"/v1beta/models/private-model:embedContent",
+		"/v1/models/private-model:generateContent",
+	} {
+		_, _, recorder := serveAutoRoutingRequestIn(t, path, "default", 9651, body, keyOf(common.TokenRoutingModeSmart))
+		assert.Equal(t, http.StatusForbidden, recorder.Code, path)
+		assert.Contains(t, recorder.Body.String(), "Gemini", path)
+	}
+
+	stored, originalModel, recorder := serveAutoRoutingRequestIn(t, "/v1beta/models/private-model:generateContent", "default", 9652, body,
+		keyOf(common.TokenRoutingModeFixed))
+	require.Equal(t, http.StatusNoContent, recorder.Code, recorder.Body.String())
+	assert.Equal(t, "private-model", originalModel, "a locked key calls the model it names")
+	assert.Equal(t, body, stored)
+
+	autorouter_setting.GetAutoRouterSetting().Enabled = false
+	_, originalModel, recorder = serveAutoRoutingRequestIn(t, "/v1beta/models/private-model:generateContent", "default", 9653, body,
+		keyOf(common.TokenRoutingModeSmart))
+	require.Equal(t, http.StatusNoContent, recorder.Code, recorder.Body.String())
+	assert.Equal(t, "private-model", originalModel, "with auto turned off a smart key calls the model it names")
 }
 
 func TestDistributeNonAutoRequestKeepsStoredBody(t *testing.T) {

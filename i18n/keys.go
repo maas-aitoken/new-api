@@ -29,6 +29,7 @@ const (
 	MsgDistributorTokenNoModelAccess           = "distributor.token_no_model_access"
 	MsgDistributorTokenModelForbidden          = "distributor.token_model_forbidden"
 	MsgDistributorTokenAutoForbidden           = "distributor.token_auto_forbidden"
+	MsgDistributorSmartKeyGeminiUnsupported    = "distributor.smart_key_gemini_unsupported"
 	MsgDistributorModelNameRequired            = "distributor.model_name_required"
 	MsgDistributorInvalidPlayground            = "distributor.invalid_playground_request"
 	MsgDistributorGroupAccessDenied            = "distributor.group_access_denied"
