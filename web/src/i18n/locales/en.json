@@ -4735,6 +4735,7 @@
     "None": "None",
     "None (plugin declaration)": "None (plugin declaration)",
     "None of the ranked models can serve this request, so the classifier was not called.": "None of the ranked models can serve this request, so the classifier was not called.",
+    "None of the selected models can be chosen by smart routing. Add a ranked model or switch to fixed model": "None of the selected models can be chosen by smart routing. Add a ranked model or switch to fixed model",
     "noreply@example.com": "noreply@example.com",
     "Normalized:": "Normalized:",
     "Not allowed by the key's model list": "Not allowed by the key's model list",

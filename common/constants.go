@@ -319,6 +319,9 @@ func NormalizeTokenScene(scene string) TokenScene {
 	return TokenSceneOffice
 }
 
+// TokenRoutingMode 是令牌的模型配置方式。只有 smart 会把对话请求的模型改成 auto；
+// fixed 和空值都按客户端传的模型调用，并拒绝 auto。空值是这一列出现之前建的旧令牌，
+// 以及不传这个字段的旧控制台、脚本建的令牌，保持原来"能调的模型都能调"的行为。
 type TokenRoutingMode string
 
 const (
@@ -326,11 +329,16 @@ const (
 	TokenRoutingModeFixed TokenRoutingMode = "fixed" // 锁定模型
 )
 
+// NormalizeTokenRoutingMode 只认 smart 和 fixed，其它值（含空串）一律存成空值，即锁定模型。
 func NormalizeTokenRoutingMode(mode string) TokenRoutingMode {
-	if strings.TrimSpace(mode) == string(TokenRoutingModeFixed) {
+	switch TokenRoutingMode(strings.TrimSpace(mode)) {
+	case TokenRoutingModeSmart:
+		return TokenRoutingModeSmart
+	case TokenRoutingModeFixed:
 		return TokenRoutingModeFixed
+	default:
+		return ""
 	}
-	return TokenRoutingModeSmart
 }
 
 type RoutingPreferenceMode string

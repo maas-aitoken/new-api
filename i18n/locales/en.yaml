@@ -20,6 +20,9 @@ distributor.invalid_channel_id: "Invalid channel ID"
 distributor.channel_disabled: "This channel has been disabled"
 distributor.token_no_model_access: "This token has no access to any models"
 distributor.token_model_forbidden: "This token has no access to model {{.Model}}"
+distributor.token_auto_forbidden: "This token is locked to specific models and cannot use smart routing (model: auto). Specify a model name, or switch the key to smart routing"
+distributor.smart_key_gemini_unsupported: "This token uses smart routing, which does not support the native Gemini format. Use /v1/chat/completions, /v1/responses or /v1/messages, or use a token locked to specific models"
+distributor.smart_key_completions_unsupported: "This token uses smart routing, which does not support /v1/completions. Use /v1/chat/completions, /v1/responses or /v1/messages, or use a token locked to specific models"
 distributor.model_name_required: "Model name not specified, model name cannot be empty"
 distributor.invalid_playground_request: "Invalid playground request: {{.Error}}"
 distributor.group_access_denied: "No permission to access this group"
@@ -39,6 +42,7 @@ relay.group_upstream_saturated: "The upstream of the current group is at capacit
 relay.retry_get_channel_failed: "Failed to get available channel for model {{.Model}} under group {{.Group}} (retry): {{.Error}}"
 relay.retry_no_available_channel: "No available channel for model {{.Model}} under group {{.Group}} (retry)"
 relay.access_token_unsupported: "Access tokens are not supported here"
+relay.smart_key_responses_websocket_unsupported: "This token uses smart routing, which does not support the Responses WebSocket. Call /v1/responses over HTTP, or use a token locked to specific models"
 
 # Emails and the name of the token created at registration
 user.default_token_name: "{{.Username}}'s initial token"

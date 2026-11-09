@@ -66,7 +66,7 @@ if redis.call('EXISTS', KEYS[2]) == 1 then
   return 0
 end
 if redis.call('EXISTS', KEYS[1]) == 1 then
-  redis.call('EXPIRE', KEYS[1], ARGV[22])
+  redis.call('EXPIRE', KEYS[1], ARGV[23])
   return 2
 end
 redis.call('HSET', KEYS[1],
@@ -76,8 +76,9 @@ redis.call('HSET', KEYS[1],
   'AllowIps', ARGV[11], 'Group', ARGV[12], 'CrossGroupRetry', ARGV[13],
   'AutoGroups', ARGV[14], 'RemainQuota', ARGV[15], 'UsedQuota', ARGV[16],
   'AllowUserQuotaQuery', ARGV[17], 'RoutingPreference', ARGV[18],
-  'AutoPreference', ARGV[19], 'Scene', ARGV[20], 'RPM', ARGV[21])
-redis.call('EXPIRE', KEYS[1], ARGV[22])
+  'AutoPreference', ARGV[19], 'Scene', ARGV[20], 'RPM', ARGV[21],
+  'RoutingMode', ARGV[22])
+redis.call('EXPIRE', KEYS[1], ARGV[23])
 return 1`
 
 	return common.RDB.Eval(context.Background(), script, []string{
@@ -94,6 +95,8 @@ return 1`
 		// go-redis 按具体类型分派参数，具名类型 TokenScene 会触发 can't marshal。
 		string(token.Scene),
 		token.RPM,
+		// 缓存里缺这个字段时读出来是空值，智能路由 key 会被当成锁定模型。
+		string(token.RoutingMode),
 		tokenCacheTTLSeconds(),
 	).Int()
 }

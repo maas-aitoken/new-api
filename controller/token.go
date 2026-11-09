@@ -5,6 +5,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
@@ -14,9 +15,11 @@ import (
 	"github.com/QuantumNous/new-api/pkg/autorouter"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting"
+	"github.com/QuantumNous/new-api/setting/autorouter_setting"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 
 	"github.com/gin-gonic/gin"
+	"github.com/samber/lo"
 	"github.com/shopspring/decimal"
 )
 
@@ -45,6 +48,22 @@ type tokenRequest struct {
 	RoutingPreferenceMode *common.RoutingPreferenceMode `json:"routing_preference_mode"`
 	ProjectMembers        *[]int                        `json:"project_members"`
 	ProjectOwnerId        *int                          `json:"project_owner_id"`
+	// 这三个是 MaaS 加的字段，new-api 自带控制台和老脚本不传，用指针区分“未传”。
+	// 更新时没传就保留原值，否则在旧控制台改一次，业务 key 会变成办公 key、项目成员和描述被清空。
+	Scene       *string `json:"scene"`
+	RoutingMode *string `json:"routing_mode"`
+	Description *string `json:"description"`
+}
+
+// smartRoutingPoolUsable 判断智能路由 key 的模型池里有没有 auto 能选的模型；池子里一个都选不出时，
+// 这个 key 的对话请求会全部失败，所以保存时就拒绝。不限模型或平台关了 auto 时不检查。
+func smartRoutingPoolUsable(token *model.Token) bool {
+	if !token.UsesSmartRouting() || !token.ModelLimitsEnabled || !autorouter_setting.GetAutoRouterSetting().Enabled {
+		return true
+	}
+	// AutoRouterListed 在列表里已有 auto 时返回 false；auto 不是池子的成员，先去掉。
+	pool := slices.DeleteFunc(token.GetModelLimits(), func(name string) bool { return name == autorouter.AutoModel })
+	return service.AutoRouterListed(pool)
 }
 
 // validAutoPreference 判断请求里的 auto_preference 是否可以写入：未传或空串（平台默认）都可以。
@@ -61,6 +80,10 @@ type tokenResponse struct {
 	// MyRole owner / member / leader。
 	MyRole       string `json:"my_role,omitempty"`
 	EffectiveRPM int    `json:"effective_rpm"`
+	// 本月（服务器本地时区的自然月）成功调用次数和消耗额度，只在列表接口里有；
+	// 指针为 nil 表示没查到（汇总表查询失败），前端显示占位而不是 0。
+	MonthlyCalls *int64 `json:"monthly_calls,omitempty"`
+	MonthlyQuota *int64 `json:"monthly_quota,omitempty"`
 }
 
 func effectiveTokenRPM(rpm int) int {
@@ -552,9 +575,13 @@ func AddToken(c *gin.Context) {
 		Group:              token.Group,
 		CrossGroupRetry:    token.CrossGroupRetry,
 		AutoGroups:         token.AutoGroups,
-		Scene:              common.NormalizeTokenScene(string(token.Scene)),
-		RoutingMode:        common.NormalizeTokenRoutingMode(string(token.RoutingMode)),
-		Description:        token.Description,
+		// 没传 routing_mode 的令牌存空值，即锁定模型：旧控制台、脚本建的令牌行为不变。
+		Scene:       common.NormalizeTokenScene(lo.FromPtr(request.Scene)),
+		RoutingMode: common.NormalizeTokenRoutingMode(lo.FromPtr(request.RoutingMode)),
+		Description: lo.FromPtr(request.Description),
+	}
+	if cleanToken.Scene == common.TokenSceneBusiness {
+		cleanToken.RoutingMode = common.TokenRoutingModeFixed
 	}
 	cleanToken.AllowUserQuotaQuery = request.AllowUserQuotaQuery == nil || *request.AllowUserQuotaQuery
 	if request.AutoPreference != nil {
@@ -568,6 +595,10 @@ func AddToken(c *gin.Context) {
 		}
 	}
 	if !applyTokenProjectMembers(c, &cleanToken, request.ProjectMembers) {
+		return
+	}
+	if !smartRoutingPoolUsable(&cleanToken) {
+		common.ApiErrorT(c, "None of the selected models can be chosen by smart routing. Add a ranked model or switch to fixed model")
 		return
 	}
 
@@ -681,9 +712,18 @@ func UpdateToken(c *gin.Context) {
 		}
 		cleanToken.Group = token.Group
 		cleanToken.CrossGroupRetry = token.CrossGroupRetry
-		cleanToken.Scene = common.NormalizeTokenScene(string(token.Scene))
-		cleanToken.RoutingMode = common.NormalizeTokenRoutingMode(string(token.RoutingMode))
-		cleanToken.Description = token.Description
+		if request.Scene != nil {
+			cleanToken.Scene = common.NormalizeTokenScene(*request.Scene)
+		}
+		if request.RoutingMode != nil {
+			cleanToken.RoutingMode = common.NormalizeTokenRoutingMode(*request.RoutingMode)
+		}
+		if cleanToken.Scene == common.TokenSceneBusiness {
+			cleanToken.RoutingMode = common.TokenRoutingModeFixed
+		}
+		if request.Description != nil {
+			cleanToken.Description = *request.Description
+		}
 
 		if !applyTokenProjectMembers(c, cleanToken, request.ProjectMembers) {
 			return
@@ -713,6 +753,10 @@ func UpdateToken(c *gin.Context) {
 			if !setTokenAutoGroups(c, cleanToken, request.AutoGroups.Groups) {
 				return
 			}
+		}
+		if !smartRoutingPoolUsable(cleanToken) {
+			common.ApiErrorT(c, "None of the selected models can be chosen by smart routing. Add a ranked model or switch to fixed model")
+			return
 		}
 	}
 	err = cleanToken.Update()
@@ -917,13 +961,39 @@ func attachTokenPeople(
 	return responses
 }
 
-// buildTokenListItems 按 scope 决定是否回填人员信息
+// buildTokenListItems 按 scope 决定是否回填人员信息，并回填本月用量
 func buildTokenListItems(tokens []*model.Token, scope common.TokenViewScope, userId int) []*tokenResponse {
 	responses := buildMaskedTokenResponses(tokens)
+	attachTokenMonthlyUsage(responses)
 	if scope == common.TokenScopeOwned {
 		return responses
 	}
 	return attachTokenPeople(responses, tokens, userId)
+}
+
+// attachTokenMonthlyUsage 一次查出这一页令牌本月的调用次数和额度。查询失败只记日志，
+// 字段留空，列表照常返回。
+func attachTokenMonthlyUsage(responses []*tokenResponse) {
+	ids := make([]int, 0, len(responses))
+	for _, response := range responses {
+		if response != nil && response.Token != nil {
+			ids = append(ids, response.Id)
+		}
+	}
+	now := time.Now()
+	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location()).Unix()
+	usage, err := model.GetTokensUsageSince(ids, monthStart)
+	if err != nil {
+		common.SysError(common.LogText("failed to load token monthly usage: %s", err.Error()))
+		return
+	}
+	for _, response := range responses {
+		if response == nil || response.Token == nil {
+			continue
+		}
+		row := usage[response.Id]
+		response.MonthlyCalls, response.MonthlyQuota = &row.Calls, &row.Quota
+	}
 }
 
 // GetKeyViewScope 当前用户在业务视图里是不是 leader
