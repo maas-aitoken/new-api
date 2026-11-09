@@ -4,12 +4,15 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/pkg/autorouter"
 	"github.com/QuantumNous/new-api/setting/autorouter_setting"
+	"github.com/QuantumNous/new-api/setting/config"
 
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
@@ -57,9 +60,15 @@ func setupAutoRouterControllerTest(t *testing.T) *gorm.DB {
 
 func callAutoRouterHandler(t *testing.T, handler gin.HandlerFunc) tokenAPIResponse {
 	t.Helper()
+	return callAutoRouterHandlerWithBody(t, handler, "")
+}
+
+// callAutoRouterHandlerWithBody 以 root 身份调用 handler，body 是 JSON 请求体。
+func callAutoRouterHandlerWithBody(t *testing.T, handler gin.HandlerFunc, body string) tokenAPIResponse {
+	t.Helper()
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
-	c.Request = httptest.NewRequest(http.MethodPost, "/api/autorouter", nil)
+	c.Request = httptest.NewRequest(http.MethodPost, "/api/autorouter", strings.NewReader(body))
 	c.Set("id", 1)
 	c.Set("role", common.RoleRootUser)
 	handler(c)
@@ -164,6 +173,76 @@ func TestAutoRouterStatusHidesSecretsAndRestoreReturnsToTheEmbeddedRanking(t *te
 	}
 	assert.Equal(t, len(setting.DefaultModels), profiles["general"], "general 画像用 default_models")
 	assert.Equal(t, len(setting.TaskModels["code.build"]), profiles["code.build"])
+}
+
+// 编辑页读到的榜单原样改一处交回就能保存：写回四项榜单并关掉定时刷新，记一条审计；
+// 拿着保存前的 base 再存一次会被拒，免得旧页面把新改动冲掉；刷新进行中也拒绝，刷新跑完会盖掉这次保存。
+func TestAutoRouterRankingEditSavesTurnsRefreshOffAndRefusesStaleOrRacingSaves(t *testing.T) {
+	db := setupAutoRouterControllerTest(t)
+	setting := autorouter_setting.GetAutoRouterSetting()
+	shipped, err := autorouter_setting.ShippedOptions()
+	require.NoError(t, err)
+	require.NoError(t, config.GlobalConfig.LoadFromDB(shipped))
+	setting.RankRefreshEnabled = true
+
+	type rankingData struct {
+		Sources  map[string]string                   `json:"sources"`
+		Profiles []autorouter_setting.RankingProfile `json:"profiles"`
+	}
+	load := func() rankingData {
+		response := callAutoRouterHandler(t, GetAutoRouterRanking)
+		require.True(t, response.Success, response.Message)
+		var data rankingData
+		require.NoError(t, common.Unmarshal(response.Data, &data))
+		require.Len(t, data.Profiles, len(autorouter.RankingProfiles()), "每个画像都列出来")
+		return data
+	}
+	save := func(data rankingData) tokenAPIResponse {
+		body, err := common.Marshal(map[string]any{
+			"base":     map[string]string{"generated_at": data.Sources["generated_at"], "edited_at": data.Sources["edited_at"]},
+			"profiles": data.Profiles,
+		})
+		require.NoError(t, err)
+		return callAutoRouterHandlerWithBody(t, UpdateAutoRouterRanking, string(body))
+	}
+	build := slices.Index(autorouter.RankingProfiles(), "code.build")
+	score := 0.9
+
+	loaded := load()
+	edited := loaded
+	edited.Profiles = slices.Clone(loaded.Profiles)
+	edited.Profiles[build].Models = append(slices.Clone(loaded.Profiles[build].Models), autorouter_setting.RankingEntry{Model: "private-coder", Score: &score})
+	response := save(edited)
+	require.True(t, response.Success, response.Message)
+	assert.False(t, setting.RankRefreshEnabled, "保存时关掉定时刷新")
+	assert.Contains(t, setting.TaskModels["code.build"], "private-coder")
+	var stored []model.Option
+	require.NoError(t, db.Find(&stored).Error)
+	assert.Len(t, stored, 5, "四项榜单加上关掉的定时刷新")
+	var audit model.AuditLog
+	require.NoError(t, db.Where("action = ?", "autorouter.rank_edit").First(&audit).Error)
+	assert.Contains(t, audit.Content, "code.build")
+	assert.Contains(t, audit.Content, "added 1")
+
+	response = save(edited)
+	assert.False(t, response.Success, "base 还是保存之前的，说明这份编辑过期了")
+	assert.Equal(t, "The ranking was changed after you loaded it. Reload it and make your edits again.", response.Message)
+
+	reloaded := load()
+	assert.NotEmpty(t, reloaded.Sources["edited_at"], "保存后 rank_sources 带编辑时间")
+	setting.ArtificialAnalysisKey, setting.OpenRouterKey = "aa-key", "or-key"
+	require.True(t, callAutoRouterHandler(t, RefreshAutoRouterRanking).Success)
+	reloaded.Profiles[build].Models = slices.DeleteFunc(reloaded.Profiles[build].Models, func(entry autorouter_setting.RankingEntry) bool {
+		return entry.Model == "private-coder"
+	})
+	response = save(reloaded)
+	assert.False(t, response.Success)
+	assert.Equal(t, "A leaderboard refresh is running. Save your edits after it finishes.", response.Message)
+	assert.Contains(t, setting.TaskModels["code.build"], "private-coder", "被拒的保存什么都不写")
+
+	var audits int64
+	require.NoError(t, db.Model(&model.AuditLog{}).Where("action = ?", "autorouter.rank_edit").Count(&audits).Error)
+	assert.EqualValues(t, 1, audits, "被拒的保存不记审计")
 }
 
 func callAutoRouteLogHandler(t *testing.T, handler gin.HandlerFunc, target string, params gin.Params) tokenAPIResponse {

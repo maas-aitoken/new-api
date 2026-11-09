@@ -1,8 +1,8 @@
 package controller
 
 import (
-	"maps"
-	"slices"
+	"strings"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
@@ -46,43 +46,18 @@ func GetAutoRouterStatus(c *gin.Context) {
 	common.ApiSuccess(c, status)
 }
 
-type autoRouterRankedModel struct {
-	Model string `json:"model"`
-	// Score is nil for a model the lists name but the scores do not cover.
-	Score *float64 `json:"score"`
-}
-
-type autoRouterRankedProfile struct {
-	Profile string                  `json:"profile"`
-	Models  []autoRouterRankedModel `json:"models"`
-}
-
 // GetAutoRouterRanking returns the ranking the router routes by right now,
 // which is the embedded one while the stored ranking predates the task types.
+// 每个画像都列出来（库里缺的画像给空列表），这正是手工编辑保存时要交回的画像集合；
+// 编辑保存时用 sources 里的 generated_at、edited_at 做冲突检查。
 func GetAutoRouterRanking(c *gin.Context) {
 	setting := autorouter_setting.GetAutoRouterSetting()
 	ranking := setting.Ranking()
-	lists := make(map[string][]string, len(ranking.TaskModels)+1)
-	maps.Copy(lists, ranking.TaskModels)
-	lists[autorouter.DefaultProfile] = ranking.DefaultModels
-
-	profiles := make([]autoRouterRankedProfile, 0, len(lists))
-	for _, profile := range slices.Sorted(maps.Keys(lists)) {
-		models := make([]autoRouterRankedModel, 0, len(lists[profile]))
-		for _, name := range lists[profile] {
-			ranked := autoRouterRankedModel{Model: name}
-			if score, scored := ranking.TaskScores[profile][name]; scored {
-				ranked.Score = &score
-			}
-			models = append(models, ranked)
-		}
-		profiles = append(profiles, autoRouterRankedProfile{Profile: profile, Models: models})
-	}
 	common.ApiSuccess(c, gin.H{
 		"current":          setting.RankingCurrent(),
 		"taxonomy_version": autorouter.TaxonomyVersion,
 		"sources":          ranking.Sources,
-		"profiles":         profiles,
+		"profiles":         ranking.Profiles(),
 	})
 }
 
@@ -127,5 +102,46 @@ func RestoreAutoRouterRanking(c *gin.Context) {
 		return
 	}
 	recordManageAudit(c, "autorouter.rank_restore", nil)
+	common.ApiSuccess(c, nil)
+}
+
+// autoRouterRankingEditRequest 是手工编辑后的整份榜单，base 是加载时看到的 rank_sources 时间。
+type autoRouterRankingEditRequest struct {
+	Base     autorouter_setting.RankingBase      `json:"base"`
+	Profiles []autorouter_setting.RankingProfile `json:"profiles"`
+}
+
+// UpdateAutoRouterRanking 用管理员手工编辑的整份榜单替换存的榜单，并关掉定时刷新，
+// 免得下一次刷新把它整个覆盖。刷新正在跑时拒绝：刷新跑完会立刻盖掉这次保存。
+func UpdateAutoRouterRanking(c *gin.Context) {
+	var request autoRouterRankingEditRequest
+	if err := common.DecodeJson(c.Request.Body, &request); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	active, err := model.GetActiveSystemTask(model.SystemTaskTypeAutoRouterRank)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	if active != nil {
+		common.ApiErrorT(c, "A leaderboard refresh is running. Save your edits after it finishes.")
+		return
+	}
+	edit, err := autorouter_setting.GetAutoRouterSetting().EditedRanking(request.Base, request.Profiles, time.Now())
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	if err := model.UpdateOptionsBulk(edit.Options); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	recordManageAudit(c, "autorouter.rank_edit", map[string]any{
+		"profiles": strings.Join(edit.Profiles, ", "),
+		"added":    edit.Added,
+		"removed":  edit.Removed,
+		"rescored": edit.Rescored,
+	})
 	common.ApiSuccess(c, nil)
 }
