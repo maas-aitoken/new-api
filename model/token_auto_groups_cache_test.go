@@ -53,12 +53,11 @@ func TestTokenAutoPreferenceRoundTripsThroughRedisHashCache(t *testing.T) {
 	assert.Equal(t, "cost", cached.AutoPreference)
 	assert.Positive(t, server.TTL(getTokenCacheKey(token.Key)), "新字段占了 ARGV 位置，过期时间的下标要跟着后移")
 
-	// 升级前写进缓存的令牌没有这个字段：读出来为空，走平台默认，不报错。
+	// 升级前写进缓存的哈希没有签名：完整性校验拒绝，调用方回落数据库并重建缓存。
 	legacyKey := "token-auto-preference-legacy-key"
 	server.HSet(getTokenCacheKey(legacyKey), "Id", "45", "UserId", "7", "Name", "legacy")
-	legacy, err := cacheGetTokenByKey(legacyKey)
-	require.NoError(t, err)
-	assert.Empty(t, legacy.AutoPreference)
+	_, err = cacheGetTokenByKey(legacyKey)
+	require.Error(t, err)
 }
 
 func TestTokenSceneRoundTripsThroughRedisHashCache(t *testing.T) {
@@ -135,13 +134,11 @@ func TestTokenRoutingModeRoundTripsThroughRedisHashCache(t *testing.T) {
 	assert.True(t, cached.UsesSmartRouting())
 	assert.Positive(t, server.TTL(getTokenCacheKey(token.Key)), "新字段占了 ARGV 位置，过期时间的下标要跟着后移")
 
-	// 升级前写进缓存的哈希没有这个字段：读出来为空，按锁定模型处理，等缓存过期后从数据库重建。
+	// 升级前写进缓存的哈希没有签名：完整性校验拒绝，调用方回落数据库并重建缓存。
 	legacyKey := "token-routing-mode-legacy-key"
 	server.HSet(getTokenCacheKey(legacyKey), "Id", "48", "UserId", "7", "Name", "legacy")
-	legacy, err := cacheGetTokenByKey(legacyKey)
-	require.NoError(t, err)
-	assert.Empty(t, legacy.RoutingMode)
-	assert.False(t, legacy.UsesSmartRouting())
+	_, err = cacheGetTokenByKey(legacyKey)
+	require.Error(t, err)
 }
 
 func TestTokenUsesSmartRoutingOnlyForAnOfficeKeySetToSmart(t *testing.T) {
