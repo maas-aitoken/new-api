@@ -51,3 +51,4 @@ go.work.sum
 # Local-only private files (e.g. CLAUDE.local.md).
 *.local
 *.local.*
+.workbuddy

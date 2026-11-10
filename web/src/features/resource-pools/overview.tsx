@@ -301,6 +301,41 @@ function PoolCardBody(props: {
         </dl>
       </div>
 
+      {summary.fiveHour && (
+        <div className="space-y-1.5 rounded-lg border p-3">
+          <div className="flex items-center justify-between gap-2 text-xs">
+            <span className="text-muted-foreground">{t("Usage (5h)")}</span>
+            <span className="text-muted-foreground">
+              {t("Next reset")}{" "}
+              <span className="text-foreground font-medium">
+                {formatResetAt(summary.fiveHour.nextReset, props.locale)}
+              </span>
+              {summary.fiveHour.nextReset && (
+                <span className="ml-1">
+                  {formatResetDistance(
+                    summary.fiveHour.nextReset,
+                    props.now,
+                    props.locale,
+                  )}
+                </span>
+              )}
+            </span>
+          </div>
+          <UsageBar
+            percent={summary.fiveHour.average}
+            digits={1}
+            muted={!summary.fiveHour.live}
+          />
+          <p className="text-muted-foreground text-xs">
+            {t("Peak {{percent}}%, {{count}} accounts at or above {{high}}%", {
+              percent: summary.fiveHour.peak.toFixed(0),
+              count: summary.fiveHour.high,
+              high: HIGH_USAGE_PERCENT,
+            })}
+          </p>
+        </div>
+      )}
+
       <UsageBandBar bands={summary.bands} />
 
       <div className="space-y-2">
