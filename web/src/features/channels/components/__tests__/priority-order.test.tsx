@@ -126,7 +126,7 @@ beforeEach(() => {
     if (url === '/api/channel/priority/order') {
       return { data: { success: true, data: current } }
     }
-    if (url === '/api/channel' || url === '/api/channel/search') {
+    if (url === '/api/channel/' || url === '/api/channel/search') {
       const field = config?.params?.sort_by ?? 'priority'
       const desc = config?.params?.sort_order !== 'asc'
       const items = current.items

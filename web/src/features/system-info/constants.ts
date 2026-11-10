@@ -21,7 +21,10 @@ For commercial licensing, please contact support@quantumnous.com
 export const SYSTEM_TASK_TYPE_LABEL: Record<string, string> = {
   log_cleanup: 'Log cleanup',
   channel_test: 'Batch channel test',
+  capability_gate_event_cleanup: 'Capability gate event cleanup',
+  auto_route_log_cleanup: 'Auto route log cleanup',
   model_update: 'Batch upstream model update',
   midjourney_poll: 'Drawing task polling',
   async_task_poll: 'Async task polling',
+  autorouter_rank: 'Auto router model ranking',
 }

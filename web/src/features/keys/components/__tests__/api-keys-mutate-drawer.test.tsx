@@ -17,6 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, test } from 'vitest'
 
 const { createInstance } = await import('i18next')
@@ -165,7 +166,9 @@ function findButton(text: string, required = true): HTMLButtonElement | null {
 }
 
 function getControlByLabel(labelText: 'Name' | 'Quantity'): HTMLInputElement
-function getControlByLabel(labelText: 'Group'): HTMLButtonElement
+function getControlByLabel(
+  labelText: 'Group' | 'Capability vs. price'
+): HTMLButtonElement
 function getControlByLabel(labelText: 'Auto group order'): HTMLElement
 function getControlByLabel(labelText: string): HTMLElement {
   const label = [...document.querySelectorAll<HTMLLabelElement>('label')].find(
@@ -338,6 +341,69 @@ describe('API keys mutate drawer Auto group integration', () => {
     fireEvent.click(findButton('Save changes', true))
     await waitFor(() => expect(createdPayloads).toHaveLength(1))
     expect(routingWrites).toHaveLength(0)
+  })
+})
+
+describe('API keys mutate drawer auto model preference', () => {
+  test('sends an empty preference when the key is left on the platform setting', async () => {
+    const createdPayloads: Array<Record<string, unknown>> = []
+    installApiFixtures(createdPayloads)
+    await renderCreateDrawer()
+
+    expect(getControlByLabel('Capability vs. price').textContent).toContain(
+      'Follow platform setting'
+    )
+    changeInput(getControlByLabel('Name'), 'plain')
+    fireEvent.click(findButton('Save changes', true))
+    await waitFor(() => expect(createdPayloads).toHaveLength(1))
+    expect(createdPayloads[0]?.auto_preference).toBe('')
+  })
+
+  test('sends the preference the user picks for every batch-created key', async () => {
+    const createdPayloads: Array<Record<string, unknown>> = []
+    installApiFixtures(createdPayloads)
+    await renderCreateDrawer()
+
+    const user = userEvent.setup()
+    await user.click(getControlByLabel('Capability vs. price'))
+    await user.click(await screen.findByRole('option', { name: 'Cost first' }))
+    expect(getControlByLabel('Capability vs. price').textContent).toContain(
+      'Cost first'
+    )
+
+    changeInput(getControlByLabel('Name'), 'cheap')
+    changeInput(getControlByLabel('Quantity'), '2')
+    fireEvent.click(findButton('Save changes', true))
+    await waitFor(() => expect(createdPayloads).toHaveLength(2))
+    expect(createdPayloads.map((payload) => payload.auto_preference)).toEqual([
+      'cost',
+      'cost',
+    ])
+  })
+
+  test('offers deciding per request and sends it as the key preference', async () => {
+    const createdPayloads: Array<Record<string, unknown>> = []
+    installApiFixtures(createdPayloads)
+    await renderCreateDrawer()
+
+    const user = userEvent.setup()
+    await user.click(getControlByLabel('Capability vs. price'))
+    await user.click(
+      await screen.findByRole('option', { name: 'Decide per request' })
+    )
+    expect(getControlByLabel('Capability vs. price').textContent).toContain(
+      'Decide per request'
+    )
+    expect(
+      screen.getByText(
+        'Judges each request on whether it stresses result quality or cost, and weighs capability against price to match.'
+      )
+    ).toBeVisible()
+
+    changeInput(getControlByLabel('Name'), 'adaptive')
+    fireEvent.click(findButton('Save changes', true))
+    await waitFor(() => expect(createdPayloads).toHaveLength(1))
+    expect(createdPayloads[0]?.auto_preference).toBe('adaptive')
   })
 })
 

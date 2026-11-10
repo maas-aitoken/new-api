@@ -29,6 +29,7 @@ import { StatusBadge } from '@/components/status-badge'
 import { getModelSquareIcon } from '@/lib/lobe-icon'
 
 import { parseTags } from '../lib/filters'
+import { formatCostMultiplier } from '../lib/model-helpers'
 import type { PricingModel } from '../types'
 import { CachedPriceCell } from './cached-price-cell'
 import { ModelBillingModeBadge } from './model-billing-mode-badge'
@@ -38,14 +39,17 @@ import { ModelPriceCell, type ModelPriceCellOptions } from './model-price-cell'
 // Pricing Table Columns
 // ----------------------------------------------------------------------------
 
-export type PricingColumnsOptions = ModelPriceCellOptions
+export type PricingColumnsOptions = ModelPriceCellOptions & {
+  /** 模型广场返回服务渠道；控制台定价页没有该数据时不显示这一列。 */
+  showChannels?: boolean
+}
 
 export function usePricingColumns(
   options: PricingColumnsOptions = {}
 ): ColumnDef<PricingModel>[] {
   const { t } = useTranslation()
 
-  return [
+  const columns: ColumnDef<PricingModel>[] = [
     // Model column
     {
       accessorKey: 'model_name',
@@ -203,4 +207,33 @@ export function usePricingColumns(
       enableSorting: false,
     },
   ]
+
+  if (options.showChannels) {
+    columns.push({
+      id: 'channels',
+      header: t('Channels'),
+      cell: ({ row }) => {
+        const channels = row.original.channels ?? []
+        if (channels.length === 0) {
+          return <span className='text-muted-foreground/50 text-xs'>—</span>
+        }
+        return (
+          <BadgeListCell
+            items={channels.map((channel) => (
+              <StatusBadge
+                key={channel.id}
+                label={`#${channel.id} × ${formatCostMultiplier(channel.cost_multiplier)}`}
+                size='sm'
+                copyable={false}
+              />
+            ))}
+          />
+        )
+      },
+      size: 150,
+      enableSorting: false,
+    })
+  }
+
+  return columns
 }

@@ -690,6 +690,13 @@ func SetupContextForToken(c *gin.Context, token *model.Token, parts ...string) e
 	}
 	common.SetContextKey(c, constant.ContextKeyTokenGroup, token.Group)
 	common.SetContextKey(c, constant.ContextKeyTokenCrossGroupRetry, token.CrossGroupRetry)
+	common.SetContextKey(c, constant.ContextKeyTokenScene, common.NormalizeTokenScene(string(token.Scene)))
+	common.SetContextKey(c, constant.ContextKeyTokenRPM, token.RPM)
+	routingMode := common.TokenRoutingModeFixed
+	if token.UsesSmartRouting() {
+		routingMode = common.TokenRoutingModeSmart
+	}
+	common.SetContextKey(c, constant.ContextKeyTokenRoutingMode, routingMode)
 	if token.AutoGroups != "" {
 		autoGroups, err := token.GetAutoGroups()
 		if err != nil {
@@ -700,6 +707,7 @@ func SetupContextForToken(c *gin.Context, token *model.Token, parts ...string) e
 			common.SetContextKey(c, constant.ContextKeyTokenAutoGroups, autoGroups)
 		}
 	}
+	common.SetContextKey(c, constant.ContextKeyTokenAutoPreference, token.AutoPreference)
 	if token.RoutingPreference != "" {
 		preference, err := token.GetRoutingPreference()
 		if err != nil {

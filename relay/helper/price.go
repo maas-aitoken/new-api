@@ -3,6 +3,7 @@ package helper
 import (
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
@@ -426,4 +427,100 @@ func modelPriceHelperTiered(c *gin.Context, info *relaycommon.RelayInfo, billing
 
 	info.PriceData = priceData
 	return priceData, nil
+}
+
+// RoutingPriceKind 说明一个模型的用户价格能不能按 token 比较。
+type RoutingPriceKind int
+
+const (
+	// RoutingUnpriced 没有配置价格（用户也没有接受未定价模型），计费时会直接失败。
+	RoutingUnpriced RoutingPriceKind = iota
+	// RoutingPerRequest 按次计价，没法和按 token 计价的模型比较。
+	RoutingPerRequest
+	// RoutingPerToken 按 token 计价，PricePerMillion 可以比较。
+	RoutingPerToken
+)
+
+// RoutingQuote 是一个候选模型对当前请求的用户价格；零值表示没有价格。
+type RoutingQuote struct {
+	Kind RoutingPriceKind
+	// PricePerMillion 是混合用户价（美元/百万 token）：输入输出按 3:1 混合（与离线排名
+	// 用的混合价同一个比例），已乘计费分组倍率。
+	PricePerMillion float64
+}
+
+// RoutingPricer 在选路阶段估算候选模型的用户价格。
+//
+// 选路发生在 RelayInfo 和预扣费之前，所以它只读价格配置，不写 PriceData、不碰额度，
+// 取价顺序与 ModelPriceHelper 一致：计费名解析 → 计费表达式 → 按次价格 → 倍率。
+// 价格保持浮点美元，不换算成额度。
+type RoutingPricer struct {
+	input            billingexpr.RequestInput
+	estimateInput    func(originModel string) int64
+	acceptUnsetRatio bool
+}
+
+// NewRoutingPricer 按候选模型的估算输入 token 数选择表达式里的上下文长度档位。
+// 同一段文本在不同家族的 tokenizer 下长度不同，所以每个候选单独估算；
+// 估算为 0（请求体不可用、超限等）时按最小档估价。estimateInput 不能为 nil。
+func NewRoutingPricer(c *gin.Context, estimateInput func(originModel string) int64, acceptUnsetRatio bool) *RoutingPricer {
+	// 读不到请求体时表达式里的 param() 取不到值，按没有该参数估价，不让选路因此失败。
+	input, _ := ResolveIncomingBillingExprRequestInput(c, nil)
+	input.Headers = relaycommon.CloneRequestHeaders(c)
+	return &RoutingPricer{
+		input:            input,
+		estimateInput:    estimateInput,
+		acceptUnsetRatio: acceptUnsetRatio,
+	}
+}
+
+// Quote 返回候选模型 originModel 在计费分组倍率 groupRatio 下的用户价格。
+func (p *RoutingPricer) Quote(originModel string, groupRatio float64) RoutingQuote {
+	name := resolveBillingModelName(originModel)
+	if name == "" {
+		return RoutingQuote{}
+	}
+
+	var inputPrice, outputPrice float64 // 美元/百万 token
+	switch {
+	case billing_setting.GetBillingMode(name) == billing_setting.BillingModeTieredExpr:
+		expr, ok := billing_setting.GetBillingExpr(name)
+		if !ok || strings.TrimSpace(expr) == "" {
+			return RoutingQuote{}
+		}
+		hash := billingexpr.ExprHashString(expr)
+		promptTokens := float64(min(max(p.estimateInput(originModel), 1), math.MaxInt32))
+		// 表达式的系数就是美元/百万 token。跑两次再相减，得到当前上下文长度档位下的输入价和输出价，
+		// 不假设表达式对 token 数是线性的。
+		inputCost, trace, err := billingexpr.RunExprByHashWithRequest(expr, hash,
+			billingexpr.TokenParams{P: promptTokens, C: 0, Len: promptTokens}, p.input)
+		if err != nil {
+			return RoutingQuote{}
+		}
+		if trace.BillingUnit == billingexpr.BillingUnitRequest {
+			return RoutingQuote{Kind: RoutingPerRequest}
+		}
+		bothCost, _, err := billingexpr.RunExprByHashWithRequest(expr, hash,
+			billingexpr.TokenParams{P: promptTokens, C: promptTokens, Len: promptTokens}, p.input)
+		if err != nil {
+			return RoutingQuote{}
+		}
+		inputPrice, outputPrice = inputCost/promptTokens, (bothCost-inputCost)/promptTokens
+	default:
+		if _, fixed := ratio_setting.GetModelPrice(name, false); fixed {
+			return RoutingQuote{Kind: RoutingPerRequest}
+		}
+		ratio, configured, _ := ratio_setting.GetModelRatio(name)
+		if (!configured && !p.acceptUnsetRatio) || common.QuotaPerUnit <= 0 {
+			return RoutingQuote{}
+		}
+		inputPrice = ratio * 1_000_000 / common.QuotaPerUnit
+		outputPrice = inputPrice * ratio_setting.GetCompletionRatio(name)
+	}
+
+	price := (3*inputPrice + outputPrice) / 4 * groupRatio
+	if inputPrice < 0 || outputPrice < 0 || groupRatio < 0 || math.IsNaN(price) || math.IsInf(price, 0) {
+		return RoutingQuote{}
+	}
+	return RoutingQuote{Kind: RoutingPerToken, PricePerMillion: price}
 }

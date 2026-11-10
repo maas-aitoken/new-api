@@ -46,6 +46,10 @@ const modelsSearchSchema = z.object({
   dPageSize: z.number().optional().catch(10),
   dFilter: z.string().optional().catch(''),
   dStatus: z.array(z.string()).optional().catch([]),
+  cPage: z.number().optional().catch(1),
+  cPageSize: z.number().optional().catch(20),
+  cFilter: z.string().optional().catch(''),
+  cChannel: z.string().optional().catch(''),
 })
 
 export const Route = createFileRoute('/_authenticated/models/$section')({

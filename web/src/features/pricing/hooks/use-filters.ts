@@ -34,8 +34,6 @@ import {
   filterAndSortModels,
   extractAllTags,
   filterByAdvanced,
-  getProviderQuantizations,
-  getProviderRegions,
   hasValues,
   type PricingAdvancedFilters,
 } from '../lib/filters'
@@ -55,10 +53,6 @@ type FilterState = {
   contextLength?: string
   parameterCount?: string
   releaseDate?: string
-  free?: string
-  batch?: string
-  region?: string
-  quantization?: string
 }
 
 function normalizeViewMode(value: unknown): ViewMode {
@@ -84,10 +78,6 @@ export function useFilters(models: PricingModel[]) {
     contextLength: search.contextLength,
     parameterCount: search.parameterCount,
     releaseDate: search.releaseDate,
-    free: search.free,
-    batch: search.batch,
-    region: search.region,
-    quantization: search.quantization,
   }))
 
   const searchInput = filterState.search || ''
@@ -107,10 +97,6 @@ export function useFilters(models: PricingModel[]) {
       contextLength: filterState.contextLength || FILTER_ALL,
       parameterCount: filterState.parameterCount || FILTER_ALL,
       releaseDate: filterState.releaseDate || FILTER_ALL,
-      free: filterState.free || FILTER_ALL,
-      batch: filterState.batch || FILTER_ALL,
-      region: filterState.region || FILTER_ALL,
-      quantization: filterState.quantization || FILTER_ALL,
     }),
     [filterState]
   )
@@ -258,10 +244,6 @@ export function useFilters(models: PricingModel[]) {
       contextLength: undefined,
       parameterCount: undefined,
       releaseDate: undefined,
-      free: undefined,
-      batch: undefined,
-      region: undefined,
-      quantization: undefined,
     })
   }, [updateFilters])
 
@@ -299,22 +281,6 @@ export function useFilters(models: PricingModel[]) {
       hasContextLength: hasValues(models, (model) => model.context_length),
       hasParameterCount: hasValues(models, (model) => model.parameter_count),
       hasReleaseDate: hasValues(models, (model) => model.release_date),
-      hasFree: models.some((model) =>
-        (model.providers ?? []).some(
-          (provider) =>
-            provider.available &&
-            (provider.metadata?.free === true ||
-              (provider.pricing?.input_price === 0 &&
-                provider.pricing?.output_price === 0))
-        )
-      ),
-      hasBatch: models.some((model) =>
-        (model.providers ?? []).some(
-          (provider) => provider.available && provider.metadata?.batch === true
-        )
-      ),
-      regions: getProviderRegions(models),
-      quantizations: getProviderQuantizations(models),
     },
     setAdvancedFilter,
     clearFilters,

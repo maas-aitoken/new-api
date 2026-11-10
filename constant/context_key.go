@@ -8,8 +8,11 @@ const (
 	ContextKeyEstimatedTokens ContextKey = "estimated_tokens"
 
 	ContextKeyOriginalModel    ContextKey = "original_model"
-	ContextKeyProviderRouting  ContextKey = "provider_routing"
+	ContextKeyCapabilityGate   ContextKey = "capability_gate"
 	ContextKeyRequestStartTime ContextKey = "request_start_time"
+
+	// 选路阶段共用的输入 token 估算器，见 service.RoutingInputTokens。
+	ContextKeyRoutingInputEstimator ContextKey = "routing_input_estimator"
 
 	/* token related keys */
 	ContextKeyTokenUnlimited         ContextKey = "token_unlimited_quota"
@@ -24,12 +27,26 @@ const (
 	ContextKeyTokenAutoGroups        ContextKey = "token_auto_groups"
 	// ContextKeyTokenRoutingPreference holds the token's parsed *dto.RoutingPreference for Scheduler.
 	ContextKeyTokenRoutingPreference ContextKey = "token_routing_preference"
+	// ContextKeyTokenAutoPreference holds the token's capability/price preference for the "auto" model.
+	// It has nothing to do with the Scheduler's routing preference above.
+	ContextKeyTokenAutoPreference ContextKey = "token_auto_preference"
+	// ContextKeyAutoRouted is true once the "auto" model has been resolved to a concrete model
+	// for this request, so the usage log can tell it apart from one that asked for that model.
+	ContextKeyAutoRouted ContextKey = "auto_routed"
+	ContextKeyTokenScene ContextKey = "token_scene"
+	// ContextKeyTokenRoutingMode holds the key's effective routing mode, smart or fixed (an empty
+	// stored value and a business-scene key are fixed), set by SetupContextForToken. Distribute and
+	// ListModels apply it only when present; the console playground sets up its temporary key after
+	// Distribute has run, so a playground request is not bound by it.
+	ContextKeyTokenRoutingMode ContextKey = "token_routing_mode"
+	// ContextKeyTokenRPM holds the token's per-minute request limit; 0 means unlimited.
+	// TokenRateLimit reads it from the context so it does not repeat the token lookup.
+	ContextKeyTokenRPM ContextKey = "token_rpm"
 
 	/* channel related keys */
 	ContextKeyChannelId                ContextKey = "channel_id"
 	ContextKeyChannelName              ContextKey = "channel_name"
 	ContextKeyChannelTag               ContextKey = "channel_tag"
-	ContextKeyProviderSlug             ContextKey = "provider_slug"
 	ContextKeyChannelCreateTime        ContextKey = "channel_create_time"
 	ContextKeyChannelBaseUrl           ContextKey = "base_url"
 	ContextKeyChannelType              ContextKey = "channel_type"
@@ -44,6 +61,14 @@ const (
 	ContextKeyChannelIsMultiKey        ContextKey = "channel_is_multi_key"
 	ContextKeyChannelMultiKeyIndex     ContextKey = "channel_multi_key_index"
 	ContextKeyChannelKey               ContextKey = "channel_key"
+	// ContextKeyChannelCostMultiplier 是本次尝试的 <渠道, 模型> 费用倍率（float64，未配置为 1），
+	// 选定渠道时按用户请求一侧的模型名算好，结束时乘进 relay_attempts.cost_actual。
+	ContextKeyChannelCostMultiplier ContextKey = "channel_cost_multiplier"
+
+	// ContextKeyChannelCapacityModel 是请求在所选渠道上算额度和计数用的公开名
+	// （model.ChannelCapacityModel）：渠道只列了 gpt-5 时，gpt-5-high 也记成 gpt-5。
+	// 选渠道时写入，中继按它走 model_mapping 链找 <渠道, 上游模型> 计数池。
+	ContextKeyChannelCapacityModel ContextKey = "channel_capacity_model"
 
 	// ContextKeyRelayAttempt stores the in-progress relay attempt telemetry
 	// record, so the upstream request layer and the billing layer can annotate
@@ -55,25 +80,17 @@ const (
 	// the upstream model, extracted where the response is already being parsed.
 	ContextKeyFinishReason ContextKey = "finish_reason"
 
-	// ContextKeySchedulerKeyIndex is an optional per-attempt hint supplied by
-	// the Scheduler. When present, new-api must consume exactly this enabled
-	// multi-key slot instead of applying its local random/polling policy.
-	ContextKeySchedulerKeyIndex          ContextKey = "scheduler_key_index"
+	// 调度器的决策结果：candidates 是排好序的渠道，其余是审计用的版本号。
 	ContextKeySchedulerCandidates        ContextKey = "scheduler_candidates"
 	ContextKeySchedulerDecisionID        ContextKey = "scheduler_decision_id"
 	ContextKeySchedulerScoreVersion      ContextKey = "scheduler_score_version"
 	ContextKeySchedulerPreferenceVersion ContextKey = "scheduler_preference_version"
-	ContextKeySchedulerReservationID     ContextKey = "scheduler_reservation_id"
 	ContextKeySchedulerShadowMatch       ContextKey = "scheduler_shadow_match"
-	ContextKeySchedulerUpstreamModel     ContextKey = "scheduler_upstream_model"
-	ContextKeySchedulerAttemptReported   ContextKey = "scheduler_attempt_reported"
-	ContextKeySchedulerInputTokens       ContextKey = "scheduler_input_tokens"
-	ContextKeySchedulerOutputTokens      ContextKey = "scheduler_output_tokens"
-	ContextKeySchedulerUsageUnverified   ContextKey = "scheduler_usage_unverified"
-	ContextKeySchedulerEstimatedTokens   ContextKey = "scheduler_estimated_tokens"
-	ContextKeySchedulerStreamStarted     ContextKey = "scheduler_stream_started"
-	ContextKeySchedulerTTFTMS            ContextKey = "scheduler_ttft_ms"
-	ContextKeySchedulerWorkload          ContextKey = "scheduler_workload"
+	// 这次尝试上游报的输入/输出 token，计数池结束租约时按它记 TPM。
+	ContextKeySchedulerInputTokens   ContextKey = "scheduler_input_tokens"
+	ContextKeySchedulerOutputTokens  ContextKey = "scheduler_output_tokens"
+	ContextKeySchedulerStreamStarted ContextKey = "scheduler_stream_started"
+	ContextKeySchedulerWorkload      ContextKey = "scheduler_workload"
 	// ContextKeySchedulerAllowedChannelIDs carries the effective group/model
 	// channel scope into the Scheduler request. An empty-but-present slice
 	// means the group has no usable channel and must not fall back globally.

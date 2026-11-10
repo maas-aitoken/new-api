@@ -23,8 +23,6 @@ import (
 	"github.com/bytedance/gopkg/util/gopool"
 
 	"github.com/gin-gonic/gin"
-	"go.opentelemetry.io/otel/codes"
-	"go.opentelemetry.io/otel/trace"
 )
 
 const (
@@ -90,14 +88,8 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 	if resp == nil || dataHandler == nil {
 		return
 	}
-	otelRuntime := observability.FromContext(c.Request.Context())
-	streamParentCtx := c.Request.Context()
-	streamCtx := streamParentCtx
-	var streamSpan trace.Span
-	if otelRuntime != nil {
-		streamCtx, streamSpan = otelRuntime.StartStream(streamParentCtx, info)
-		c.Request = c.Request.WithContext(streamCtx)
-	}
+	streamCtx := c.Request.Context()
+	otelRuntime := observability.FromContext(streamCtx)
 
 	// Finish the request keepalive before changing headers. The scanner owns
 	// subsequent ping and data writes through its shared write mutex.
@@ -337,13 +329,6 @@ func StreamScannerHandler(c *gin.Context, resp *http.Response, info *relaycommon
 	}
 
 	cleanup()
-	if otelRuntime != nil {
-		if !info.StreamStatus.IsNormalEnd() || info.StreamStatus.HasErrors() {
-			streamSpan.SetStatus(codes.Error, string(info.StreamStatus.EndReason))
-		}
-		otelRuntime.FinishSpan(streamSpan, nil)
-		c.Request = c.Request.WithContext(streamParentCtx)
-	}
 	if info.StreamStatus.IsNormalEnd() && !info.StreamStatus.HasErrors() {
 		logger.LogInfo(c, common.LogText("stream ended: %s", info.StreamStatus.Summary()))
 	} else {

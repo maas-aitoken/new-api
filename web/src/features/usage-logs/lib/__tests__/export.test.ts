@@ -37,7 +37,7 @@ const consumeLog: UsageLog = {
   use_time: 3,
   is_stream: true,
   fast_mode: false,
-  provider_slug: '',
+  auto_routed: false,
   iself_email: '',
   channel: 162,
   channel_name: 'azure',

@@ -65,6 +65,8 @@ import { useLogsViewScope, useUsageLogsContext } from './usage-logs-provider'
 
 const route = getRouteApi('/_authenticated/usage-logs/$section')
 
+const AUTO_ROUTED_ALL = 'all'
+
 type LogTypeValue = (typeof LOG_TYPE_FILTERS)[number]['value']
 const logTypeValueSet = new Set<string>(
   LOG_TYPE_FILTERS.map((type) => type.value)
@@ -104,6 +106,7 @@ function buildSearchSourceKey(values: {
   requestId?: unknown
   upstreamRequestId?: unknown
   iselfEmail?: unknown
+  autoRouted?: unknown
   type?: unknown
   isAdminView?: unknown
 }) {
@@ -118,6 +121,7 @@ function buildSearchSourceKey(values: {
     values.requestId,
     values.upstreamRequestId,
     values.iselfEmail,
+    values.autoRouted,
     Array.isArray(values.type) ? values.type.join(',') : values.type,
     values.isAdminView,
   ]
@@ -172,6 +176,7 @@ export function CommonLogsFilterBar<TData>(
       requestId: searchParams.requestId,
       upstreamRequestId: searchParams.upstreamRequestId,
       iselfEmail: searchParams.iselfEmail,
+      autoRouted: searchParams.autoRouted,
       type: searchParams.type,
       isAdminView: isAdmin,
     }
@@ -188,6 +193,7 @@ export function CommonLogsFilterBar<TData>(
       requestId: searchParams.requestId || undefined,
       upstreamRequestId: searchParams.upstreamRequestId || undefined,
       iselfEmail: searchParams.iselfEmail || undefined,
+      autoRouted: searchParams.autoRouted,
     }
     return {
       sourceKey: buildSearchSourceKey(sourceValues),
@@ -205,6 +211,7 @@ export function CommonLogsFilterBar<TData>(
     searchParams.requestId,
     searchParams.upstreamRequestId,
     searchParams.iselfEmail,
+    searchParams.autoRouted,
     searchParams.type,
     isAdmin,
   ])
@@ -290,7 +297,11 @@ export function CommonLogsFilterBar<TData>(
 
   const hasTypeFilter = logType !== LOG_TYPE_ALL_VALUE
   const hasAdditionalFilters =
-    !!filters.model || !!filters.group || hasTypeFilter || hasExpandedFilters
+    !!filters.model ||
+    !!filters.group ||
+    !!filters.autoRouted ||
+    hasTypeFilter ||
+    hasExpandedFilters
 
   const expandedFilterCount = [
     filters.token,
@@ -452,6 +463,38 @@ export function CommonLogsFilterBar<TData>(
       </Select>
     </LogsFilterField>
   )
+  const autoRoutedItems = [
+    { value: AUTO_ROUTED_ALL, label: t('All requests') },
+    { value: 'only', label: t('Auto requests only') },
+    { value: 'exclude', label: t('Exclude auto requests') },
+  ]
+  const autoRoutedFilter = (
+    <LogsFilterField>
+      <Select
+        items={autoRoutedItems}
+        value={filters.autoRouted ?? AUTO_ROUTED_ALL}
+        onValueChange={(value) =>
+          handleChange(
+            'autoRouted',
+            value === 'only' || value === 'exclude' ? value : undefined
+          )
+        }
+      >
+        <SelectTrigger aria-label={t('Auto routing')}>
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent alignItemWithTrigger={false} className='min-w-52'>
+          <SelectGroup>
+            {autoRoutedItems.map((item) => (
+              <SelectItem key={item.value} value={item.value}>
+                {item.label}
+              </SelectItem>
+            ))}
+          </SelectGroup>
+        </SelectContent>
+      </Select>
+    </LogsFilterField>
+  )
   const advancedFilters = (
     <>
       <LogsFilterField>
@@ -527,6 +570,7 @@ export function CommonLogsFilterBar<TData>(
           {modelFilter}
           {groupFilter}
           {typeFilter}
+          {autoRoutedFilter}
         </>
       }
       advancedFilters={advancedFilters}
@@ -536,12 +580,14 @@ export function CommonLogsFilterBar<TData>(
           {modelFilter}
           {groupFilter}
           {typeFilter}
+          {autoRoutedFilter}
           {advancedFilters}
         </>
       }
       mobileFilterCount={
-        [filters.model, filters.group, hasTypeFilter].filter(Boolean).length +
-        expandedFilterCount
+        [filters.model, filters.group, filters.autoRouted, hasTypeFilter].filter(
+          Boolean
+        ).length + expandedFilterCount
       }
       hasAdvancedActiveFilters={hasExpandedFilters}
       advancedFilterCount={expandedFilterCount}

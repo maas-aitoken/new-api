@@ -33,8 +33,8 @@ const MODELS_SECTIONS = [
     build: () => null,
   },
   {
-    id: 'providers',
-    titleKey: 'Providers',
+    id: 'capabilities',
+    titleKey: 'Model channel capabilities',
     build: () => null,
   },
   {

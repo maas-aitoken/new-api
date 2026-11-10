@@ -16,7 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { AlertTriangle, Route } from 'lucide-react'
+import { AlertTriangle, Route, Waypoints } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 import { CopyButton } from '@/components/copy-button'
@@ -201,6 +201,25 @@ export function ModelBadge(props: ModelBadgeProps) {
         )}
       </PopoverContent>
     </Popover>
+  )
+}
+
+/**
+ * Marks a log whose request asked for the "auto" model. The model shown next to it
+ * is the one auto resolved to, not the one the client named.
+ */
+export function AutoRoutedBadge() {
+  const { t } = useTranslation()
+  return (
+    <StatusBadge
+      icon={Waypoints}
+      label='auto'
+      variant='info'
+      copyable={false}
+      title={t(
+        'This request asked for the auto model; the model shown is the one it was routed to.'
+      )}
+    />
   )
 }
 

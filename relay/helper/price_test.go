@@ -2,6 +2,7 @@ package helper
 
 import (
 	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -800,3 +801,178 @@ func (s *priceTestReservation) Refund(*gin.Context)      {}
 func (s *priceTestReservation) NeedsRefund() bool        { return false }
 func (s *priceTestReservation) GetPreConsumedQuota() int { return s.held }
 func (s *priceTestReservation) Reserve(quota int) error  { s.held = max(s.held, quota); return nil }
+
+// useRoutingPriceConfig 把倍率、补全倍率、按次价格和计费表达式换成测试值，结束后还原。
+// 同时关掉自用模式，否则没配价格的模型会被当成已定价。
+func useRoutingPriceConfig(t *testing.T, ratios, completions, prices map[string]float64, expressions map[string]string) {
+	t.Helper()
+	merged := func(currentJSON string, add map[string]float64) string {
+		current := map[string]float64{}
+		require.NoError(t, common.UnmarshalJsonStr(currentJSON, &current))
+		maps.Copy(current, add)
+		encoded, err := common.Marshal(current)
+		require.NoError(t, err)
+		return string(encoded)
+	}
+	savedRatios, savedCompletions, savedPrices := ratio_setting.ModelRatio2JSONString(), ratio_setting.CompletionRatio2JSONString(), ratio_setting.ModelPrice2JSONString()
+	savedConfig := map[string]string{}
+	require.NoError(t, config.GlobalConfig.SaveToDB(func(key, value string) error {
+		savedConfig[key] = value
+		return nil
+	}))
+	oldSelfUse := operation_setting.SelfUseModeEnabled
+	operation_setting.SelfUseModeEnabled = false
+	t.Cleanup(func() {
+		operation_setting.SelfUseModeEnabled = oldSelfUse
+		require.NoError(t, ratio_setting.UpdateModelRatioByJSONString(savedRatios))
+		require.NoError(t, ratio_setting.UpdateCompletionRatioByJSONString(savedCompletions))
+		require.NoError(t, ratio_setting.UpdateModelPriceByJSONString(savedPrices))
+		require.NoError(t, config.GlobalConfig.LoadFromDB(savedConfig))
+	})
+
+	require.NoError(t, ratio_setting.UpdateModelRatioByJSONString(merged(savedRatios, ratios)))
+	require.NoError(t, ratio_setting.UpdateCompletionRatioByJSONString(merged(savedCompletions, completions)))
+	require.NoError(t, ratio_setting.UpdateModelPriceByJSONString(merged(savedPrices, prices)))
+	modes := map[string]string{}
+	for name := range expressions {
+		modes[name] = billing_setting.BillingModeTieredExpr
+	}
+	encodedModes, err := common.Marshal(modes)
+	require.NoError(t, err)
+	encodedExprs, err := common.Marshal(expressions)
+	require.NoError(t, err)
+	require.NoError(t, config.GlobalConfig.LoadFromDB(map[string]string{
+		"billing_setting.billing_mode": string(encodedModes),
+		"billing_setting.billing_expr": string(encodedExprs),
+	}))
+}
+
+func newRoutingPricer(t *testing.T, estimatedInputTokens int64, acceptUnset bool) *RoutingPricer {
+	t.Helper()
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	return NewRoutingPricer(ctx, func(string) int64 { return estimatedInputTokens }, acceptUnset)
+}
+
+func TestRoutingPricerQuote(t *testing.T) {
+	useRoutingPriceConfig(t,
+		map[string]float64{"rp-ratio": 1.25, "rp-unit": 2, "gpt-rp-base": 1, "rp-zero": 0},
+		map[string]float64{"rp-ratio": 4, "rp-unit": 1, "gpt-rp-base": 1},
+		map[string]float64{"rp-per-call": 0.5},
+		map[string]string{
+			"rp-flat":   `tier("flat", p * 3 + c * 9)`,
+			"rp-tiered": `len <= 1000 ? tier("short", p * 3 + c * 3) : tier("long", p * 15 + c * 15)`,
+			"rp-fixed":  `len <= 32000 ? tier("short", fixed(0.01)) : tier("long", p * 2)`,
+		})
+	// 默认 QuotaPerUnit 下倍率 1 是每百万 token 2 美元。
+	require.Equal(t, 500000.0, common.QuotaPerUnit)
+
+	tests := []struct {
+		name       string
+		tokens     int64
+		model      string
+		groupRatio float64
+		wantKind   RoutingPriceKind
+		wantPrice  float64
+	}{
+		// 输入价 2.5、输出价 10，按 3:1 混合是 4.375，再乘分组倍率。
+		{"ratio model blends input and output 3:1", 100, "rp-ratio", 1, RoutingPerToken, 4.375},
+		{"the group ratio scales the price", 100, "rp-ratio", 2, RoutingPerToken, 8.75},
+		{"a free group quotes zero but stays comparable", 100, "rp-ratio", 0, RoutingPerToken, 0},
+		{"an explicitly free model is not unpriced", 100, "rp-zero", 1, RoutingPerToken, 0},
+		{"a fixed per-call price cannot be compared per token", 100, "rp-per-call", 1, RoutingPerRequest, 0},
+		{"an unconfigured model is unpriced", 100, "rp-unknown", 1, RoutingUnpriced, 0},
+		{"a negative group ratio is unpriced", 100, "rp-ratio", -1, RoutingUnpriced, 0},
+		// 表达式系数就是美元/百万 token：输入 3、输出 9，混合 4.5。
+		{"an expression model is read from its coefficients", 100, "rp-flat", 1, RoutingPerToken, 4.5},
+		{"a short context picks the short tier", 500, "rp-tiered", 1, RoutingPerToken, 3},
+		{"a long context picks the long tier", 5000, "rp-tiered", 1, RoutingPerToken, 15},
+		{"a fixed request price in the matched tier is per request", 100, "rp-fixed", 1, RoutingPerRequest, 0},
+		// 长档只给输入定价（p * 2），输出不收费，混合价是 (3*2+0)/4。
+		{"another tier of the same expression is per token", 100000, "rp-fixed", 1, RoutingPerToken, 1.5},
+		// 取价与计费同一套名字解析：带推理档位后缀的 GPT 模型按基础模型价格走。
+		{"a suffixed name bills like its base model", 100, "gpt-rp-base-high", 1, RoutingPerToken, 2},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			quote := newRoutingPricer(t, tt.tokens, false).Quote(tt.model, tt.groupRatio)
+			assert.Equal(t, tt.wantKind, quote.Kind)
+			assert.InDelta(t, tt.wantPrice, quote.PricePerMillion, 1e-9)
+		})
+	}
+
+	t.Run("an unconfigured model is priced at the fallback ratio when the user accepts it", func(t *testing.T) {
+		quote := newRoutingPricer(t, 100, true).Quote("rp-unknown", 1)
+		assert.Equal(t, RoutingPerToken, quote.Kind)
+		assert.Greater(t, quote.PricePerMillion, 0.0)
+	})
+
+	// 同一个请求在不同家族的 tokenizer 下长度不同，分档表达式的档位也就不同：每个候选按自己的估算取价。
+	t.Run("each candidate is quoted at its own estimated length", func(t *testing.T) {
+		ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+		ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+		// rp-tiered 在 1000 token 以内是短档（混合价 3），超过是长档（15）；
+		// rp-fixed 在 32000 以内按次计价，超过是长档（只收输入，混合价 1.5）。
+		pricer := NewRoutingPricer(ctx, func(candidate string) int64 {
+			return map[string]int64{"rp-tiered": 5000, "rp-fixed": 100000}[candidate]
+		}, false)
+		assert.InDelta(t, 15.0, pricer.Quote("rp-tiered", 1).PricePerMillion, 1e-9)
+		fixed := pricer.Quote("rp-fixed", 1)
+		assert.Equal(t, RoutingPerToken, fixed.Kind)
+		assert.InDelta(t, 1.5, fixed.PricePerMillion, 1e-9)
+
+		short := NewRoutingPricer(ctx, func(candidate string) int64 {
+			return map[string]int64{"rp-tiered": 500, "rp-fixed": 100}[candidate]
+		}, false)
+		assert.InDelta(t, 3.0, short.Quote("rp-tiered", 1).PricePerMillion, 1e-9)
+		assert.Equal(t, RoutingPerRequest, short.Quote("rp-fixed", 1).Kind)
+	})
+
+	t.Run("an unknown estimate quotes the smallest tier", func(t *testing.T) {
+		quote := newRoutingPricer(t, 0, false).Quote("rp-tiered", 1)
+		assert.InDelta(t, 3.0, quote.PricePerMillion, 1e-9)
+	})
+}
+
+// 选路阶段的估价必须和真实计费同一个口径：同一个模型、同一个输入长度，
+// 估价乘上 token 数应该等于 ModelPriceHelper 预扣的额度。
+// 预扣只算输入，所以这里用输入输出同价的模型，混合价才等于输入价。
+func TestRoutingPricerMatchesPreConsume(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	useRoutingPriceConfig(t,
+		map[string]float64{"rp-parity-ratio": 2},
+		map[string]float64{"rp-parity-ratio": 1},
+		nil,
+		map[string]string{"rp-parity-tiered": `len <= 1000 ? tier("short", p * 3 + c * 3) : tier("long", p * 15 + c * 15)`})
+
+	tests := []struct {
+		name   string
+		model  string
+		tokens int
+	}{
+		{"ratio model", "rp-parity-ratio", 1_000_000},
+		{"expression model, short tier", "rp-parity-tiered", 500},
+		{"expression model, long tier", "rp-parity-tiered", 5000},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+			ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+			ctx.Set("group", "default")
+			info := &relaycommon.RelayInfo{
+				OriginModelName:     tt.model,
+				UserGroup:           "default",
+				UsingGroup:          "default",
+				BillingRequestInput: &billingexpr.RequestInput{},
+			}
+			priceData, err := ModelPriceHelper(ctx, info, tt.tokens, &types.TokenCountMeta{})
+			require.NoError(t, err)
+
+			groupRatio := priceData.GroupRatioInfo.GroupRatio
+			quote := newRoutingPricer(t, int64(tt.tokens), false).Quote(tt.model, groupRatio)
+			require.Equal(t, RoutingPerToken, quote.Kind)
+			reservedDollars := float64(priceData.QuotaToPreConsume) / common.QuotaPerUnit
+			assert.InDelta(t, reservedDollars, quote.PricePerMillion*float64(tt.tokens)/1_000_000, 1e-9)
+		})
+	}
+}

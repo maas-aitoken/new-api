@@ -41,7 +41,7 @@ import { useModels } from './models-provider'
 
 export function ModelsPrimaryButtons() {
   const { t } = useTranslation()
-  const { setOpen, setCurrentRow, setCurrentProvider } = useModels()
+  const { setOpen, setCurrentRow } = useModels()
   const navigate = useNavigate()
   const canPrice = useCanEditModelPricing()
 
@@ -66,9 +66,11 @@ export function ModelsPrimaryButtons() {
     setOpen('create-vendor') // Will be a separate vendors management dialog
   }
 
-  const handleManageProviders = () => {
-    setCurrentProvider(null)
-    void navigate({ to: '/models/$section', params: { section: 'providers' } })
+  const handleManageCapabilities = () => {
+    void navigate({
+      to: '/models/$section',
+      params: { section: 'capabilities' },
+    })
   }
   return (
     <div className='flex flex-wrap items-center gap-2'>
@@ -123,8 +125,8 @@ export function ModelsPrimaryButtons() {
             </DropdownMenuShortcut>
           </DropdownMenuItem>
 
-          <DropdownMenuItem onClick={handleManageProviders}>
-            {t('Manage Providers')}
+          <DropdownMenuItem onClick={handleManageCapabilities}>
+            {t('Model channel capabilities')}
             <DropdownMenuShortcut>
               <Building2 className='h-4 w-4' />
             </DropdownMenuShortcut>

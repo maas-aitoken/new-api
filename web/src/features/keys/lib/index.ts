@@ -20,6 +20,8 @@ For commercial licensing, please contact support@quantumnous.com
 // Form Utilities
 // ============================================================================
 export {
+  AUTO_PREFERENCES,
+  SELECTABLE_AUTO_PREFERENCES,
   getApiKeyFormSchema,
   type ApiKeyFormValues,
   API_KEY_FORM_DEFAULT_VALUES,

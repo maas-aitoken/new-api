@@ -61,6 +61,9 @@ export function buildSearchParams(
         ...(commonFilters.iselfEmail && {
           iselfEmail: commonFilters.iselfEmail,
         }),
+        ...(commonFilters.autoRouted && {
+          autoRouted: commonFilters.autoRouted,
+        }),
       }
     }
     case 'drawing': {

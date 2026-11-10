@@ -39,6 +39,9 @@ const (
 	FilterRequestPath        ChannelFilterKind = "request_path"
 	FilterTaskPluginIdentity ChannelFilterKind = "task_plugin_identity"
 	FilterResponsesWebSocket ChannelFilterKind = "responses_websocket"
+	// FilterCapability 把候选渠道限制在能力判定通过的集合内。
+	// 与其它过滤器一样由请求级约束驱动，因此重试也沿用同一条过滤链。
+	FilterCapability ChannelFilterKind = "capability"
 )
 
 type ChannelFilter struct {
@@ -47,6 +50,8 @@ type ChannelFilter struct {
 	TaskPluginKey          string
 	TaskPluginKeys         []string
 	TaskPluginChannelTypes []int
+	// AllowedChannelIDs 仅 FilterCapability 使用；nil 表示本次请求没有能力约束。
+	AllowedChannelIDs []int
 }
 
 type ChannelConstraints struct {

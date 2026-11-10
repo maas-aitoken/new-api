@@ -17,12 +17,15 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import type { ColumnDef } from '@tanstack/react-table'
-import { ChevronDown, ChevronRight } from 'lucide-react'
 import { useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { CopyButton } from '@/components/copy-button'
-import { BadgeListCell, TruncatedCell } from '@/components/data-table'
+import {
+  BadgeListCell,
+  DataTableExpansionToggle,
+  TruncatedCell,
+} from '@/components/data-table'
 import { StatusBadge } from '@/components/status-badge'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
@@ -37,6 +40,7 @@ import {
 } from '@/features/model-pricing/api'
 import { modelPricingDisplay } from '@/features/model-pricing/pricing'
 import { ModelPriceCell } from '@/features/pricing/components/model-price-cell'
+import { useMediaQuery } from '@/hooks'
 import { formatTimestampToDate } from '@/lib/format'
 import { getLobeIcon } from '@/lib/lobe-icon'
 
@@ -54,14 +58,11 @@ const EMPTY_VENDORS: Vendor[] = []
 export function useModelsColumns(
   vendors: Vendor[] = EMPTY_VENDORS,
   pricing?: ModelPricingConfig,
-  pricingState?: 'loading' | 'error',
-  options?: {
-    expandedModelIds: Set<number>
-    onToggleExpand: (id: number) => void
-  }
+  pricingState?: 'loading' | 'error'
 ): ColumnDef<Model>[] {
   const { t } = useTranslation()
   const canPrice = useCanEditModelPricing()
+  const isMobile = useMediaQuery('(max-width: 640px)')
   const { setCurrentRow, setOpen } = useModels()
   const vendorMap = useMemo(
     () => new Map(vendors.map((vendor) => [vendor.id, vendor])),
@@ -75,34 +76,6 @@ export function useModelsColumns(
   return useMemo<ColumnDef<Model>[]>(() => {
     const rules = getNameRuleConfig(t)
     return [
-      {
-        id: 'provider_relations',
-        header: () => null,
-        cell: ({ row }) => {
-          const expanded =
-            options?.expandedModelIds.has(row.original.id) ?? false
-          return (
-            <Button
-              type='button'
-              variant='ghost'
-              size='icon'
-              className='size-7'
-              aria-label={t('Expand model providers')}
-              aria-expanded={expanded}
-              onClick={() => options?.onToggleExpand(row.original.id)}
-            >
-              {expanded ? (
-                <ChevronDown className='size-4' />
-              ) : (
-                <ChevronRight className='size-4' />
-              )}
-            </Button>
-          )
-        },
-        enableSorting: false,
-        enableHiding: false,
-        size: 40,
-      },
       {
         id: 'select',
         header: ({ table }) => (
@@ -137,8 +110,18 @@ export function useModelsColumns(
           const model = row.original
           const vendor = vendorMap.get(model.vendor_id ?? 0)
           const iconKey = model.icon || vendor?.icon || model.model_name[0]
+          const matched = model.matched_models ?? []
+          // 规则命中的具体模型展开在本行下方；移动端卡片没有详情行，直接列出来。
+          const expandable =
+            !isMobile && model.name_rule !== 0 && matched.length > 0
           return (
-            <div className='flex max-w-[320px] min-w-0 items-start gap-2.5 py-1'>
+            <div className='flex max-w-[320px] min-w-0 items-start gap-1.5 py-1'>
+              {!isMobile &&
+                (expandable ? (
+                  <DataTableExpansionToggle row={row} className='mt-0.5' />
+                ) : (
+                  <span className='size-6 shrink-0' aria-hidden />
+                ))}
               <span className='mt-1 flex size-6 shrink-0 items-center justify-center'>
                 {getLobeIcon(iconKey, 24)}
               </span>
@@ -173,6 +156,14 @@ export function useModelsColumns(
                     </span>
                   )}
                 </div>
+                {isMobile && matched.length > 0 && (
+                  <p
+                    className='text-muted-foreground mt-1 truncate font-mono text-[11px]'
+                    title={matched.join(', ')}
+                  >
+                    {matched.join(', ')}
+                  </p>
+                )}
               </div>
             </div>
           )
@@ -415,11 +406,11 @@ export function useModelsColumns(
   }, [
     t,
     canPrice,
+    isMobile,
     vendorMap,
     priceMap,
     pricingState,
     setCurrentRow,
     setOpen,
-    options,
   ])
 }

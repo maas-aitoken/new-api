@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/i18n"
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/model"
@@ -228,6 +229,10 @@ func (s *BillingSession) preConsume(c *gin.Context, quota int) *types.NewAPIErro
 			s.tokenConsumed = 0
 		}
 		// TODO: model 层应定义哨兵错误（如 ErrNoActiveSubscription），用 errors.Is 替代字符串匹配
+		if errors.Is(err, model.ErrSubscriptionTierExhausted) {
+			// 仍按额度不足处理：允许钱包回退的档位会回退到钱包
+			return types.NewErrorWithStatusCode(errors.New(i18n.T(c, i18n.MsgQuotaTierExhausted)), types.ErrorCodeInsufficientUserQuota, http.StatusForbidden, types.ErrOptionWithSkipRetry(), types.ErrOptionWithNoRecordErrorLog())
+		}
 		if errors.Is(err, ErrInsufficientWalletQuota) {
 			userQuota, quotaErr := model.GetUserQuota(s.relayInfo.UserId, false)
 			if quotaErr != nil {
@@ -287,6 +292,8 @@ func (s *BillingSession) reserveFunding(delta int, requireAvailableQuota bool) e
 			)
 		}
 		return nil
+	case BusinessFunding:
+		return nil
 	default:
 		return types.NewError(fmt.Errorf("unsupported funding source: %s", s.funding.Source()), types.ErrorCodeUpdateDataError, types.ErrOptionWithSkipRetry())
 	}
@@ -304,6 +311,7 @@ func (s *BillingSession) rollbackFundingReserve(delta int) {
 		if err := model.PostConsumeUserSubscriptionDelta(funding.subscriptionId, -int64(delta)); err != nil {
 			common.SysLog(common.LogText("error rolling back subscription funding reserve: %s", err.Error()))
 		}
+	case BusinessFunding:
 	}
 }
 
@@ -383,6 +391,15 @@ func NewBillingSession(c *gin.Context, relayInfo *relaycommon.RelayInfo, preCons
 		return nil, types.NewError(fmt.Errorf("relayInfo is nil"), types.ErrorCodeInvalidRequest, types.ErrOptionWithSkipRetry())
 	}
 
+	// 额度档位下业务场景的 key 只记录费用，令牌额度照常预扣
+	if operation_setting.IsQuotaTierEnabled() && relayInfo.TokenScene == common.TokenSceneBusiness {
+		session := &BillingSession{relayInfo: relayInfo, funding: BusinessFunding{}, lang: i18n.StatedLang(c)}
+		if apiErr := session.preConsume(c, preConsumedQuota); apiErr != nil {
+			return nil, apiErr
+		}
+		return session, nil
+	}
+
 	pref := common.NormalizeBillingPreference(relayInfo.UserSetting.BillingPreference)
 
 	// 钱包路径需要先检查用户额度
@@ -425,10 +442,11 @@ func NewBillingSession(c *gin.Context, relayInfo *relaycommon.RelayInfo, preCons
 			relayInfo: relayInfo,
 			lang:      i18n.StatedLang(c),
 			funding: &SubscriptionFunding{
-				requestId: relayInfo.RequestId,
-				userId:    relayInfo.UserId,
-				modelName: relayInfo.GetBillingModelName(),
-				amount:    subConsume,
+				requestId:  relayInfo.RequestId,
+				userId:     relayInfo.UserId,
+				modelName:  relayInfo.GetBillingModelName(),
+				autoRouted: common.GetContextKeyBool(c, constant.ContextKeyAutoRouted),
+				amount:     subConsume,
 			},
 		}
 		// 必须传 subConsume 而非 preConsumedQuota，保证 SubscriptionFunding.amount、
@@ -457,6 +475,10 @@ func NewBillingSession(c *gin.Context, relayInfo *relaycommon.RelayInfo, preCons
 		fallthrough
 	default:
 		hasSub, subCheckErr := model.HasActiveUserSubscription(relayInfo.UserId)
+		if subCheckErr == nil && !hasSub {
+			// 额度档位下，没有订阅的用户绑定最低档
+			hasSub, subCheckErr = model.EnsureUserQuotaTier(relayInfo.UserId)
+		}
 		if subCheckErr != nil {
 			return nil, types.NewError(subCheckErr, types.ErrorCodeQueryDataError, types.ErrOptionWithSkipRetry())
 		}

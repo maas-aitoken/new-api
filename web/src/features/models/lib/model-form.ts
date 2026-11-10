@@ -36,6 +36,7 @@ export const modelFormSchema = z.object({
   tags: z.array(z.string()).default([]),
   vendor_id: z.number().optional(),
   endpoints: z.string().default(''),
+  capabilities: z.string().default(''),
   context_length: z
     .string()
     .refine(
@@ -87,6 +88,7 @@ export function transformModelToFormDefaults(model: Model): ModelFormValues {
     tags: parseTagsFromUtils(model.tags),
     vendor_id: model.vendor_id,
     endpoints: model.endpoints || '',
+    capabilities: model.capabilities || '',
     context_length: model.context_length ? String(model.context_length) : '',
     parameter_count: model.parameter_count || '',
     release_date: model.release_date || '',
@@ -112,6 +114,7 @@ export function transformFormDataToModelPayload(
     tags: formatTagsArray(formData.tags),
     vendor_id: formData.vendor_id,
     endpoints: formData.endpoints || '',
+    capabilities: formData.capabilities || '',
     context_length:
       formData.context_length === '' ? 0 : Number(formData.context_length),
     parameter_count: formData.parameter_count,

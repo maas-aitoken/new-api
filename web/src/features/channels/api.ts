@@ -139,7 +139,7 @@ export type CodexCredentialRefreshResponse = {
 export async function getChannels(
   params: GetChannelsParams = {}
 ): Promise<GetChannelsResponse> {
-  const res = await api.get('/api/channel', { params })
+  const res = await api.get('/api/channel/', { params })
   return res.data
 }
 

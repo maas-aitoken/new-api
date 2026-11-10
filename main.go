@@ -156,6 +156,14 @@ func main() {
 	// all currently alive nodes in multi-instance deployments.
 	service.StartSystemInstanceReporter()
 
+	// Capability gate events are written off the request path in batches; every
+	// node serves requests, so every node runs a writer.
+	service.StartCapabilityGateEventWriter()
+	// Routing logs of auto requests go through the same kind of batched writer.
+	service.StartAutoRouteLogWriter()
+	// 资源池页的容量池：主节点每分钟按账号数与余量重算动态额度。
+	service.StartCapacityPoolPoller()
+
 	// Wire task polling adaptor factory (breaks service -> relay import cycle).
 	// Must run before the system task runner starts: the async_task_poll handler
 	// calls service.RunTaskPollingOnce, which needs this factory set.
@@ -256,6 +264,9 @@ func main() {
 	if err := srv.Shutdown(ctx); err != nil {
 		common.SysError(common.LogText("server forced to shutdown: %v", err))
 	}
+	// 在数据库关闭之前把队列里剩余的门控事件写完。
+	service.StopCapabilityGateEventWriter()
+	service.StopAutoRouteLogWriter()
 	// 内存中的看板数据保存入库，避免重启丢失未落库数据 (issue #5679)
 	if common.DataExportEnabled {
 		model.SaveQuotaDataCache()
@@ -316,6 +327,12 @@ func InitResources() error {
 		}
 	}
 
+	// 一次请求加载 Consul 初始配置，优先于环境变量；读取失败时回退环境变量
+	logDSN, err := common.LoadConsulConfig()
+	if err != nil {
+		return fmt.Errorf("load log database configuration: %w", err)
+	}
+
 	// 加载环境变量
 	common.InitEnv()
 
@@ -326,10 +343,6 @@ func InitResources() error {
 
 	service.InitHttpClient()
 
-	logDSN, err := common.LoadLogSQLDSN()
-	if err != nil {
-		return fmt.Errorf("load log database configuration: %w", err)
-	}
 	// Initialize SQL Database
 	err = model.InitDB()
 	if err != nil {
@@ -339,6 +352,11 @@ func InitResources() error {
 	if err = authz.Init(model.DB); err != nil {
 		common.FatalLog(common.LogText("failed to initialize authorization: %s", err.Error()))
 		return err
+	}
+	// 能力门控依赖模型级声明缓存；不开启内存渠道缓存时 InitChannelCache 不会被调用，
+	// 因此在启动时无条件加载一次。非主节点可能还没建表，失败只记录不阻断启动。
+	if err := model.InitCapabilityCache(); err != nil {
+		common.SysError(common.LogText("failed to initialize capability cache: %s", err.Error()))
 	}
 	if common.PasswordLoginEncryptionEnabled {
 		if err = model.InitPasswordEncryption(); err != nil {
@@ -353,6 +371,10 @@ func InitResources() error {
 	if common.IsMasterNode {
 		if err := model.MigrateRetiredFrontendOptions(); err != nil {
 			common.SysError(common.LogText("failed to migrate retired frontend options: %s", err.Error()))
+		}
+		// 在 InitChannelCache 之前跑，渠道缓存读到的就是转换后的倍率键。失败不阻断启动，下次启动重试。
+		if err := model.MigrateCostMultiplierKeysToRequestModel(); err != nil {
+			common.SysError(common.LogText("failed to migrate cost multiplier keys: %s", err.Error()))
 		}
 	}
 	model.InitOptionMap()

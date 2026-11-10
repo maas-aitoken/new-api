@@ -1,8 +1,11 @@
 package controller
 
 import (
+	"errors"
 	"fmt"
+	"slices"
 	"strconv"
+	"strings"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
@@ -33,31 +36,113 @@ func parseUsageAnalyticsRange(c *gin.Context, maxDays int64) (start int64, end i
 	return start, end, true
 }
 
-func GetAdminUsageAnalytics(c *gin.Context) {
-	start, end, ok := parseUsageAnalyticsRange(c, adminUsageAnalyticsMaxDays)
+func usageOrgFilterFromQuery(c *gin.Context) model.UsageOrgFilter {
+	return model.UsageOrgFilter{
+		BusinessUnit: c.Query("business_unit"),
+		Department:   c.Query("department"),
+		Team:         c.Query("team"),
+	}
+}
+
+// usageViewerScope: everyone (nil UserIDs) for administrators and SSO accounts above every department;
+// otherwise the caller plus granted people and departments and the department they head.
+func usageViewerScope(c *gin.Context) (scope *model.UsageViewerScope, maxDays int64, err error) {
+	if c.GetInt("role") >= common.RoleAdminUser {
+		return &model.UsageViewerScope{}, adminUsageAnalyticsMaxDays, nil
+	}
+	userID := c.GetInt("id")
+	if userID <= 0 {
+		return nil, 0, errors.New("invalid user")
+	}
+	scope, err = model.GetUsageViewerScope(userID)
+	if err != nil {
+		return nil, 0, err
+	}
+	if scope.UserIDs == nil {
+		return scope, adminUsageAnalyticsMaxDays, nil
+	}
+	return scope, selfUsageAnalyticsMaxDays, nil
+}
+
+// usageUserFilter narrows the scope by the "username" query; nil means everyone.
+func usageUserFilter(c *gin.Context, scope *model.UsageViewerScope) ([]int, error) {
+	keyword := strings.TrimSpace(c.Query("username"))
+	if keyword == "" {
+		return scope.UserIDs, nil
+	}
+	matched, err := model.MatchUsageUserIds(keyword)
+	if err != nil || scope.UserIDs == nil {
+		return matched, err
+	}
+	return slices.DeleteFunc(matched, func(id int) bool { return !slices.Contains(scope.UserIDs, id) }), nil
+}
+
+func GetUsageAnalytics(c *gin.Context) {
+	scope, maxDays, err := usageViewerScope(c)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	start, end, ok := parseUsageAnalyticsRange(c, maxDays)
 	if !ok {
 		return
 	}
 	groupBy := c.Query("group_by")
 	switch groupBy {
 	case model.UsageAnalyticsGroupSummary, model.UsageAnalyticsGroupModel, model.UsageAnalyticsGroupUser,
-		model.UsageAnalyticsGroupUserModel, model.UsageAnalyticsGroupModelChannel:
+		model.UsageAnalyticsGroupUserModel, model.UsageAnalyticsGroupModelChannel,
+		model.UsageAnalyticsGroupBusinessUnit, model.UsageAnalyticsGroupDepartment, model.UsageAnalyticsGroupTeam:
 	default:
 		common.ApiErrorMsg(c, "invalid group_by")
+		return
+	}
+	userIDs, err := usageUserFilter(c, scope)
+	if err != nil {
+		common.ApiError(c, err)
 		return
 	}
 	data, err := model.GetUsageAnalytics(model.UsageAnalyticsParams{
 		Start:     start,
 		End:       end,
 		GroupBy:   groupBy,
-		Username:  c.Query("username"),
 		ModelName: c.Query("model"),
+		Org:       usageOrgFilterFromQuery(c),
+		UserIDs:   userIDs,
 	})
 	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
 	common.ApiSuccess(c, data)
+}
+
+// GetUsageDataScope tells the console what the caller sees and which filters to start on.
+func GetUsageDataScope(c *gin.Context) {
+	scope, _, err := usageViewerScope(c)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, gin.H{
+		"all_users":             scope.UserIDs == nil,
+		"user_count":            len(scope.UserIDs),
+		"default_business_unit": scope.DefaultBusinessUnit,
+		"default_department":    scope.DefaultDepartment,
+	})
+}
+
+func GetUsageOrgOptions(c *gin.Context) {
+	scope, _, err := usageViewerScope(c)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	options, err := model.GetUsageOrgOptions(scope.UserIDs)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, options)
 }
 
 // GetSelfUsageAnalytics ignores client identity filters.
@@ -71,8 +156,12 @@ func GetSelfUsageAnalytics(c *gin.Context) {
 	if !ok {
 		return
 	}
+	// User groupings are for the console export.
 	groupBy := c.Query("group_by")
-	if groupBy != model.UsageAnalyticsGroupSummary && groupBy != model.UsageAnalyticsGroupModel {
+	switch groupBy {
+	case model.UsageAnalyticsGroupSummary, model.UsageAnalyticsGroupModel, model.UsageAnalyticsGroupUser,
+		model.UsageAnalyticsGroupUserModel, model.UsageAnalyticsGroupModelChannel:
+	default:
 		common.ApiErrorMsg(c, "invalid group_by")
 		return
 	}
@@ -91,15 +180,50 @@ func GetSelfUsageAnalytics(c *gin.Context) {
 }
 
 func GetPeakTPM(c *gin.Context) {
-	start, end, ok := parseUsageAnalyticsRange(c, adminUsageAnalyticsMaxDays)
+	scope, maxDays, err := usageViewerScope(c)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	start, end, ok := parseUsageAnalyticsRange(c, maxDays)
+	if !ok {
+		return
+	}
+	userIDs, err := usageUserFilter(c, scope)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	points, err := model.GetPeakTPM(model.PeakTPMParams{
+		Start:     start,
+		End:       end,
+		ModelName: c.Query("model"),
+		Org:       usageOrgFilterFromQuery(c),
+		UserIDs:   userIDs,
+	})
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, points)
+}
+
+// GetSelfPeakTPM ignores client identity filters.
+func GetSelfPeakTPM(c *gin.Context) {
+	userID := c.GetInt("id")
+	if userID <= 0 {
+		common.ApiErrorMsg(c, "invalid user")
+		return
+	}
+	start, end, ok := parseUsageAnalyticsRange(c, selfUsageAnalyticsMaxDays)
 	if !ok {
 		return
 	}
 	points, err := model.GetPeakTPM(model.PeakTPMParams{
 		Start:     start,
 		End:       end,
-		Username:  c.Query("username"),
 		ModelName: c.Query("model"),
+		UserID:    userID,
 	})
 	if err != nil {
 		common.ApiError(c, err)

@@ -123,12 +123,10 @@ func getChannelQuery(group string, model string, retry int) (*gorm.DB, error) {
 	return channelQuery, nil
 }
 
-func GetChannel(
-	group string,
-	model string,
-	retry int,
-	filters []dto.ChannelFilter,
-) (*Channel, error) {
+// databaseRetryTier 是没有内存缓存时的 retryTierLocked：从 abilities 表取该分组下服务这个
+// 模型、满足过滤条件的渠道（精确名没有时退到路由名），返回第 retry 高优先级那一档。
+// GetChannel 抽签和 FirstAttemptChannelShares 估算共用它。
+func databaseRetryTier(group string, model string, retry int, filters []dto.ChannelFilter) ([]Ability, error) {
 	var abilities []Ability
 	err := excludeDisabledChannelModels(DB.Model(&Ability{}), model).Where(commonGroupCol+" = ? and model = ? and enabled = ?", group, model, true).Order("priority DESC, weight DESC").Find(&abilities).Error
 	if err != nil {
@@ -144,27 +142,40 @@ func GetChannel(
 		}
 		abilities = filterAbilitiesByConstraints(abilities, model, filters)
 	}
-	if len(abilities) > 0 {
-		priorities := make([]int64, 0)
-		seen := make(map[int64]bool)
-		for _, ability := range abilities {
-			priority := int64(0)
-			if ability.Priority != nil {
-				priority = *ability.Priority
-			}
-			if !seen[priority] {
-				seen[priority] = true
-				priorities = append(priorities, priority)
-			}
+	if len(abilities) == 0 {
+		return abilities, nil
+	}
+	priorities := make([]int64, 0)
+	seen := make(map[int64]bool)
+	for _, ability := range abilities {
+		priority := int64(0)
+		if ability.Priority != nil {
+			priority = *ability.Priority
 		}
-		sort.Slice(priorities, func(i, j int) bool { return priorities[i] > priorities[j] })
-		if retry >= len(priorities) {
-			retry = len(priorities) - 1
+		if !seen[priority] {
+			seen[priority] = true
+			priorities = append(priorities, priority)
 		}
-		targetPriority := priorities[retry]
-		abilities = lo.Filter(abilities, func(ability Ability, _ int) bool {
-			return ability.Priority == nil && targetPriority == 0 || ability.Priority != nil && *ability.Priority == targetPriority
-		})
+	}
+	sort.Slice(priorities, func(i, j int) bool { return priorities[i] > priorities[j] })
+	if retry >= len(priorities) {
+		retry = len(priorities) - 1
+	}
+	targetPriority := priorities[retry]
+	return lo.Filter(abilities, func(ability Ability, _ int) bool {
+		return ability.Priority == nil && targetPriority == 0 || ability.Priority != nil && *ability.Priority == targetPriority
+	}), nil
+}
+
+func GetChannel(
+	group string,
+	model string,
+	retry int,
+	filters []dto.ChannelFilter,
+) (*Channel, error) {
+	abilities, err := databaseRetryTier(group, model, retry, filters)
+	if err != nil {
+		return nil, err
 	}
 	channel := Channel{}
 	if len(abilities) > 0 {
@@ -349,9 +360,19 @@ func (channel *Channel) UpdateAbilities(tx *gorm.DB) error {
 		}
 	}
 
+	if err := pruneChannelModelCapabilitiesLocked(tx, channel.Id, models_); err != nil {
+		if isNewTx {
+			tx.Rollback()
+		}
+		return err
+	}
+
 	// 如果是新创建的事务，需要提交
 	if isNewTx {
-		return tx.Commit().Error
+		if err := tx.Commit().Error; err != nil {
+			return err
+		}
+		return InitCapabilityCache()
 	}
 
 	return nil

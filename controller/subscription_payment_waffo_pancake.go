@@ -21,7 +21,7 @@ type SubscriptionWaffoPancakePayRequest struct {
 }
 
 func SubscriptionRequestWaffoPancakePay(c *gin.Context) {
-	if !requirePaymentCompliance(c) {
+	if !requirePaymentCompliance(c) || !requireSubscriptionSelfPurchase(c) {
 		return
 	}
 

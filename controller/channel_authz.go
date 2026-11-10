@@ -89,6 +89,12 @@ var channelReadOnlyFields = map[string]struct{}{
 	"balance_updated_time": {},
 	"used_quota":           {},
 	"disabled_models":      {},
+	// 已停用的渠道级额度（改为 setting.model_limits）。结构体里已没有这三个字段，
+	// 解析时会被丢弃；放在这里是为了旧前端仍带着它们时，不会被下面的
+	// fail-closed 扫描当成敏感改动，把只有 ChannelWrite 的管理员拦下。
+	"rpm":             {},
+	"tpm":             {},
+	"max_concurrency": {},
 }
 
 func clearChannelReadOnlyFields(channel *PatchChannel, requestData map[string]any) {
@@ -125,16 +131,12 @@ var channelNonSensitiveFields = map[string]struct{}{
 	"id":                  {},
 	"test_model":          {},
 	"name":                {},
-	"provider_slug":       {},
 	"weight":              {},
 	"models":              {},
 	"group":               {},
 	"model_mapping":       {},
 	"status_code_mapping": {},
 	"priority":            {},
-	"rpm":                 {},
-	"tpm":                 {},
-	"max_concurrency":     {},
 	"auto_ban":            {},
 	"other_info":          {},
 	"tag":                 {},

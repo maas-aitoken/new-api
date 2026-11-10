@@ -377,7 +377,7 @@ func PinTaskPluginEndpoint() gin.HandlerFunc {
 			return
 		}
 		if rewriteTo != "" {
-			if rewriteErr := rewriteTaskPluginJSONModel(c, rewriteTo); rewriteErr != nil {
+			if rewriteErr := rewriteJSONBodyModel(c, rewriteTo); rewriteErr != nil {
 				abortWithOpenAiMessage(c, http.StatusBadRequest, "Invalid task protocol request")
 				return
 			}
@@ -1449,7 +1449,7 @@ func PrepareTaskPluginSubmit() gin.HandlerFunc {
 				folded = target.Alias
 			}
 			if folded != "" {
-				if rewriteErr := rewriteTaskPluginJSONModel(c, folded); rewriteErr != nil {
+				if rewriteErr := rewriteJSONBodyModel(c, folded); rewriteErr != nil {
 					c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": gin.H{"message": rewriteErr.Error(), "type": "invalid_request_error"}})
 					return
 				}

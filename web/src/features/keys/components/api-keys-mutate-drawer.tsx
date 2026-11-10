@@ -96,6 +96,7 @@ import {
   isRoutingPreferenceChanged,
 } from '../lib'
 import type { ApiKey } from '../types'
+import { ApiKeyAutoPreferenceSection } from './api-key-auto-preference-section'
 import {
   ApiKeyGroupCombobox,
   type ApiKeyGroupOption,
@@ -749,6 +750,8 @@ export function ApiKeysMutateDrawer({
                 )}
               />
             </SideDrawerSection>
+
+            <ApiKeyAutoPreferenceSection form={form} />
 
             <ApiKeyRoutingSection form={routingForm} />
 

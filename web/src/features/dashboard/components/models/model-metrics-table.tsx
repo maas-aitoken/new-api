@@ -374,7 +374,7 @@ export function ModelMetricsTable(props: { filters?: DashboardFilters }) {
         <MetricsHint
           lines={[
             t(
-              'Failures count final failures only: a request retried across channels counts once.'
+              'Failures include interrupted streams and final failures; a request retried across channels counts once.'
             ),
             t(
               'Success rate, cache hit rate and latency only cover requests recorded after this release.'

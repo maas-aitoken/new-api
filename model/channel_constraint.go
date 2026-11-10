@@ -12,6 +12,7 @@ var filterEvalOrder = []dto.ChannelFilterKind{
 	dto.FilterRequestPath,
 	dto.FilterTaskPluginIdentity,
 	dto.FilterResponsesWebSocket,
+	dto.FilterCapability,
 }
 
 // ChannelSatisfiesFilters reports whether ch passes every filter.
@@ -119,6 +120,12 @@ func channelMatchesFilter(ch *Channel, modelName string, filter dto.ChannelFilte
 			return setting.BindsTaskPlugin(filter.TaskPluginKey) || slices.ContainsFunc(filter.TaskPluginKeys, setting.BindsTaskPlugin)
 		}
 		return slices.Contains(filter.TaskPluginChannelTypes, ch.Type)
+	case dto.FilterCapability:
+		// nil 表示本次请求没有能力约束，放行。
+		if filter.AllowedChannelIDs == nil {
+			return true
+		}
+		return slices.Contains(filter.AllowedChannelIDs, ch.Id)
 	case dto.FilterResponsesWebSocket:
 		if !ch.GetSetting().ResponsesWebSocketEnabled {
 			return false

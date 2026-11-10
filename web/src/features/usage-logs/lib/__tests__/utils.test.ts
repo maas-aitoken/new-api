@@ -73,4 +73,25 @@ describe('buildApiParams', () => {
     expect(params.stream_error).toBeUndefined()
     expect(params.type).toBeUndefined()
   })
+
+  it.each([
+    ['only', true],
+    ['exclude', false],
+    [undefined, undefined],
+  ] as const)(
+    'maps the auto routing filter %s to auto_routed=%s for admins and users alike',
+    (autoRouted, expected) => {
+      for (const isAdmin of [true, false]) {
+        const params = buildApiParams({
+          page: 1,
+          pageSize: 20,
+          searchParams: { autoRouted },
+          columnFilters: [],
+          isAdmin,
+        })
+
+        expect(params.auto_routed).toBe(expected)
+      }
+    }
+  )
 })

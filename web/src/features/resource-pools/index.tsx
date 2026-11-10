@@ -67,6 +67,7 @@ import {
   type ResourcePoolProvider,
   type ResourcePoolSource,
 } from "./api";
+import { CapacityPoolsTab } from "./components/capacity-pools-tab";
 import { ResourcePoolOverview, type PoolDetailTab } from "./overview";
 import {
   HIGH_USAGE_PERCENT,
@@ -381,6 +382,7 @@ export function ResourcePools() {
               <TabsTrigger value="channels">{t("Channel stats")}</TabsTrigger>
               <TabsTrigger value="accounts">{t("Account details")}</TabsTrigger>
               <TabsTrigger value="sources">{t("Interface config")}</TabsTrigger>
+              <TabsTrigger value="capacity">{t("Capacity pools")}</TabsTrigger>
             </TabsList>
 
             {view !== "overview" && (
@@ -435,6 +437,16 @@ export function ResourcePools() {
                 now={now}
                 locale={locale}
                 onOpen={openPool}
+              />
+            </TabsContent>
+
+            <TabsContent value="capacity">
+              <CapacityPoolsTab
+                provider={provider}
+                sources={sourcesQuery.data ?? []}
+                accounts={accounts}
+                locale={locale}
+                now={now}
               />
             </TabsContent>
 

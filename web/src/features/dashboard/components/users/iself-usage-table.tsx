@@ -28,6 +28,7 @@ import {
   useDataTable,
 } from '@/components/data-table'
 import { getIselfUsage } from '@/features/dashboard/api'
+import { cacheHitRate } from '@/features/dashboard/lib'
 import type {
   IselfUsageParams,
   IselfUsageRow,
@@ -35,6 +36,7 @@ import type {
 import {
   formatCompactNumber,
   formatNumber,
+  formatPercent,
   formatQuota,
   formatTimestampToDate,
 } from '@/lib/format'
@@ -44,6 +46,11 @@ import { useAuthStore } from '@/stores/auth-store'
 const EMPTY_ROWS: IselfUsageRow[] = []
 const INITIAL_SORTING = [{ id: 'quota', desc: true }]
 const INITIAL_PAGINATION = { pageIndex: 0, pageSize: 10 }
+// Cache token columns are opt-in, as in model metrics.
+const INITIAL_COLUMN_VISIBILITY = {
+  cache_read_tokens: false,
+  cache_write_tokens: false,
+}
 
 export function IselfUsageTable(props: { params: IselfUsageParams }) {
   const { t } = useTranslation()
@@ -112,6 +119,23 @@ export function IselfUsageTable(props: { params: IselfUsageParams }) {
         cell: ({ row }) => formatCompactNumber(row.original.completion_tokens),
       },
       {
+        accessorKey: 'cache_read_tokens',
+        header: t('Cache Read'),
+        cell: ({ row }) => formatCompactNumber(row.original.cache_read_tokens),
+      },
+      {
+        accessorKey: 'cache_write_tokens',
+        header: t('Cache Write'),
+        cell: ({ row }) => formatCompactNumber(row.original.cache_write_tokens),
+      },
+      {
+        id: 'cache_hit_rate',
+        accessorFn: (row) => cacheHitRate(row) ?? undefined,
+        header: t('Cache hit rate'),
+        sortUndefined: 'last',
+        cell: ({ row }) => formatPercent(cacheHitRate(row.original)),
+      },
+      {
         accessorKey: 'token_used',
         header: t('Tokens'),
         cell: ({ row }) => formatCompactNumber(row.original.token_used),
@@ -142,6 +166,7 @@ export function IselfUsageTable(props: { params: IselfUsageParams }) {
     getRowId: (row) => `${row.email}:${row.model_name}`,
     initialSorting: INITIAL_SORTING,
     initialPagination: INITIAL_PAGINATION,
+    initialColumnVisibility: INITIAL_COLUMN_VISIBILITY,
     columnVisibilityStorageKey: 'dashboard-iself-usage:column-visibility',
   })
 

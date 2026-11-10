@@ -51,9 +51,10 @@ Besides the conversation context, the trace also carries request parameters
 under the same capture mode gating:
 
 - `gen_ai.input.value` holds the client's request body minus its
-  conversation-context fields (`messages`/`tools`, plus `system` for Claude
-  and `instructions`/`input` for Responses). It is taken from the raw client
-  body before relay conversion, so unknown fields survive DTO round-trips.
+  conversation-context fields (`messages`/`tools`, plus `system` for Claude,
+  `instructions`/`input` for Responses, and `contents`/`systemInstruction` for
+  Gemini). It is taken from the raw client body before relay conversion, so
+  unknown fields survive DTO round-trips.
 - `new_api.request.upstream` holds the final upstream request body after the
   same strip, so parameter rewrites applied by the gateway (param overrides,
   model mapping, reasoning-effort conversion) are visible by diffing the two.
@@ -62,7 +63,8 @@ Both are plain JSON (no compression), include `metadata`/`user` fields as-is,
 follow the `full`/`error`/`off` capture mode exactly like message content, and
 are bounded by `NEW_API_OTEL_CAPTURE_MAX_BYTES`; an oversize value is dropped
 and only the `new_api.capture.params_truncated` marker is exported. Formats
-without a projection (Gemini and other non-target protocols) export neither.
+not listed above (embeddings, rerank, images, audio, realtime and the rest)
+have no projection and export neither.
 
 Each upstream protocol has its own aggregator behind the `streamAggregator`
 interface in `stream_aggregator.go`, one per file. The first frame that an
@@ -94,6 +96,14 @@ into a single assistant message — text, reasoning and tool calls, with the
 argument fragments of each tool call joined under the content block index that
 carries them — and exported in the same
 `[{"role":"assistant","content":"..."}]` shape as every other chat upstream.
+
+A Gemini generateContent stream is replayed frame by frame through
+`relayconvert.StreamResponseGeminiChat2OpenAI`, the converter the relay path
+uses to serve a Gemini upstream in OpenAI format. Each frame carries only the
+parts generated since the previous one, so text, thoughts and function calls are
+summed into one assistant message of the same shape. A non-stream Gemini
+response is read through `relayconvert.ResponseGeminiChat2OpenAI` in the same
+way.
 
 Every other stream is reduced to its assistant text
 (`choices[].delta.content`, or `choices[].text` for legacy completions) and

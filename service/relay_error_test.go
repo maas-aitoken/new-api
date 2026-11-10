@@ -13,6 +13,7 @@ import (
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/pkg/autorouter"
 	kitdto "github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/setting/system_setting"
@@ -229,6 +230,30 @@ func TestDecideRelayRetryReasons(t *testing.T) {
 			assert.Equal(t, tc.want.Action == "retry", ShouldRetryRelayError(c, tc.err, tc.retries))
 		})
 	}
+}
+
+// auto 的决策过程在成功和失败的请求日志里都要有，失败的请求最需要知道它选了什么。
+func TestAutoRouterDecisionReachesLogAdminInfo(t *testing.T) {
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	result := &autorouter.Result{
+		ResolvedModel: "sonnet-m",
+		Route:         autorouter.Route{Profile: "code.build", Model: "sonnet-m", Effort: "xhigh"},
+		Source:        autorouter.SourceJev,
+		Preference:    autorouter.PreferenceBalanced,
+		Pick:          &autorouter.Pick{Chosen: "sonnet-m", Weight: 0.07},
+		EffortAction:  autorouter.EffortSet, AppliedEffort: "high",
+	}
+	c.Set(ginKeyAutoRouterResult, result)
+
+	other := model.NewLogOther()
+	AppendRelayLogAdminInfo(c, nil, other)
+	assert.Same(t, result, other.Snapshot()["admin_info"].(map[string]any)["auto_router"])
+
+	plain, _ := gin.CreateTestContext(httptest.NewRecorder())
+	untouched := model.NewLogOther()
+	AppendRelayLogAdminInfo(plain, nil, untouched)
+	assert.NotContains(t, untouched.Snapshot()["admin_info"], "auto_router", "没经过 auto 的请求不带这个字段")
 }
 
 func TestRequestPolicyEventsReachLogAdminInfo(t *testing.T) {

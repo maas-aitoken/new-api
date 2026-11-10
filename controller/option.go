@@ -269,6 +269,38 @@ func UpdateOption(c *gin.Context) {
 			common.ApiErrorMsg(c, "该配置必须是非负整数")
 			return
 		}
+	case "capability_gate_setting.mode":
+		mode := operation_setting.NormalizeCapabilityGateMode(option.Value.(string))
+		if mode == "" {
+			common.ApiErrorMsg(c, "能力门控模式必须是 off、shadow 或 enforce")
+			return
+		}
+		option.Value = mode
+	case "capability_gate_setting.max_body_bytes":
+		value, parseErr := strconv.ParseInt(option.Value.(string), 10, 64)
+		if parseErr != nil || value < operation_setting.MinCapabilityGateMaxBodyBytes || value > operation_setting.MaxCapabilityGateMaxBodyBytes {
+			common.ApiErrorMsg(c, "请求体上限必须在 65536 到 67108864 字节之间")
+			return
+		}
+		option.Value = strconv.FormatInt(value, 10)
+	case "capability_gate_setting.record_only_dimensions":
+		normalized, parseErr := operation_setting.NormalizeCapabilityGateRecordOnlyDimensions(option.Value.(string))
+		if parseErr != nil {
+			common.ApiErrorMsg(c, parseErr.Error())
+			return
+		}
+		option.Value = normalized
+	case "capability_gate_setting.record_passed":
+		if _, parseErr := strconv.ParseBool(option.Value.(string)); parseErr != nil {
+			common.ApiErrorMsg(c, "该配置必须是布尔值")
+			return
+		}
+	case "capability_gate_setting.event_retention_days":
+		value, parseErr := strconv.Atoi(option.Value.(string))
+		if parseErr != nil || value < 1 || value > operation_setting.MaxCapabilityGateEventRetentionDays {
+			common.ApiErrorMsg(c, "日志保留天数必须是正整数且不超过 3650")
+			return
+		}
 	case "QuotaForInviter", "QuotaForInvitee":
 		if isPositiveOptionValue(option.Value.(string)) && !operation_setting.IsPaymentComplianceConfirmed() {
 			common.ApiErrorT(c, "Payment, redemption, subscription, and invitation reward features are disabled. The administrator must confirm compliance terms before enabling them.")
@@ -387,6 +419,16 @@ func UpdateOption(c *gin.Context) {
 	case "ModelRequestRateLimitGroup":
 		err = setting.CheckModelRequestRateLimitGroup(option.Value.(string))
 		if err != nil {
+			common.ApiError(c, err)
+			return
+		}
+	case "TokenRequestRateLimitCount":
+		count, convErr := strconv.Atoi(fmt.Sprintf("%v", option.Value))
+		if convErr != nil {
+			common.ApiErrorT(c, "Invalid parameters")
+			return
+		}
+		if err = setting.CheckTokenRequestRateLimitCount(count); err != nil {
 			common.ApiError(c, err)
 			return
 		}

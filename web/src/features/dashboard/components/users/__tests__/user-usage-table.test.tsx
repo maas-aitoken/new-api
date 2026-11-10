@@ -27,6 +27,7 @@ import type {
   UsageAnalyticsParams,
   UsageAnalyticsRow,
   UsageMetrics,
+  UsageOrgFilter,
 } from '@/features/dashboard/types'
 
 import { UserUsageTable } from '../user-usage-table'
@@ -105,7 +106,7 @@ function userTableRow(username: string): HTMLElement {
 
 const queryClients: QueryClient[] = []
 
-function renderTable(selectedRange = 7) {
+function renderTable(selectedRange = 7, org?: UsageOrgFilter) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   })
@@ -113,7 +114,7 @@ function renderTable(selectedRange = 7) {
   return render(
     <QueryClientProvider client={queryClient}>
       <TooltipProvider>
-        <UserUsageTable selectedRange={selectedRange} />
+        <UserUsageTable selectedRange={selectedRange} org={org} />
       </TooltipProvider>
     </QueryClientProvider>
   )
@@ -208,7 +209,7 @@ describe('UserUsageTable', () => {
 
     expect(
       await screen.findByText(
-        'Failures count final failures only: a request retried across channels counts once.'
+        'Failures include interrupted streams and final failures; a request retried across channels counts once.'
       )
     ).toBeInTheDocument()
     expect(
@@ -216,6 +217,63 @@ describe('UserUsageTable', () => {
         'Success rate, cache hit rate and latency only cover requests recorded after this release.'
       )
     ).toBeInTheDocument()
+  })
+
+  test('user rows show their organization levels, a dash when unassigned, and inactive status badges', async () => {
+    respondWith(() =>
+      rowsResponse([
+        {
+          ...userRow(1, 'alice', 120),
+          user_status: 1,
+          business_unit: 'BU-A',
+          department: 'Core',
+          team: 'Web',
+          org_path: 'BU-A/Core/Web',
+        },
+        {
+          ...userRow(2, 'bob', 40),
+          user_status: 3,
+          business_unit: '',
+          department: '',
+          team: '',
+        },
+        { ...userRow(3, 'carol', 10), user_status: 2 },
+      ])
+    )
+
+    renderTable()
+
+    await screen.findByText('alice')
+    const aliceRow = userTableRow('alice')
+    expect(within(aliceRow).getByText('BU-A')).toBeInTheDocument()
+    expect(within(aliceRow).getByText('Web')).toHaveAttribute(
+      'title',
+      'BU-A/Core/Web'
+    )
+    expect(within(aliceRow).queryByText('Resigned')).toBeNull()
+    expect(within(aliceRow).queryByText('Disabled')).toBeNull()
+    const bobRow = userTableRow('bob')
+    expect(within(bobRow).getByText('Resigned')).toBeInTheDocument()
+    expect(within(bobRow).getAllByText('—')).toHaveLength(3)
+    expect(
+      within(userTableRow('carol')).getByText('Disabled')
+    ).toBeInTheDocument()
+    expect(screen.queryByRole('columnheader', { name: 'Email' })).toBeNull()
+    expect(
+      screen.getByRole('columnheader', { name: /Business unit/ })
+    ).toBeInTheDocument()
+  })
+
+  test('an organization filter is sent with the user grouping and drops empty levels', async () => {
+    respondWith(() => rowsResponse([userRow(1, 'alice', 120)]))
+
+    renderTable(7, { business_unit: 'BU-A', department: '', team: 'Web' })
+
+    await screen.findByText('alice')
+    const params = callsFor('user')[0]?.[0]
+    expect(params?.business_unit).toBe('BU-A')
+    expect(params?.team).toBe('Web')
+    expect(params).not.toHaveProperty('department')
   })
 
   test('a renamed user with two rows for one user_id renders and expands each row separately', async () => {

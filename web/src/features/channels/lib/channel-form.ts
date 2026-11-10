@@ -222,13 +222,9 @@ export const channelFormSchema = z
       ),
     priority: z.number().optional(),
     weight: z.number().optional(),
-    rpm: z.number().int().min(0).optional(),
-    tpm: z.number().int().min(0).optional(),
-    max_concurrency: z.number().int().min(0).optional(),
     test_model: z.string().optional(),
     auto_ban: z.number().optional(),
     status: z.number(),
-    provider_slug: z.string().optional(),
     status_code_mapping: z
       .string()
       .optional()
@@ -283,6 +279,10 @@ export const channelFormSchema = z
       .string()
       .optional()
       .refine(isOptionalCostMultiplier, ERROR_MESSAGES.INVALID_COST_MULTIPLIER),
+    // <渠道, 模型> 额度在能力设置页编辑、容量池绑定在资源池页编辑；抽屉不显示，
+    // 只把 setting 里的原文带回，免得保存渠道时把它们冲掉。
+    model_limits: z.string().optional(),
+    capacity_pools: z.string().optional(),
     // Type-specific settings (stored in settings JSON)
     is_enterprise_account: z.boolean().optional(), // OpenRouter specific
     vertex_key_type: z.enum(['json', 'api_key']).optional(), // Vertex AI specific
@@ -451,13 +451,9 @@ export const CHANNEL_FORM_DEFAULT_VALUES: ChannelFormValues = {
   model_mapping: '',
   priority: 0,
   weight: 0,
-  rpm: 0,
-  tpm: 0,
-  max_concurrency: 0,
   test_model: '',
   auto_ban: 1,
   status: CHANNEL_STATUS.ENABLED,
-  provider_slug: '',
   status_code_mapping: '',
   tag: '',
   remark: '',
@@ -483,6 +479,8 @@ export const CHANNEL_FORM_DEFAULT_VALUES: ChannelFormValues = {
   system_prompt: '',
   system_prompt_override: false,
   cost_multiplier: '',
+  model_limits: '',
+  capacity_pools: '',
   // Type-specific settings
   is_enterprise_account: false,
   vertex_key_type: 'json',
@@ -532,6 +530,8 @@ export function transformChannelToFormDefaults(
     system_prompt: '',
     system_prompt_override: false,
     cost_multiplier: '',
+    model_limits: '',
+    capacity_pools: '',
   }
 
   if (channel.setting) {
@@ -557,6 +557,14 @@ export function transformChannelToFormDefaults(
         system_prompt: parsed.system_prompt || '',
         system_prompt_override: parsed.system_prompt_override || false,
         cost_multiplier: costMultiplierMapToJSON(parsed.cost_multiplier),
+        model_limits:
+          parsed.model_limits && typeof parsed.model_limits === 'object'
+            ? JSON.stringify(parsed.model_limits)
+            : '',
+        capacity_pools:
+          parsed.capacity_pools && typeof parsed.capacity_pools === 'object'
+            ? JSON.stringify(parsed.capacity_pools)
+            : '',
       }
     } catch (error) {
       // eslint-disable-next-line no-console
@@ -623,7 +631,6 @@ export function transformChannelToFormDefaults(
 
   return {
     name: channel.name || '',
-    provider_slug: channel.provider_slug || '',
     type: channel.type,
     base_url: channel.base_url || '',
     key: '', // Never populate key from backend for security
@@ -633,9 +640,6 @@ export function transformChannelToFormDefaults(
     model_mapping: channel.model_mapping || '',
     priority: channel.priority || 0,
     weight: channel.weight || 0,
-    rpm: channel.rpm || 0,
-    tpm: channel.tpm || 0,
-    max_concurrency: channel.max_concurrency || 0,
     test_model: channel.test_model || '',
     auto_ban: channel.auto_ban ?? 1,
     status: channel.status,
@@ -725,7 +729,38 @@ export function buildSettingJSON(formData: ChannelFormValues): string {
     settingObj.cost_multiplier = costMultiplier
   }
 
+  // <渠道, 模型> 额度在能力设置页编辑、容量池绑定在资源池页编辑，这里只原样带回。
+  const modelLimits = parseSettingObjectJSON(formData.model_limits)
+  if (modelLimits) {
+    settingObj.model_limits = modelLimits
+  }
+  const capacityPools = parseSettingObjectJSON(formData.capacity_pools)
+  if (capacityPools) {
+    settingObj.capacity_pools = capacityPools
+  }
+
   return JSON.stringify(settingObj)
+}
+
+/**
+ * 把表单里原样保存的 setting 子对象（model_limits、capacity_pools）还原成对象；
+ * 为空或不是 JSON 对象时返回 null，不写回。
+ */
+function parseSettingObjectJSON(
+  value: string | undefined
+): Record<string, unknown> | null {
+  if (!value?.trim()) return null
+  try {
+    const parsed: unknown = JSON.parse(value)
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return null
+    }
+    return Object.keys(parsed).length > 0
+      ? (parsed as Record<string, unknown>)
+      : null
+  } catch {
+    return null
+  }
 }
 
 /**
@@ -951,7 +986,6 @@ export function transformFormDataToCreatePayload(formData: ChannelFormValues): {
 
   const channel: Partial<Channel> = {
     name: formData.name,
-    provider_slug: formData.provider_slug?.trim() || null,
     type: formData.type,
     base_url: normalizeBaseUrl(formData.base_url) || null,
     key: formData.key,
@@ -961,9 +995,6 @@ export function transformFormDataToCreatePayload(formData: ChannelFormValues): {
     model_mapping: formData.model_mapping || null,
     priority: formData.priority || null,
     weight: formData.weight || null,
-    rpm: formData.rpm || 0,
-    tpm: formData.tpm || 0,
-    max_concurrency: formData.max_concurrency || 0,
     test_model: formData.test_model || null,
     auto_ban: formData.auto_ban ?? 1,
     status: formData.status,
@@ -1004,7 +1035,6 @@ export function transformFormDataToUpdatePayload(
   const payload: Partial<Channel> = {
     id: channelId,
     name: formData.name,
-    provider_slug: formData.provider_slug?.trim() || null,
     type: formData.type,
     base_url: normalizeBaseUrl(formData.base_url) || null,
     openai_organization: formData.openai_organization || null,
@@ -1013,9 +1043,6 @@ export function transformFormDataToUpdatePayload(
     model_mapping: formData.model_mapping || null,
     priority: formData.priority ?? 0,
     weight: formData.weight ?? 0,
-    rpm: formData.rpm ?? 0,
-    tpm: formData.tpm ?? 0,
-    max_concurrency: formData.max_concurrency ?? 0,
     test_model: formData.test_model || null,
     auto_ban: formData.auto_ban ?? 1,
     status_code_mapping: formData.status_code_mapping || null,

@@ -4,11 +4,13 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/QuantumNous/new-api/pkg/autorouter"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/relayconvert/convmeta"
 	"github.com/QuantumNous/new-api/relaykit/relayconvert/reasoning"
 	"github.com/QuantumNous/new-api/relaykit/types"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/model_setting"
 	hostreasoning "github.com/QuantumNous/new-api/setting/reasoning"
 	"github.com/gin-gonic/gin"
@@ -58,13 +60,25 @@ func ApplyReasoningModelSuffix(c *gin.Context, info *relaycommon.RelayInfo, outb
 		selected, diagnostics = overlayMappedModelModifiers(selected, upstreamParsed, diagnostics)
 	}
 
+	// auto 把档位写进了请求体，模型名上没有推理后缀：把它当成后缀给出的意图，
+	// 后面的协议转换和渠道适配就和 gpt-5-high 这类后缀模型走同一条渲染链。
+	fromAuto := false
+	if !selected.hasThinking {
+		if intent, ok := autoReasoningIntent(c); ok {
+			selected.intent, selected.hasThinking, fromAuto = intent, true, true
+		}
+	}
+
 	if selected.hasThinking {
 		explicit, explicitDiagnostics, err := explicitIntentFromRequest(info.Request)
 		if err != nil {
 			return reasoning.AsClientError(err)
 		}
 		diagnostics = append(diagnostics, explicitDiagnostics...)
-		diagnostics = append(diagnostics, modifierRequestOverrideDiagnostics(explicit, selected.intent)...)
+		if !fromAuto {
+			// 请求体里的推理字段就是 auto 自己写的，没有"被覆盖"可言。
+			diagnostics = append(diagnostics, modifierRequestOverrideDiagnostics(explicit, selected.intent)...)
+		}
 		if selected.intent.IncludeThoughts == nil {
 			selected.intent.IncludeThoughts = explicit.IncludeThoughts
 		}
@@ -119,6 +133,26 @@ func ApplyReasoningModelSuffix(c *gin.Context, info *relaycommon.RelayInfo, outb
 	}
 	info.RecordConversionDiagnostics(diagnosticContext, diagnostics)
 	return nil
+}
+
+// autoReasoningIntent 返回 auto 写进请求体的推理档位对应的意图；
+// 没有经过 auto、auto 没有改写推理字段（兜底路径、模型没有推理声明）时 ok 为 false。
+func autoReasoningIntent(c *gin.Context) (reasoning.Intent, bool) {
+	if c == nil {
+		return reasoning.Intent{}, false
+	}
+	result := service.GetAutoRouterResult(c)
+	if result == nil || result.EffortAction != autorouter.EffortSet {
+		return reasoning.Intent{}, false
+	}
+	effort, err := reasoning.ParseEffort(result.AppliedEffort)
+	if err != nil || effort == "" {
+		return reasoning.Intent{}, false
+	}
+	if effort == reasoning.EffortNone {
+		return reasoning.Intent{Mode: reasoning.ModeDisabled, Effort: reasoning.EffortNone, Source: reasoning.SourceSuffix}, true
+	}
+	return reasoning.Intent{Mode: reasoning.ModeEnabled, Effort: effort, Source: reasoning.SourceSuffix}, true
 }
 
 func parseRequestModelName(name string, opts *convmeta.Options) (parsedModelModifiers, error) {

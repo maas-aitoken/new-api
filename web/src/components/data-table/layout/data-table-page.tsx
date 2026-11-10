@@ -177,6 +177,14 @@ export type DataTablePageProps<TData> = {
   ) => React.ReactNode
 
   /**
+   * Expanded content rendered as a full-width detail row below the row. Return
+   * null to render nothing; expansion state is toggled by the feature's own
+   * chevron via `row.toggleExpanded()` (pass `withExpandedRowModel` to
+   * `useDataTable`). Not used by the mobile card list.
+   */
+  renderRowDetail?: (row: Row<TData>) => React.ReactNode
+
+  /**
    * Desktop column className resolver. Use for semantic alignment/spacing only;
    * fixed-column behavior should be configured with `pinnedColumns`.
    */
@@ -440,6 +448,7 @@ function renderMobile<TData>(
           emptyAction={props.emptyAction}
           skeletonKeyPrefix={props.skeletonKeyPrefix}
           renderRow={props.renderRow}
+          renderRowDetail={props.renderRowDetail}
           applyHeaderSize={props.applyHeaderSize}
           tableHeaderClassName={cn(
             '[background-color:var(--table-header)]',
@@ -539,6 +548,7 @@ function renderDesktop<TData>(
       emptyAction={props.emptyAction}
       skeletonKeyPrefix={props.skeletonKeyPrefix}
       renderRow={props.renderRow}
+      renderRowDetail={props.renderRowDetail}
       applyHeaderSize={props.applyHeaderSize}
       splitHeader={fixedHeight}
       tableContainerClassName={fixedHeight ? 'h-full min-h-0' : undefined}

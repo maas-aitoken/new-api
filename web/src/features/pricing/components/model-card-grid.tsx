@@ -96,7 +96,7 @@ export const ModelCardGrid = memo(function ModelCardGrid(
       <div className='grid grid-cols-1 gap-3 sm:gap-4 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4'>
         {pagedModels.map((model) => (
           <ModelCard
-            key={model.id ?? model.model_name}
+            key={model.catalog_key ?? model.id ?? model.model_name}
             model={model}
             tokenUnit={tokenUnit}
             priceRate={props.priceRate}

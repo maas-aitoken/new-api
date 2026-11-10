@@ -11,6 +11,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
+	channelcapacity "github.com/QuantumNous/new-api/pkg/channel_capacity"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/gin-gonic/gin"
 )
@@ -115,7 +116,7 @@ func schedulerConfigResponse() SchedulerConfigResponse {
 		CanaryPercent:               percent,
 		CanarySalt:                  schedulerConfigValue(schedulerCanarySaltKey, "SCHEDULER_CANARY_SALT", "scheduler-v2"),
 		ShadowTimeoutMS:             timeout,
-		RuntimePrefix:               schedulerConfigValue(schedulerRuntimePrefixKey, "SCHEDULER_RUNTIME_PREFIX", service.SchedulerRuntimePrefix),
+		RuntimePrefix:               schedulerConfigValue(schedulerRuntimePrefixKey, "SCHEDULER_RUNTIME_PREFIX", channelcapacity.DefaultRuntimePrefix),
 		RuntimeHighWatermark:        highWatermark,
 		SigningSecretSet:            schedulerConfigValue(schedulerSigningSecretKey, "SCHEDULER_SIGNING_SECRET", "") != "",
 		CatalogTokenSet:             strings.TrimSpace(getenv("SCHEDULER_CATALOG_TOKEN")) != "",

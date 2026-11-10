@@ -18,12 +18,7 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { api } from '@/lib/api'
 
-import type {
-  ModelSquareData,
-  ModelSquareProviderDetail,
-  PricingData,
-  PricingModel,
-} from './types'
+import type { ModelSquareData, PricingData, PricingModel } from './types'
 
 // ----------------------------------------------------------------------------
 // Pricing APIs
@@ -80,15 +75,5 @@ export async function getModelSquareDetail(
   modelId: string
 ): Promise<{ success: boolean; data: PricingModel }> {
   const res = await api.get(`/api/model-square/${encodeURIComponent(modelId)}`)
-  return res.data
-}
-
-export async function getModelSquareProviderDetail(
-  modelId: string,
-  providerSlug: string
-): Promise<{ success: boolean; data: ModelSquareProviderDetail }> {
-  const res = await api.get(
-    `/api/model-square/${encodeURIComponent(modelId)}/providers/${encodeURIComponent(providerSlug)}`
-  )
   return res.data
 }

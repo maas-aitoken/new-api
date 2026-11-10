@@ -52,6 +52,13 @@ export type DataTableViewProps<TData> = {
     row: Row<TData>,
     helpers: DataTableRenderRowHelpers
   ) => React.ReactNode
+  /**
+   * Optional expanded content rendered as a full-width detail row directly
+   * below the row. Return null to render nothing. Expansion state is owned by
+   * the caller: enable `withExpandedRowModel` and toggle it with
+   * `row.toggleExpanded()` from a {@link DataTableExpansionToggle}.
+   */
+  renderRowDetail?: (row: Row<TData>) => React.ReactNode
   getRowClassName?: (row: Row<TData>) => string | undefined
   getColumnClassName?: DataTableColumnClassName
   pinnedColumns?: DataTablePinnedColumn[]

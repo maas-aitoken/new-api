@@ -204,3 +204,104 @@ func emailBindingData(token string, flow *model.AuthFlow, state *model.EmailBind
 		OldEmailRequired: state.OldCodeHash != "", ExpiresAt: flow.ExpiresAt.Unix(), ResendAt: state.ResendAt,
 	}
 }
+
+// EmailVerificationData describes a pending email security verification. Email
+// is masked; the code only travels by mail.
+type EmailVerificationData struct {
+	FlowToken string `json:"flow_token"`
+	Email     string `json:"email"`
+	ExpiresAt int64  `json:"expires_at"`
+	ResendAt  int64  `json:"resend_at"`
+}
+
+// StartEmailVerification sends a code bound to one operation to the account's
+// bound email address. The address never comes from the request.
+func StartEmailVerification(identity AuthIdentity, operation VerificationOperation, lang string) (*EmailVerificationData, error) {
+	binding, err := BindVerificationOperation(operation)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := RequireVerificationMethod(identity, binding.Scope, VerificationMethodEmail); err != nil {
+		return nil, err
+	}
+	user, err := model.GetUserById(identity.UserID, false)
+	if err != nil {
+		return nil, err
+	}
+	email := model.NormalizeEmail(user.Email)
+	if email == "" {
+		return nil, ErrVerificationUnavailable
+	}
+	codes, err := generateEmailBindingCodes(false)
+	if err != nil {
+		return nil, err
+	}
+	state := model.EmailStepUpState{
+		AuthSessionIdentity: identity, Scope: binding.Scope, ContextHash: binding.ContextHash,
+		Email: email, CodeHash: codes.NewHash, ResendAt: time.Now().Add(model.EmailBindingResendDelay).Unix(),
+	}
+	token, flow, err := model.CreateEmailStepUp(identity, state)
+	if err != nil {
+		return nil, err
+	}
+	if err := sendEmailVerificationCode(lang, email, codes.New); err != nil {
+		// An undelivered code must not leave a usable verification behind.
+		_, _ = model.ConsumeAuthFlow(token, model.AuthFlowMatch{Purpose: model.AuthFlowPurposeEmailStepUp, UserId: identity.UserID, SessionId: identity.SessionID})
+		return nil, ErrEmailBindingDelivery
+	}
+	return emailVerificationData(token, flow, &state), nil
+}
+
+func ResendEmailVerification(identity AuthIdentity, token string, lang string) (*EmailVerificationData, error) {
+	_, state, err := model.GetEmailStepUp(identity, token)
+	if err != nil {
+		return nil, err
+	}
+	if state.ResendAt > time.Now().Unix() {
+		return nil, model.ErrEmailBindingResendWait
+	}
+	if state.FailedAttempts >= model.EmailBindingMaxAttempts {
+		return nil, model.ErrEmailBindingLocked
+	}
+	// Recheck the policy so a factor enrolled meanwhile stops further mail.
+	if _, err := RequireVerificationMethod(identity, state.Scope, VerificationMethodEmail); err != nil {
+		return nil, err
+	}
+	codes, err := generateEmailBindingCodes(false)
+	if err != nil {
+		return nil, err
+	}
+	flow, state, err := model.ResendEmailStepUp(identity, token, codes.NewHash)
+	if err != nil {
+		return nil, err
+	}
+	if err := sendEmailVerificationCode(lang, state.Email, codes.New); err != nil {
+		_, _ = model.ConsumeAuthFlow(token, model.AuthFlowMatch{Purpose: model.AuthFlowPurposeEmailStepUp, UserId: identity.UserID, SessionId: identity.SessionID})
+		return nil, ErrEmailBindingDelivery
+	}
+	return emailVerificationData(token, flow, state), nil
+}
+
+// FinishEmailVerification consumes the flow with a correct code and issues a
+// proof for the operation bound at start.
+func FinishEmailVerification(identity AuthIdentity, token, code string) (*SecurityProof, error) {
+	state, err := model.CompleteEmailStepUp(identity, token, code)
+	if err != nil {
+		return nil, err
+	}
+	return CompleteSecurityVerification(identity, VerificationBinding{Scope: state.Scope, ContextHash: state.ContextHash}, VerificationMethodEmail)
+}
+
+func sendEmailVerificationCode(lang, email, code string) error {
+	subject := i18n.Translate(lang, i18n.MsgEmailStepUpSubject, map[string]any{"SystemName": common.SystemName})
+	minutes := map[string]any{"Minutes": int(model.EmailBindingTTL / time.Minute)}
+	content := fmt.Sprintf("<p>%s</p><p>%s</p><p>%s</p>",
+		i18n.Translate(lang, i18n.MsgEmailStepUpIntro),
+		i18n.Translate(lang, i18n.MsgEmailBindingCode, map[string]any{"Code": html.EscapeString(code)}),
+		i18n.Translate(lang, i18n.MsgEmailBindingNewValidity, minutes))
+	return common.SendEmail(subject, email, content)
+}
+
+func emailVerificationData(token string, flow *model.AuthFlow, state *model.EmailStepUpState) *EmailVerificationData {
+	return &EmailVerificationData{FlowToken: token, Email: common.MaskEmail(state.Email), ExpiresAt: flow.ExpiresAt.Unix(), ResendAt: state.ResendAt}
+}

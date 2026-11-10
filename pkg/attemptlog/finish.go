@@ -59,10 +59,12 @@ type FinishInput struct {
 	// nil, so this is read late.
 	UpstreamModelName string
 	// CostMultiplier is the <channel, model> cost multiplier attribute, keyed
-	// by UpstreamModelName (the model-mapped name, since that is what the
-	// channel actually serves). Collected at Finish time for the same reason
-	// as UpstreamModelName. It never touches billing; the recorder scales
-	// cost_actual with it. Zero means "unset, record exactly what was billed".
+	// by the request-side model name (the name the user asked for, before
+	// model mapping), so it stays on the same side as billing. It is not keyed
+	// by UpstreamModelName: that name is upstream-side and can even be replaced
+	// by the model a streaming response reports. It never touches billing; the
+	// recorder scales cost_actual with it. Zero means "unset, record exactly
+	// what was billed".
 	CostMultiplier float64
 }
 

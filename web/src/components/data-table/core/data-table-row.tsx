@@ -40,6 +40,11 @@ type DataTableRowProps<TData> = {
 type DataTableRowInnerProps<TData> = DataTableRowProps<TData> & {
   isSelected: boolean
   /**
+   * Whether the row is expanded. Captured outside the memo comparator so an
+   * expansion toggle inside a cell re-renders with the row reference unchanged.
+   */
+  isExpanded: boolean
+  /**
    * Stable signature of currently visible leaf columns for this row.
    * Captured outside the memo comparator so visibility toggles re-render
    * even when the TanStack row object reference stays the same.
@@ -50,6 +55,7 @@ type DataTableRowInnerProps<TData> = DataTableRowProps<TData> & {
 function DataTableRowInner<TData>({
   row,
   isSelected,
+  isExpanded,
   className,
   getColumnClassName,
   cellRenderColumns,
@@ -59,6 +65,7 @@ function DataTableRowInner<TData>({
   // Destructured only to keep them out of `rowProps` (not valid DOM attrs)
   // and to feed the memo comparator below; intentionally unused here.
   void cellRenderColumns
+  void isExpanded
   void visibleColumnIds
 
   return (
@@ -103,6 +110,7 @@ const MemoizedDataTableRow = React.memo(DataTableRowInner, (prev, next) => {
     prev.row === next.row &&
     prev.className === next.className &&
     prev.isSelected === next.isSelected &&
+    prev.isExpanded === next.isExpanded &&
     prev.visibleColumnIds === next.visibleColumnIds &&
     prev.getColumnClassName === next.getColumnClassName &&
     prev.cellRenderColumns === next.cellRenderColumns
@@ -119,6 +127,7 @@ export function DataTableRow<TData>(props: DataTableRowProps<TData>) {
     <MemoizedDataTableRow
       {...props}
       isSelected={props.row.getIsSelected()}
+      isExpanded={props.row.getIsExpanded()}
       visibleColumnIds={visibleColumnIds}
     />
   )

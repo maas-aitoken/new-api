@@ -41,6 +41,16 @@ export {
 } from './analytics'
 export { processChartData, processUserChartData } from './charts'
 export {
+  ORG_LEVELS,
+  ORG_UNASSIGNED,
+  drillDownDimension,
+  orgFilterChoices,
+  orgFilterParams,
+  orgLevelLabel,
+  orgPathLabel,
+  setOrgFilterLevel,
+} from './organization'
+export {
   buildDashboardFlowData,
   buildFlowSankeySpec,
   flowNodeFilterFromSankeyDatum,

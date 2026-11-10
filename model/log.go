@@ -70,8 +70,8 @@ type Log struct {
 	UseTime           int    `json:"use_time" gorm:"default:0"`
 	IsStream          bool   `json:"is_stream"`
 	FastMode          bool   `json:"fast_mode" gorm:"index"`
+	AutoRouted        bool   `json:"auto_routed"` // asked for "auto"; ModelName is the model it resolved to. Rows from before the column hold NULL, read as false.
 	ChannelId         int    `json:"channel" gorm:"index"`
-	ProviderSlug      string `json:"provider_slug,omitempty" gorm:"size:64;index"`
 	ChannelName       string `json:"channel_name" gorm:"->"`
 	TokenId           int    `json:"token_id" gorm:"default:0;index"`
 	Group             string `json:"group" gorm:"index"`
@@ -80,6 +80,10 @@ type Log struct {
 	UpstreamRequestId string `json:"upstream_request_id,omitempty" gorm:"type:varchar(128);index:idx_logs_upstream_request_id;default:''"`
 	Other             string `json:"other"`
 	IselfEmail        string `json:"iself_email" gorm:"index;default:''"`
+	VendorName        string `json:"vendor_name,omitempty" gorm:"-"`
+	VendorIcon        string `json:"vendor_icon,omitempty" gorm:"-"`
+	UserAvatar        string `json:"user_avatar,omitempty" gorm:"-"`
+	UserDisplayName   string `json:"user_display_name,omitempty" gorm:"-"`
 }
 
 // don't use iota, avoid change log type value
@@ -105,22 +109,6 @@ func createLog(log *Log) error {
 	return LOG_DB.Create(log).Error
 }
 
-func resolveLogProviderSlug(c *gin.Context, channelId int) string {
-	if c != nil {
-		if providerSlug := common.GetContextKeyString(c, constant.ContextKeyProviderSlug); providerSlug != "" {
-			return providerSlug
-		}
-	}
-	if channelId <= 0 {
-		return ""
-	}
-	channel, err := GetChannelById(channelId, false)
-	if err != nil || channel == nil {
-		return ""
-	}
-	return channel.GetProviderSlug()
-}
-
 func clickHouseLogOrder(prefix string) string {
 	return prefix + "created_at desc, " + prefix + "request_id desc"
 }
@@ -144,6 +132,70 @@ func formatUserLogs(logs []*Log, startIdx int) {
 func FormatAdminLogs(logs []*Log) {
 	for i := range logs {
 		logs[i].Other = formatLogOtherJSON(logs[i].Other, logOtherVisibilityAdmin)
+	}
+}
+
+// FillLogVendors derives vendor info from the current model pricing cache, so
+// historical logs reflect the model's present vendor rather than a stored value.
+func FillLogVendors(logs []*Log) {
+	if len(logs) == 0 {
+		return
+	}
+	vendorByID := make(map[int]PricingVendor)
+	for _, vendor := range GetVendors() {
+		vendorByID[vendor.ID] = vendor
+	}
+	type logVendor struct{ name, icon string }
+	vendorByModel := make(map[string]logVendor)
+	for _, pricing := range GetPricing() {
+		if vendor, ok := vendorByID[pricing.VendorID]; ok {
+			vendorByModel[pricing.ModelName] = logVendor{name: vendor.Name, icon: vendor.Icon}
+		} else if pricing.OwnerBy != "" {
+			vendorByModel[pricing.ModelName] = logVendor{name: pricing.OwnerBy}
+		}
+	}
+	for i := range logs {
+		if vendor, ok := vendorByModel[logs[i].ModelName]; ok {
+			logs[i].VendorName = vendor.name
+			logs[i].VendorIcon = vendor.icon
+		}
+	}
+}
+
+// FillLogUsers loads avatar and display name for the users on one page of logs.
+// Users live in the main DB, which may differ from LOG_DB, so this is a separate
+// lookup. Soft-deleted users are included so historical rows keep their identity.
+func FillLogUsers(logs []*Log) {
+	if len(logs) == 0 {
+		return
+	}
+	idSet := make(map[int]struct{}, len(logs))
+	for _, log := range logs {
+		if log.UserId > 0 {
+			idSet[log.UserId] = struct{}{}
+		}
+	}
+	if len(idSet) == 0 {
+		return
+	}
+	ids := make([]int, 0, len(idSet))
+	for id := range idSet {
+		ids = append(ids, id)
+	}
+	var users []User
+	if err := DB.Unscoped().Select("id", "avatar", "display_name").Where("id IN ?", ids).Find(&users).Error; err != nil {
+		common.SysError("failed to load log users: " + err.Error())
+		return
+	}
+	userByID := make(map[int]*User, len(users))
+	for i := range users {
+		userByID[users[i].Id] = &users[i]
+	}
+	for _, log := range logs {
+		if user, ok := userByID[log.UserId]; ok {
+			log.UserAvatar = user.Avatar
+			log.UserDisplayName = user.DisplayName
+		}
 	}
 }
 
@@ -321,10 +373,10 @@ func RecordErrorLog(c *gin.Context, userId int, channelId int, modelName string,
 		ModelName:        modelName,
 		Quota:            0,
 		ChannelId:        channelId,
-		ProviderSlug:     resolveLogProviderSlug(c, channelId),
 		TokenId:          tokenId,
 		UseTime:          useTimeSeconds,
 		IsStream:         isStream,
+		AutoRouted:       common.GetContextKeyBool(c, constant.ContextKeyAutoRouted),
 		Group:            group,
 		Ip: func() string {
 			if needRecordIp {
@@ -344,7 +396,6 @@ func RecordErrorLog(c *gin.Context, userId int, channelId int, modelName string,
 }
 
 type RecordConsumeLogParams struct {
-	ProviderSlug       string            `json:"provider_slug,omitempty"`
 	DashboardTokenUsed *int              `json:"-"`
 	FastMode           bool              `json:"fast_mode"`
 	ChannelId          int               `json:"channel_id"`
@@ -397,13 +448,8 @@ func RecordConsumeLog(c *gin.Context, userId int, params RecordConsumeLogParams)
 		UseTime:          params.UseTimeSeconds,
 		IsStream:         params.IsStream,
 		FastMode:         params.FastMode,
+		AutoRouted:       common.GetContextKeyBool(c, constant.ContextKeyAutoRouted),
 		Group:            params.Group,
-		ProviderSlug: func() string {
-			if params.ProviderSlug != "" {
-				return params.ProviderSlug
-			}
-			return resolveLogProviderSlug(c, params.ChannelId)
-		}(),
 		Ip: func() string {
 			if needRecordIp {
 				return c.ClientIP()
@@ -495,17 +541,16 @@ func isOtherStreamError(other *LogOther) bool {
 }
 
 type RecordTaskBillingLogParams struct {
-	ProviderSlug string
-	UserId       int
-	LogType      int
-	Content      []*common.Message
-	ChannelId    int
-	ModelName    string
-	Quota        int
-	TokenId      int
-	Group        string
-	Other        *LogOther
-	NodeName     string // 任务发起节点；为空时回退当前节点
+	UserId    int
+	LogType   int
+	Content   []*common.Message
+	ChannelId int
+	ModelName string
+	Quota     int
+	TokenId   int
+	Group     string
+	Other     *LogOther
+	NodeName  string // 任务发起节点；为空时回退当前节点
 }
 
 func RecordTaskBillingLog(params RecordTaskBillingLogParams) {
@@ -534,12 +579,6 @@ func RecordTaskBillingLog(params RecordTaskBillingLogParams) {
 		TokenId:   params.TokenId,
 		Group:     params.Group,
 		Other:     other.JSONString(),
-		ProviderSlug: func() string {
-			if params.ProviderSlug != "" {
-				return params.ProviderSlug
-			}
-			return resolveLogProviderSlug(nil, params.ChannelId)
-		}(),
 	}
 	err := createLog(log)
 	if err != nil {
@@ -580,6 +619,9 @@ type LogFilter struct {
 	StreamError       bool
 	Retry             bool
 	ISelfEmail        string
+	// AutoRouted keeps only requests that asked for the "auto" model (true) or
+	// only those that did not (false); nil keeps both.
+	AutoRouted *bool
 }
 
 func (f LogFilter) apply(tx *gorm.DB) (*gorm.DB, error) {
@@ -619,7 +661,21 @@ func (f LogFilter) apply(tx *gorm.DB) (*gorm.DB, error) {
 	}
 	tx = applyStreamErrorFilter(tx, "logs.other", f.StreamError)
 	tx = applyRetryFilter(tx, "logs.other", f.Retry)
+	tx = applyAutoRoutedFilter(tx, "logs.auto_routed", f.AutoRouted)
 	return tx, nil
+}
+
+// applyAutoRoutedFilter keeps the logs that did (true) or did not (false) ask for
+// the "auto" model. Rows written before the column existed hold NULL, so "did not"
+// has to include them; ClickHouse never holds NULL there and the extra test is harmless.
+func applyAutoRoutedFilter(tx *gorm.DB, column string, autoRouted *bool) *gorm.DB {
+	if autoRouted == nil {
+		return tx
+	}
+	if *autoRouted {
+		return tx.Where(column+" = ?", true)
+	}
+	return tx.Where("("+column+" IS NULL OR "+column+" = ?)", false)
 }
 
 func GetAllLogs(filter LogFilter, startIdx int, num int) (logs []*Log, total int64, err error) {
@@ -846,7 +902,7 @@ type Stat struct {
 	FastRatio float64 `json:"fast_ratio"`
 }
 
-func buildConsumeLogStatQuery(startTimestamp int64, endTimestamp int64, modelName string, username string, tokenName string, channel int, group string, streamError bool, retry bool) (*gorm.DB, error) {
+func buildConsumeLogStatQuery(startTimestamp int64, endTimestamp int64, modelName string, username string, tokenName string, channel int, group string, streamError bool, retry bool, autoRouted *bool) (*gorm.DB, error) {
 	tx := LOG_DB.Table("logs").Where("type = ?", LogTypeConsume)
 	var err error
 	if tx, err = applyExplicitLogTextFilter(tx, "username", username); err != nil {
@@ -872,15 +928,16 @@ func buildConsumeLogStatQuery(startTimestamp int64, endTimestamp int64, modelNam
 	}
 	tx = applyStreamErrorFilter(tx, "logs.other", streamError)
 	tx = applyRetryFilter(tx, "logs.other", retry)
+	tx = applyAutoRoutedFilter(tx, "logs.auto_routed", autoRouted)
 	return tx, nil
 }
 
-func SumUsedQuota(logType int, startTimestamp int64, endTimestamp int64, modelName string, username string, tokenName string, channel int, group string, streamError bool, retry bool) (stat Stat, err error) {
+func SumUsedQuota(logType int, startTimestamp int64, endTimestamp int64, modelName string, username string, tokenName string, channel int, group string, streamError bool, retry bool, autoRouted *bool) (stat Stat, err error) {
 	newStatQuery := func() (*gorm.DB, error) {
 		// Build a fresh statement for every aggregate. GORM sessions can still
 		// share statement clauses after chained Select/Where calls, which causes
 		// one aggregate query to overwrite another.
-		return buildConsumeLogStatQuery(startTimestamp, endTimestamp, modelName, username, tokenName, channel, group, streamError, retry)
+		return buildConsumeLogStatQuery(startTimestamp, endTimestamp, modelName, username, tokenName, channel, group, streamError, retry, autoRouted)
 	}
 	tx, err := newStatQuery()
 	if err != nil {

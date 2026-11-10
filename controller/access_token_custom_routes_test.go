@@ -17,9 +17,6 @@ func TestCustomDashboardRoutesEnforceAccessTokenScopes(t *testing.T) {
 		method, pattern, path, scope string
 		rootOnly                     bool
 	}{
-		{http.MethodGet, "/api/providers/:id", "/api/providers/7", "model:read", false},
-		{http.MethodPost, "/api/providers/", "/api/providers/", "model:write", false},
-		{http.MethodPut, "/api/model-provider-prices/", "/api/model-provider-prices/", "model:write", false},
 		{http.MethodGet, "/api/token/:id/routing-preference", "/api/token/7/routing-preference", "api_key:read", false},
 		{http.MethodPut, "/api/token/:id/routing-preference", "/api/token/7/routing-preference", "api_key:write", false},
 		{http.MethodGet, "/api/scheduler/config", "/api/scheduler/config", "option:read", true},

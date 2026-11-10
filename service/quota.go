@@ -472,8 +472,14 @@ func PostConsumeQuota(relayInfo *relaycommon.RelayInfo, quota int, preConsumedQu
 
 func postConsumeQuotaWithResult(relayInfo *relaycommon.RelayInfo, quota int, preConsumedQuota int, sendEmail bool) (result postConsumeQuotaResult, err error) {
 
-	// 1) Consume from wallet quota OR subscription item
-	if relayInfo != nil && relayInfo.BillingSource == BillingSourceSubscription {
+	// 1) Consume from wallet quota OR subscription item; a business-scene key charges neither
+	billingSource := ""
+	if relayInfo != nil {
+		billingSource = relayInfo.BillingSource
+	}
+	switch billingSource {
+	case BillingSourceBusiness:
+	case BillingSourceSubscription:
 		if relayInfo.SubscriptionId == 0 {
 			return result, errors.New("subscription id is missing")
 		}
@@ -484,7 +490,7 @@ func postConsumeQuotaWithResult(relayInfo *relaycommon.RelayInfo, quota int, pre
 			}
 			relayInfo.SubscriptionPostDelta += delta
 		}
-	} else {
+	default:
 		// Wallet
 		if quota > 0 {
 			err = model.DecreaseUserQuota(relayInfo.UserId, quota, false)

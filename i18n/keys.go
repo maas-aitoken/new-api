@@ -19,33 +19,39 @@ const (
 	MsgAuthTokenGroupDeprecated   = "auth.token_group_deprecated"
 	MsgAuthChannelSelectForbidden = "auth.channel_select_forbidden"
 
-	MsgRateLimitReached      = "rate_limit.reached"
-	MsgRateLimitTotalReached = "rate_limit.total_reached"
+	MsgRateLimitReached         = "rate_limit.reached"
+	MsgRateLimitTotalReached    = "rate_limit.total_reached"
+	MsgRateLimitTokenRPMReached = "rate_limit.token_rpm_reached"
 
-	MsgDistributorInvalidRequest               = "distributor.invalid_request"
-	MsgDistributorInvalidChannelId             = "distributor.invalid_channel_id"
-	MsgDistributorChannelDisabled              = "distributor.channel_disabled"
-	MsgDistributorTokenNoModelAccess           = "distributor.token_no_model_access"
-	MsgDistributorTokenModelForbidden          = "distributor.token_model_forbidden"
-	MsgDistributorModelNameRequired            = "distributor.model_name_required"
-	MsgDistributorInvalidPlayground            = "distributor.invalid_playground_request"
-	MsgDistributorGroupAccessDenied            = "distributor.group_access_denied"
-	MsgDistributorGetChannelFailed             = "distributor.get_channel_failed"
-	MsgDistributorNoAvailableChannel           = "distributor.no_available_channel"
-	MsgDistributorNoAvailableChannelTaskPlugin = "distributor.no_available_channel_task_plugin"
-	MsgDistributorInvalidParseModel            = "distributor.invalid_request_parse_model"
+	MsgDistributorInvalidRequest                 = "distributor.invalid_request"
+	MsgDistributorInvalidChannelId               = "distributor.invalid_channel_id"
+	MsgDistributorChannelDisabled                = "distributor.channel_disabled"
+	MsgDistributorTokenNoModelAccess             = "distributor.token_no_model_access"
+	MsgDistributorTokenModelForbidden            = "distributor.token_model_forbidden"
+	MsgDistributorTokenAutoForbidden             = "distributor.token_auto_forbidden"
+	MsgDistributorSmartKeyGeminiUnsupported      = "distributor.smart_key_gemini_unsupported"
+	MsgDistributorSmartKeyCompletionsUnsupported = "distributor.smart_key_completions_unsupported"
+	MsgDistributorModelNameRequired              = "distributor.model_name_required"
+	MsgDistributorInvalidPlayground              = "distributor.invalid_playground_request"
+	MsgDistributorGroupAccessDenied              = "distributor.group_access_denied"
+	MsgDistributorGetChannelFailed               = "distributor.get_channel_failed"
+	MsgDistributorNoAvailableChannel             = "distributor.no_available_channel"
+	MsgDistributorNoAvailableChannelTaskPlugin   = "distributor.no_available_channel_task_plugin"
+	MsgDistributorInvalidParseModel              = "distributor.invalid_request_parse_model"
 
-	MsgQuotaUserInsufficient             = "quota.user_insufficient"
-	MsgQuotaPreConsumeInsufficient       = "quota.pre_consume_insufficient"
-	MsgQuotaSubscriptionInsufficient     = "quota.subscription_insufficient"
-	MsgRelayModelPriceNotConfigured      = "relay.model_price_not_configured"
-	MsgRelayModelPriceNotConfiguredAdmin = "relay.model_price_not_configured_admin"
-	MsgRelayTaskChannelDisabled          = "relay.task_channel_disabled"
-	MsgRelayGroupSaturated               = "relay.group_saturated"
-	MsgRelayGroupUpstreamSaturated       = "relay.group_upstream_saturated"
-	MsgRelayRetryGetChannelFailed        = "relay.retry_get_channel_failed"
-	MsgRelayRetryNoAvailableChannel      = "relay.retry_no_available_channel"
-	MsgRelayAccessTokenUnsupported       = "relay.access_token_unsupported"
+	MsgQuotaUserInsufficient               = "quota.user_insufficient"
+	MsgQuotaPreConsumeInsufficient         = "quota.pre_consume_insufficient"
+	MsgQuotaSubscriptionInsufficient       = "quota.subscription_insufficient"
+	MsgQuotaTierExhausted                  = "quota.tier_exhausted"
+	MsgRelayModelPriceNotConfigured        = "relay.model_price_not_configured"
+	MsgRelayModelPriceNotConfiguredAdmin   = "relay.model_price_not_configured_admin"
+	MsgRelayTaskChannelDisabled            = "relay.task_channel_disabled"
+	MsgRelayGroupSaturated                 = "relay.group_saturated"
+	MsgRelayGroupUpstreamSaturated         = "relay.group_upstream_saturated"
+	MsgRelayRetryGetChannelFailed          = "relay.retry_get_channel_failed"
+	MsgRelayRetryNoAvailableChannel        = "relay.retry_no_available_channel"
+	MsgRelayAccessTokenUnsupported         = "relay.access_token_unsupported"
+	MsgRelaySmartKeyResponsesWSUnsupported = "relay.smart_key_responses_websocket_unsupported"
 )
 
 // Emails and the name of the token created at registration, in the
@@ -71,6 +77,9 @@ const (
 	MsgEmailBindingNewValidity = "email.binding.new_validity"
 	MsgEmailBindingOldValidity = "email.binding.old_validity"
 
+	MsgEmailStepUpSubject = "email.step_up.subject"
+	MsgEmailStepUpIntro   = "email.step_up.intro"
+
 	MsgEmailSecurityNoticeSubject = "email.security_notice.subject"
 	MsgEmailSecurityNoticeChanged = "email.security_notice.changed"
 	MsgEmailSecurityNoticeAdvice  = "email.security_notice.advice"
@@ -91,6 +100,13 @@ const (
 	MsgNotifyQuotaLowBark              = "notify.quota_low_bark"
 	MsgNotifyQuotaLowGotify            = "notify.quota_low_gotify"
 	MsgNotifyQuotaLowEmail             = "notify.quota_low_email"
+)
+
+// Quota increase notices sent to the cloud platform, in DEFAULT_LANGUAGE
+const (
+	MsgNotifyQuotaIncreased      = "notify.quota_increased"
+	MsgNotifyQuotaIncreasedFirst = "notify.quota_increased_first"
+	MsgNotifyQuotaUnlimited      = "notify.quota_unlimited"
 )
 
 // Channel notices sent to administrators who receive them and to model update

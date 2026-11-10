@@ -35,6 +35,7 @@ require (
 	github.com/klauspost/compress v1.18.3
 	github.com/mewkiz/flac v1.0.13
 	github.com/nicksnyder/go-i18n/v2 v2.6.1
+	github.com/parquet-go/parquet-go v0.32.0
 	github.com/pkg/errors v0.9.1
 	github.com/pquerna/otp v1.5.0
 	github.com/samber/hot v0.11.0
@@ -85,9 +86,12 @@ require (
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.25.1 // indirect
 	github.com/hashicorp/go-version v1.8.0 // indirect
+	github.com/parquet-go/bitpack v1.0.0 // indirect
+	github.com/parquet-go/jsonlite v1.0.0 // indirect
 	github.com/paulmach/orb v0.12.0 // indirect
 	github.com/pierrec/lz4/v4 v4.1.25 // indirect
 	github.com/segmentio/asm v1.2.1 // indirect
+	github.com/twpayne/go-geom v1.6.1 // indirect
 	github.com/yuin/gopher-lua v1.1.1 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.34.0 // indirect

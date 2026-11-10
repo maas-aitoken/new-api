@@ -24,7 +24,7 @@ import {
   ENDPOINT_TYPES,
   type SortOption,
 } from '../constants'
-import type { PricingModel, PricingProvider } from '../types'
+import type { PricingModel } from '../types'
 import {
   getCardExamplePrice,
   getDynamicPricingSummary,
@@ -38,10 +38,6 @@ export type PricingAdvancedFilters = {
   contextLength: string
   parameterCount: string
   releaseDate: string
-  free: string
-  batch: string
-  region: string
-  quantization: string
 }
 
 const RANGE_LIMITS = [8192, 32768, 131072]
@@ -96,60 +92,6 @@ function filterByParameterRange(
     if (range === 'gte-100b') return value >= 100e9
     return true
   })
-}
-
-function getAvailableProviders(model: PricingModel): PricingProvider[] {
-  return (model.providers ?? []).filter((provider) => provider.available)
-}
-
-export function isFreeProvider(provider: PricingProvider): boolean {
-  if (provider.metadata?.free === true) return true
-  return (
-    provider.pricing?.input_price === 0 && provider.pricing?.output_price === 0
-  )
-}
-
-function hasProviderCapability(
-  model: PricingModel,
-  capability: 'free' | 'batch'
-): boolean {
-  return getAvailableProviders(model).some((provider) =>
-    capability === 'free'
-      ? isFreeProvider(provider)
-      : provider.metadata?.batch === true
-  )
-}
-
-function hasProviderValue(
-  model: PricingModel,
-  field: 'region' | 'quantization',
-  value: string
-): boolean {
-  return getAvailableProviders(model).some(
-    (provider) => provider.metadata?.[field] === value
-  )
-}
-
-export function getProviderRegions(models: PricingModel[]): string[] {
-  return collectProviderValues(models, 'region')
-}
-
-export function getProviderQuantizations(models: PricingModel[]): string[] {
-  return collectProviderValues(models, 'quantization')
-}
-
-function collectProviderValues(
-  models: PricingModel[],
-  field: 'region' | 'quantization'
-): string[] {
-  const values = new Set<string>()
-  for (const model of models) {
-    for (const provider of getAvailableProviders(model)) {
-      const value = provider.metadata?.[field]?.trim()
-      if (value) values.add(value)
-    }
-  }
-  return [...values].sort((left, right) => left.localeCompare(right))
 }
 
 export function hasValues(
@@ -433,22 +375,6 @@ export function filterByAdvanced(
         : Number.NaN
       return Number.isFinite(time) && time >= cutoff
     })
-  }
-  if (filters.free !== FILTER_ALL) {
-    result = result.filter((model) => hasProviderCapability(model, 'free'))
-  }
-  if (filters.batch !== FILTER_ALL) {
-    result = result.filter((model) => hasProviderCapability(model, 'batch'))
-  }
-  if (filters.region !== FILTER_ALL) {
-    result = result.filter((model) =>
-      hasProviderValue(model, 'region', filters.region)
-    )
-  }
-  if (filters.quantization !== FILTER_ALL) {
-    result = result.filter((model) =>
-      hasProviderValue(model, 'quantization', filters.quantization)
-    )
   }
   return result
 }

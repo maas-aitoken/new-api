@@ -118,6 +118,14 @@ func CreateModelMeta(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
+	if err := model.ValidateModelCapabilities(m.Capabilities); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	if err := model.ValidateModelCapabilityNarrowings(m); err != nil {
+		common.ApiError(c, err)
+		return
+	}
 	// 名称冲突检查
 	if dup, err := model.IsModelNameDuplicated(0, m.ModelName); err != nil {
 		common.ApiError(c, err)
@@ -166,6 +174,14 @@ func UpdateModelMeta(c *gin.Context) {
 			return
 		}
 		if err := model.ValidateMetadataValues(model.MetadataValues{Endpoints: m.Endpoints, Status: m.Status, NameRule: m.NameRule}); err != nil {
+			common.ApiError(c, err)
+			return
+		}
+		if err := model.ValidateModelCapabilities(m.Capabilities); err != nil {
+			common.ApiError(c, err)
+			return
+		}
+		if err := model.ValidateModelCapabilityNarrowings(m); err != nil {
 			common.ApiError(c, err)
 			return
 		}
@@ -244,6 +260,8 @@ func BatchDeleteModelMeta(c *gin.Context) {
 
 // enrichModels keeps configured endpoints intact and derives connections from
 // enabled routes, including hidden or unpriced models absent from the catalog.
+// A rule row only counts the models it governs (MatchedModels), so its channel
+// and group numbers never overlap with an exact row for the same model.
 func enrichModels(models []*model.Model) error {
 	if len(models) == 0 {
 		return nil
@@ -252,25 +270,16 @@ func enrichModels(models []*model.Model) error {
 	if err != nil {
 		return err
 	}
-	for _, metadata := range models {
-		if metadata == nil {
-			continue
-		}
-		metadata.HasMetadata = metadata.Id > 0
-		channelIDs := make(map[int]struct{})
-		for name, ids := range configured {
-			if metadata.MatchesName(name) {
-				for _, id := range ids {
-					channelIDs[id] = struct{}{}
-				}
-			}
-		}
-		metadata.ConfiguredChannelCount = len(channelIDs)
-	}
 	connections, err := model.GetModelConnections()
 	if err != nil {
 		return err
 	}
+	for _, metadata := range models {
+		if metadata != nil {
+			metadata.HasMetadata = metadata.Id > 0
+		}
+	}
+	// 先算出每行真正管辖的模型（MatchedModels），下面所有渠道/分组统计都基于它。
 	if err := model.FillModelSquareStates(models, configured, connections); err != nil {
 		return err
 	}
@@ -278,19 +287,33 @@ func enrichModels(models []*model.Model) error {
 		if metadata == nil {
 			continue
 		}
+		governedNames := metadata.MatchedModels
+		if metadata.NameRule == model.NameRuleExact {
+			governedNames = []string{metadata.ModelName}
+		}
+		governed := make(map[string]struct{}, len(governedNames))
+		for _, name := range governedNames {
+			governed[name] = struct{}{}
+		}
+		channelIDs := make(map[int]struct{})
+		for name := range governed {
+			for _, id := range configured[name] {
+				channelIDs[id] = struct{}{}
+			}
+		}
+		metadata.ConfiguredChannelCount = len(channelIDs)
+
 		channels := make(map[int]model.BoundChannel)
 		groups := make(map[string]bool)
-		names := make(map[string]bool)
 		endpoints := make(map[string]bool)
 		quotas := make(map[int]bool)
 		for _, connection := range connections {
 			name := connection.Model
-			if !metadata.MatchesName(name) {
+			if _, ok := governed[name]; !ok {
 				continue
 			}
-			names[name] = true
 			groups[connection.Group] = true
-			channels[connection.ChannelId] = model.BoundChannel{Name: connection.ChannelName, Type: connection.ChannelType}
+			channels[connection.ChannelId] = model.BoundChannel{ID: connection.ChannelId, Name: connection.ChannelName, Type: connection.ChannelType}
 			for _, endpoint := range model.GetModelSupportEndpointTypes(name) {
 				endpoints[string(endpoint)] = true
 			}
@@ -302,7 +325,6 @@ func enrichModels(models []*model.Model) error {
 		metadata.EnableGroups = nil
 		metadata.SupportedEndpoints = nil
 		metadata.QuotaTypes = nil
-		metadata.MatchedModels = nil
 		for _, channel := range channels {
 			metadata.BoundChannels = append(metadata.BoundChannels, channel)
 		}
@@ -325,13 +347,6 @@ func enrichModels(models []*model.Model) error {
 		sort.Strings(metadata.EnableGroups)
 		sort.Strings(metadata.SupportedEndpoints)
 		sort.Ints(metadata.QuotaTypes)
-		if metadata.NameRule != model.NameRuleExact {
-			for name := range names {
-				metadata.MatchedModels = append(metadata.MatchedModels, name)
-			}
-			sort.Strings(metadata.MatchedModels)
-			metadata.MatchedCount = len(names)
-		}
 	}
 	return nil
 }

@@ -75,7 +75,7 @@ import {
 import type { LogOtherData } from '../../types'
 import { DetailsDialog } from '../dialogs/details-dialog'
 import { LogCostDisplay } from '../log-cost-display'
-import { ModelBadge } from '../model-badge'
+import { AutoRoutedBadge, ModelBadge } from '../model-badge'
 import { TimingMetricsCell, StreamTpsCell } from '../timing-metrics-cell'
 import { useUsageLogsContext } from '../usage-logs-provider'
 
@@ -725,12 +725,13 @@ export function useCommonLogsColumns(
           const modelInfo = formatModelName(log)
 
           return (
-            <div className='flex w-fit flex-col gap-0.5'>
+            <div className='flex w-fit flex-wrap items-center gap-1'>
               <ModelBadge
                 modelName={modelInfo.name}
                 actualModel={modelInfo.actualModel}
                 responseModel={modelInfo.responseModel}
               />
+              {log.auto_routed ? <AutoRoutedBadge /> : null}
             </div>
           )
         },

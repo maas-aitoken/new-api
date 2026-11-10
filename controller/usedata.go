@@ -32,7 +32,7 @@ func GetAllQuotaDates(c *gin.Context) {
 	startTimestamp, _ := strconv.ParseInt(c.Query("start_timestamp"), 10, 64)
 	endTimestamp, _ := strconv.ParseInt(c.Query("end_timestamp"), 10, 64)
 	username := c.Query("username")
-	dates, err := model.GetAllQuotaDates(startTimestamp, endTimestamp, username)
+	dates, err := model.GetAllQuotaDates(startTimestamp, endTimestamp, username, usageOrgFilterFromQuery(c))
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -48,7 +48,15 @@ func GetAllQuotaDates(c *gin.Context) {
 func GetQuotaDatesByUser(c *gin.Context) {
 	startTimestamp, _ := strconv.ParseInt(c.Query("start_timestamp"), 10, 64)
 	endTimestamp, _ := strconv.ParseInt(c.Query("end_timestamp"), 10, 64)
-	dates, err := model.GetQuotaDataGroupByUser(startTimestamp, endTimestamp)
+	dimension := c.DefaultQuery("dimension", model.UsageAnalyticsGroupUser)
+	switch dimension {
+	case model.UsageAnalyticsGroupUser, model.UsageAnalyticsGroupBusinessUnit,
+		model.UsageAnalyticsGroupDepartment, model.UsageAnalyticsGroupTeam:
+	default:
+		common.ApiErrorMsg(c, "invalid dimension")
+		return
+	}
+	dates, err := model.GetUserQuotaTrend(startTimestamp, endTimestamp, dimension, usageOrgFilterFromQuery(c))
 	if err != nil {
 		common.ApiError(c, err)
 		return

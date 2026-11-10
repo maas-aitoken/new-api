@@ -20,6 +20,7 @@ For commercial licensing, please contact support@quantumnous.com
  * Type definitions for usage logs
  */
 import type { RequestRuleTrace } from '@/features/pricing/lib/billing-expr'
+import type { RouteResult } from '@/features/system-settings/autorouter/route-log/types'
 import type { PolicyEvent } from '@/features/system-settings/request-policies/api'
 
 import type { UsageLog } from './data/schema'
@@ -48,6 +49,9 @@ export interface CommonFilters {
 /**
  * Common logs specific filters
  */
+/** Keep only the requests that asked for the "auto" model, or only those that did not. */
+export type AutoRoutedFilter = 'only' | 'exclude'
+
 export interface CommonLogFilters extends CommonFilters {
   model?: string
   token?: string
@@ -56,6 +60,7 @@ export interface CommonLogFilters extends CommonFilters {
   requestId?: string
   upstreamRequestId?: string
   iselfEmail?: string
+  autoRouted?: AutoRoutedFilter
 }
 
 /**
@@ -118,6 +123,8 @@ export interface ToolSurchargeItem {
 export interface LogOtherData {
   admin_info?: {
     request_policy?: PolicyEvent[]
+    // The summary of how an "auto" request was routed (admin only).
+    auto_router?: RouteResult
     is_multi_key?: boolean
     multi_key_index?: number
     use_channel?: number[]
@@ -447,6 +454,7 @@ export interface GetLogsParams {
   request_id?: string
   upstream_request_id?: string
   iself_email?: string
+  auto_routed?: boolean
 }
 
 export interface GetLogsResponse {
@@ -473,6 +481,7 @@ export interface GetLogStatsParams {
   group?: string
   request_id?: string
   upstream_request_id?: string
+  auto_routed?: boolean
 }
 
 export interface GetLogStatsResponse {

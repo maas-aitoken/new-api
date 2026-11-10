@@ -18,16 +18,15 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { useQuery } from '@tanstack/react-query'
 import { getRouteApi } from '@tanstack/react-router'
-import { Fragment, useMemo, useState } from 'react'
+import { useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import {
+  DataTableDetailRow,
   DataTablePage,
-  DataTableRow,
   useDataTable,
 } from '@/components/data-table'
 import { ErrorState } from '@/components/error-state'
-import { TableCell, TableRow } from '@/components/ui/table'
 import { useModelPricing } from '@/features/model-pricing/api'
 import { useMediaQuery } from '@/hooks'
 import { useTableUrlState } from '@/hooks/use-table-url-state'
@@ -41,7 +40,7 @@ import { DEFAULT_PAGE_SIZE } from '../constants'
 import { modelsQueryKeys, vendorsQueryKeys } from '../lib'
 import type { ModelSquareState } from '../types'
 import { DataTableBulkActions } from './data-table-bulk-actions'
-import { ModelProvidersSubtable } from './model-providers-subtable'
+import { ModelMatchedModels } from './model-matched-models'
 import { useModelsColumns } from './models-columns'
 import { useModels } from './models-provider'
 
@@ -50,9 +49,6 @@ const route = getRouteApi('/_authenticated/models/$section')
 export function ModelsTable() {
   const { t } = useTranslation()
   const { selectedVendor } = useModels()
-  const [expandedModelIds, setExpandedModelIds] = useState<Set<number>>(
-    new Set()
-  )
   const isMobile = useMediaQuery('(max-width: 640px)')
 
   // URL state management
@@ -190,25 +186,7 @@ export function ModelsTable() {
   let pricingState: 'loading' | 'error' | undefined
   if (pricingQuery.isError) pricingState = 'error'
   else if (pricingQuery.isLoading) pricingState = 'loading'
-  const providerExpansion = useMemo(
-    () => ({
-      expandedModelIds,
-      onToggleExpand: (id: number) =>
-        setExpandedModelIds((current) => {
-          const next = new Set(current)
-          if (next.has(id)) next.delete(id)
-          else next.add(id)
-          return next
-        }),
-    }),
-    [expandedModelIds]
-  )
-  const columns = useModelsColumns(
-    vendors,
-    pricingQuery.data,
-    pricingState,
-    providerExpansion
-  )
+  const columns = useModelsColumns(vendors, pricingQuery.data, pricingState)
 
   // React Table instance
   const { table } = useDataTable({
@@ -236,6 +214,7 @@ export function ModelsTable() {
     onGlobalFilterChange,
     manualPagination: true,
     manualFiltering: true,
+    withExpandedRowModel: true,
     ensurePageInRange,
   })
 
@@ -276,6 +255,11 @@ export function ModelsTable() {
       }
       skeletonKeyPrefix='model-skeleton'
       applyHeaderSize
+      renderRowDetail={(row) => (
+        <DataTableDetailRow row={row}>
+          <ModelMatchedModels model={row.original} />
+        </DataTableDetailRow>
+      )}
       pinnedColumns={[
         { columnId: 'model_name', side: 'left' },
         { columnId: 'actions', side: 'right' },
@@ -322,21 +306,6 @@ export function ModelsTable() {
         ],
       }}
       bulkActions={<DataTableBulkActions table={table} />}
-      renderRow={(row) => (
-        <Fragment key={row.id}>
-          <DataTableRow row={row} cellRenderColumns={columns} />
-          {expandedModelIds.has(row.original.id) && (
-            <TableRow>
-              <TableCell
-                colSpan={table.getVisibleLeafColumns().length}
-                className='p-0'
-              >
-                <ModelProvidersSubtable model={row.original} />
-              </TableCell>
-            </TableRow>
-          )}
-        </Fragment>
-      )}
     />
   )
 }

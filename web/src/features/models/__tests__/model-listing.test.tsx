@@ -298,6 +298,39 @@ it('keeps channel rows individually selectable and disables metadata mutations f
   ).toBeEnabled()
 })
 
+it('lists models matched by a rule under that rule instead of as separate rows', async () => {
+  const rule: Model = {
+    ...metadata,
+    id: 12,
+    model_name: 'family-',
+    name_rule: 1,
+    matched_count: 2,
+    matched_models: ['family-a', 'family-b'],
+    configured_channel_count: 2,
+    square_state: 'visible',
+  }
+  await renderList([rule])
+  // 命中规则的具体模型不再单独成行，所以没有“缺元数据”行。
+  expect(screen.queryByText('Missing metadata')).not.toBeInTheDocument()
+  expect(
+    screen.queryByRole('button', { name: 'family-a' })
+  ).not.toBeInTheDocument()
+
+  const user = userEvent.setup()
+  const toggle = screen.getByRole('button', { name: 'Expand' })
+  expect(toggle).toHaveAttribute('aria-expanded', 'false')
+  await user.click(toggle)
+
+  expect(toggle).toHaveAttribute('aria-expanded', 'true')
+  expect(screen.getByRole('button', { name: 'family-a' })).toBeVisible()
+  expect(screen.getByRole('button', { name: 'family-b' })).toBeVisible()
+
+  await user.click(screen.getByRole('button', { name: 'family-b' }))
+  expect(screen.getByRole('textbox', { name: 'Model Name *' })).toHaveValue(
+    'family-b'
+  )
+})
+
 it('keeps long model names and translated channel labels truncated inside their existing cells', async () => {
   const longName =
     'provider/very-long-channel-model-with-detailed-version-and-context-window'
@@ -384,7 +417,7 @@ it('keeps prices and channel explanations readable in the mobile card and detail
 })
 
 it('uses backend square states for success, warning, hidden, and partial rows including models without metadata', async () => {
-  const activeChannels = [{ name: 'Active', type: 1 }]
+  const activeChannels = [{ id: 1, name: 'Active', type: 1 }]
   await renderList([
     { ...metadata, model_name: 'catalog-only' },
     {
@@ -450,11 +483,11 @@ it('uses backend square states for success, warning, hidden, and partial rows in
   await act(async () => {
     await i18n.changeLanguage('zhCN')
   })
-  expect(screen.getByText('无法展示')).toBeVisible()
+  expect(screen.getByText('不可用')).toBeVisible()
   expect(screen.getByText('部分展示')).toBeVisible()
   expect(screen.getAllByText('正常展示')).toHaveLength(2)
   expect(screen.getAllByText('已隐藏')).toHaveLength(2)
-  for (const label of ['无法展示', '部分展示']) {
+  for (const label of ['不可用', '部分展示']) {
     expect(screen.getByText(label)).toHaveClass('truncate')
   }
 })
@@ -789,7 +822,7 @@ it('keeps all columns while collapsing tags and connection counts', async () => 
     {
       ...channel,
       tags: 'Tools,Files,Vision',
-      bound_channels: [{ name: 'Main', type: 1 }],
+      bound_channels: [{ id: 1, name: 'Main', type: 1 }],
       enable_groups: ['default', 'premium'],
     },
   ])

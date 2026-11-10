@@ -31,12 +31,14 @@ import {
   calculateDashboardStats,
   getDefaultDays,
   getDashboardDurationMinutes,
+  orgFilterParams,
   successRate,
 } from '@/features/dashboard/lib'
 import type {
   QuotaDataItem,
   DashboardFilters,
   UsageAnalyticsParams,
+  UsageOrgFilter,
 } from '@/features/dashboard/types'
 import { toIntlLocale } from '@/i18n/languages'
 import {
@@ -53,6 +55,8 @@ import { MetricsHint } from './model-usage-expansion'
 
 interface LogStatCardsProps {
   filters?: DashboardFilters
+  // Admin-only organization filter.
+  orgFilter?: UsageOrgFilter
   onDataUpdate?: (data: QuotaDataItem[], loading: boolean) => void
 }
 
@@ -174,6 +178,10 @@ export function LogStatCards(props: LogStatCardsProps) {
   const [timeRangeMinutes, setTimeRangeMinutes] = useState(0)
 
   const { filters, onDataUpdate } = props
+  const orgParams = useMemo(
+    () => (isAdmin && props.orgFilter ? orgFilterParams(props.orgFilter) : {}),
+    [isAdmin, props.orgFilter]
+  )
 
   useEffect(() => {
     const abortController = new AbortController()
@@ -190,7 +198,10 @@ export function LogStatCards(props: LogStatCardsProps) {
     )
     setTimeRangeMinutes(getDashboardDurationMinutes(filters))
 
-    void getUserQuotaDates(buildQueryParams(timeRange, filters), isAdmin)
+    void getUserQuotaDates(
+      { ...buildQueryParams(timeRange, filters), ...orgParams },
+      isAdmin
+    )
       .then((res) => {
         if (abortController.signal.aborted) return
         const data = res?.data || []
@@ -212,7 +223,7 @@ export function LogStatCards(props: LogStatCardsProps) {
     return () => {
       abortController.abort()
     }
-  }, [filters, isAdmin, onDataUpdate])
+  }, [filters, isAdmin, onDataUpdate, orgParams])
 
   const summaryParams = useMemo<UsageAnalyticsParams>(() => {
     const timeRange = computeTimeRange(
@@ -222,10 +233,11 @@ export function LogStatCards(props: LogStatCardsProps) {
     )
     return {
       ...timeRange,
+      ...orgParams,
       group_by: 'summary',
       ...(isAdmin && filters?.username && { username: filters.username }),
     }
-  }, [filters, isAdmin])
+  }, [filters, isAdmin, orgParams])
   const summaryQuery = useQuery({
     queryKey: [
       'dashboard',
@@ -286,7 +298,7 @@ export function LogStatCards(props: LogStatCardsProps) {
 
   const summary = summaryQuery.data?.summary ?? null
   const failuresNote = t(
-    'Failures count final failures only: a request retried across channels counts once.'
+    'Failures include interrupted streams and final failures; a request retried across channels counts once.'
   )
   const trackedNote = t(
     'Success rate, cache hit rate and latency only cover requests recorded after this release.'

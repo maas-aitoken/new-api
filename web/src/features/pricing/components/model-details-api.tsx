@@ -42,11 +42,13 @@ import { useStatus } from '@/hooks/use-status'
 
 import {
   buildRateLimits,
-  buildSupportedParameters,
   formatRateLimit,
-  type SupportedParameter,
 } from '../lib/mock-stats'
 import { replaceModelInPath } from '../lib/model-helpers'
+import {
+  buildSupportedParameters,
+  type SupportedParameter,
+} from '../lib/supported-parameters'
 import type { PricingModel } from '../types'
 
 // ---------------------------------------------------------------------------
@@ -606,7 +608,7 @@ function SupportedParametersSection(props: { model: PricingModel }) {
           },
           {
             id: 'range',
-            header: t('Default / range'),
+            header: t('Range'),
             className: 'h-9 w-32',
             cellClassName: tableStyles.topCell,
             cell: (p) => <ParamRangeCell param={p} />,
@@ -625,23 +627,17 @@ function SupportedParametersSection(props: { model: PricingModel }) {
 }
 
 function ParamRangeCell(props: { param: SupportedParameter }) {
-  const { defaultValue, range, enumValues } = props.param
-  if (defaultValue !== undefined) {
-    return (
-      <div className='flex flex-wrap items-center gap-1'>
-        <span className='text-muted-foreground text-sm'>=</span>
-        <code className='bg-muted rounded px-1.5 py-0.5 font-mono text-sm'>
-          {String(defaultValue)}
-        </code>
-        {range && (
-          <span className='text-muted-foreground text-sm'>{range}</span>
-        )}
-      </div>
-    )
-  }
+  const { range, enumValues, maxItems } = props.param
   if (range) {
     return (
       <span className='text-muted-foreground font-mono text-sm'>{range}</span>
+    )
+  }
+  if (maxItems != null) {
+    return (
+      <span className='text-muted-foreground text-sm'>
+        ≤ {maxItems}
+      </span>
     )
   }
   if (enumValues && enumValues.length > 0) {

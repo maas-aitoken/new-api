@@ -25,6 +25,15 @@ func requirePaymentCompliance(c *gin.Context) bool {
 	return true
 }
 
+// requireSubscriptionSelfPurchase refuses orders while quota tiers are on: tier plans are assigned, not sold.
+func requireSubscriptionSelfPurchase(c *gin.Context) bool {
+	if operation_setting.IsQuotaTierEnabled() {
+		common.ApiErrorT(c, "Subscriptions are assigned as quota tiers and cannot be purchased")
+		return false
+	}
+	return true
+}
+
 func ConfirmPaymentCompliance(c *gin.Context) {
 	if c.GetBool("use_access_token") {
 		c.JSON(http.StatusForbidden, gin.H{

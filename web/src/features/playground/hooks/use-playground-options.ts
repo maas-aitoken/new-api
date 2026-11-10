@@ -23,27 +23,20 @@ import { useTranslation } from 'react-i18next'
 import { handleServerError } from '@/lib/handle-server-error'
 import { requireServerSuccess } from '@/lib/server-error-message'
 
-import { getUserGroups, getUserModelProviders, getUserModels } from '../api'
+import { getUserGroups, getUserModels } from '../api'
 import {
   getGroupFallback,
   getModelFallback,
   getOptionLoadErrorMessage,
   shouldClearModelForGroup,
 } from '../lib'
-import type {
-  GroupOption,
-  ModelOption,
-  PlaygroundConfig,
-  PlaygroundProviderOption,
-} from '../types'
+import type { GroupOption, ModelOption, PlaygroundConfig } from '../types'
 
 type UsePlaygroundOptionsParams = {
   currentGroup: string
   currentModel: string
   setGroups: (groups: GroupOption[]) => void
   setModels: (models: ModelOption[]) => void
-  setProviders: (providers: PlaygroundProviderOption[]) => void
-  providerOrder: string[]
   updateConfig: <K extends keyof PlaygroundConfig>(
     key: K,
     value: PlaygroundConfig[K]
@@ -55,8 +48,6 @@ export function usePlaygroundOptions({
   currentModel,
   setGroups,
   setModels,
-  setProviders,
-  providerOrder,
   updateConfig,
 }: UsePlaygroundOptionsParams) {
   const { t } = useTranslation()
@@ -71,17 +62,6 @@ export function usePlaygroundOptions({
     queryFn: async () =>
       requireServerSuccess(await getUserModels(currentGroup)),
     enabled: currentGroup !== '',
-  })
-
-  const {
-    data: providersData,
-    error: providersError,
-    isError: isProvidersError,
-    isLoading: isLoadingProviders,
-  } = useQuery({
-    queryKey: ['playground-providers', currentGroup, currentModel],
-    queryFn: () => getUserModelProviders(currentGroup, currentModel),
-    enabled: currentGroup !== '' && currentModel !== '',
   })
 
   const {
@@ -118,18 +98,6 @@ export function usePlaygroundOptions({
   }, [isGroupsError, groupsError, t])
 
   useEffect(() => {
-    if (!isProvidersError) return
-
-    handleServerError(
-      providersError,
-      getOptionLoadErrorMessage(
-        providersError,
-        t('Failed to load playground providers')
-      )
-    )
-  }, [isProvidersError, providersError, t])
-
-  useEffect(() => {
     if (!modelsData) return
 
     setModels(modelsData)
@@ -156,25 +124,7 @@ export function usePlaygroundOptions({
     }
   }, [groupsData, currentGroup, setGroups, updateConfig])
 
-  useEffect(() => {
-    setProviders(providersData ?? [])
-  }, [providersData, setProviders])
-
-  useEffect(() => {
-    if (!providersData) return
-    const available = new Set(providersData.map((provider) => provider.slug))
-    const nextOrder = providerOrder.filter((slug) => available.has(slug))
-    if (
-      nextOrder.length === providerOrder.length &&
-      nextOrder.every((slug, index) => slug === providerOrder[index])
-    ) {
-      return
-    }
-    updateConfig('providerOrder', nextOrder)
-  }, [providerOrder, providersData, updateConfig])
-
   return {
     isLoadingModels,
-    isLoadingProviders,
   }
 }

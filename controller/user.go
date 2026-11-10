@@ -14,6 +14,7 @@ import (
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/pkg/autorouter"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/service/authz"
@@ -500,34 +501,34 @@ func buildSelfUserData(user *model.User) map[string]any {
 	permissions := calculateUserPermissions(user.Role)
 	permissions["admin_permissions"] = authz.Capabilities(user.Id, user.Role)
 	return map[string]any{
-		"id":                user.Id,
-		"username":          user.Username,
-		"display_name":      user.DisplayName,
-		"avatar":            user.Avatar,
-		"has_password":      user.HasPassword,
-		"role":              user.Role,
-		"status":            user.Status,
-		"email":             user.Email,
-		"github_id":         user.GitHubId,
-		"discord_id":        user.DiscordId,
-		"oidc_id":           user.OidcId,
-		"wechat_id":         user.WeChatId,
-		"telegram_id":       user.TelegramId,
-		"group":             user.Group,
-		"quota":             user.Quota,
-		"used_quota":        user.UsedQuota,
-		"request_count":     user.RequestCount,
-		"aff_code":          user.AffCode,
-		"aff_count":         user.AffCount,
-		"aff_quota":         user.AffQuota,
-		"aff_history_quota": user.AffHistoryQuota,
-		"inviter_id":        user.InviterId,
-		"linux_do_id":       user.LinuxDOId,
-		"hoidc_id":          user.HoidcId,
-		"setting":           user.Setting,
-		"stripe_customer":   user.StripeCustomer,
-		"sidebar_modules":   userSetting.SidebarModules, // 正确提取sidebar_modules字段
-		"permissions":       permissions,
+		"id":                    user.Id,
+		"username":              user.Username,
+		"display_name":          user.DisplayName,
+		"avatar":                user.Avatar,
+		"has_password":          user.HasPassword,
+		"role":                  user.Role,
+		"status":                user.Status,
+		"email":                 user.Email,
+		"github_id":             user.GitHubId,
+		"discord_id":            user.DiscordId,
+		"oidc_id":               user.OidcId,
+		"wechat_id":             user.WeChatId,
+		"telegram_id":           user.TelegramId,
+		"group":                 user.Group,
+		"quota":                 user.Quota,
+		"used_quota":            user.UsedQuota,
+		"request_count":         user.RequestCount,
+		"aff_code":              user.AffCode,
+		"aff_count":             user.AffCount,
+		"aff_quota":             user.AffQuota,
+		"aff_history_quota":     user.AffHistoryQuota,
+		"inviter_id":            user.InviterId,
+		"linux_do_id":           user.LinuxDOId,
+		"hoidc_id":              user.HoidcId,
+		"setting":               user.Setting,
+		"stripe_customer":       user.StripeCustomer,
+		"sidebar_modules":       userSetting.SidebarModules, // 正确提取sidebar_modules字段
+		"permissions":           permissions,
 		"secondaryOrganization": user.SecondaryOrganization,
 		"tertiaryOrganization":  user.TertiaryOrganization,
 		"team":                  user.Team,
@@ -652,99 +653,82 @@ func GetUserModels(c *gin.Context) {
 			groupsToQuery = []string{group}
 		}
 	}
+	models := service.GetGroupsEnabledModels(groupsToQuery)
+	if service.AutoRouterListed(models) {
+		models = append([]string{autorouter.AutoModel}, models...)
+	}
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "",
-		"data":    service.GetGroupsEnabledModels(groupsToQuery),
+		"data":    models,
 	})
 }
 
-type UserModelProvider struct {
-	Slug      string `json:"slug"`
-	Name      string `json:"name"`
-	Icon      string `json:"icon,omitempty"`
-	Available bool   `json:"available"`
-}
-
-// GetUserModelProviders returns user-authorized providers that can serve a
-// model in the requested group. Channel identifiers and deployment details
-// are intentionally not exposed.
-func GetUserModelProviders(c *gin.Context) {
-	user, err := model.GetUserCache(c.GetInt("id"))
+// GetUserModelsMeta 返回当前用户可用模型及其厂商元数据
+func GetUserModelsMeta(c *gin.Context) {
+	id, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		id = c.GetInt("id")
+	}
+	user, err := model.GetUserCache(id)
 	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
-	modelName := strings.TrimSpace(c.Query("model"))
-	if modelName == "" {
-		common.ApiSuccess(c, []UserModelProvider{})
-		return
+
+	groups := service.GetUserUsableGroups(user.Group)
+	groupsToQuery := make([]string, 0, len(groups))
+	for g := range groups {
+		groupsToQuery = append(groupsToQuery, g)
+	}
+	allowed := make(map[string]struct{})
+	for _, name := range service.GetGroupsEnabledModels(groupsToQuery) {
+		allowed[name] = struct{}{}
 	}
 
-	usableGroups := service.GetUserUsableGroups(user.Group)
-	requestedGroup := strings.TrimSpace(c.Query("group"))
-	groups := make([]string, 0, 1)
-	switch {
-	case requestedGroup == "":
-		groups = append(groups, user.Group)
-	case requestedGroup == "auto":
-		if _, ok := usableGroups[requestedGroup]; !ok {
-			common.ApiSuccess(c, []UserModelProvider{})
-			return
-		}
-		groups = service.GetUserAutoGroup(user.Group)
-	default:
-		if _, ok := usableGroups[requestedGroup]; !ok {
-			common.ApiSuccess(c, []UserModelProvider{})
-			return
-		}
-		groups = append(groups, requestedGroup)
+	vendorById := make(map[int]model.PricingVendor)
+	for _, v := range model.GetVendors() {
+		vendorById[v.ID] = v
 	}
 
-	seen := make(map[string]struct{})
-	slugs := make([]string, 0)
-	for _, group := range groups {
-		available, err := model.GetAvailableProviderSlugs(
-			group,
-			modelName,
-			"/pg/chat/completions",
-		)
-		if err != nil {
-			common.ApiError(c, err)
-			return
-		}
-		for _, slug := range available {
-			if _, exists := seen[slug]; exists {
-				continue
-			}
-			seen[slug] = struct{}{}
-			slugs = append(slugs, slug)
-		}
+	type modelMeta struct {
+		ModelName   string `json:"model_name"`
+		VendorName  string `json:"vendor_name,omitempty"`
+		VendorIcon  string `json:"vendor_icon,omitempty"`
+		Icon        string `json:"icon,omitempty"`
+		Tags        string `json:"tags,omitempty"`
+		Description string `json:"description,omitempty"`
 	}
 
-	metadata := model.GetProviderMetadataMap()
-	providers := make([]UserModelProvider, 0, len(slugs))
-	for _, slug := range slugs {
-		provider, exists := metadata[slug]
-		if exists && provider.Status != 1 {
+	items := make([]modelMeta, 0, len(allowed))
+	seen := make(map[string]struct{}, len(allowed))
+	for _, p := range model.GetPricing() {
+		if _, ok := allowed[p.ModelName]; !ok {
 			continue
 		}
-		name := slug
-		icon := ""
-		if exists {
-			if strings.TrimSpace(provider.DisplayName) != "" {
-				name = provider.DisplayName
-			}
-			icon = provider.Icon
+		if _, dup := seen[p.ModelName]; dup {
+			continue
 		}
-		providers = append(providers, UserModelProvider{
-			Slug:      slug,
-			Name:      name,
-			Icon:      icon,
-			Available: true,
-		})
+		seen[p.ModelName] = struct{}{}
+		meta := modelMeta{
+			ModelName:   p.ModelName,
+			Icon:        p.Icon,
+			Tags:        p.Tags,
+			Description: p.Description,
+		}
+		if v, ok := vendorById[p.VendorID]; ok {
+			meta.VendorName, meta.VendorIcon = v.Name, v.Icon
+		}
+		items = append(items, meta)
 	}
-	common.ApiSuccess(c, providers)
+	// pricing 缓存里没有的可用模型也要回
+	for name := range allowed {
+		if _, ok := seen[name]; !ok {
+			items = append(items, modelMeta{ModelName: name})
+		}
+	}
+
+	common.ApiSuccess(c, items)
 }
 
 func UpdateUser(c *gin.Context) {

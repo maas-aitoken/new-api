@@ -16,11 +16,14 @@ import (
 	"github.com/QuantumNous/new-api/i18n"
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/pkg/autorouter"
 	"github.com/QuantumNous/new-api/pkg/jsplugin"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
+	"github.com/QuantumNous/new-api/relay/helper"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting/autorouter_setting"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 
@@ -30,10 +33,18 @@ import (
 )
 
 type ModelRequest struct {
-	Model           string                 `json:"model"`
-	Group           string                 `json:"group,omitempty"`
-	ProviderRouting *model.ProviderRouting `json:"provider,omitempty"`
-	Workload        string                 `json:"workload,omitempty"`
+	Model    string `json:"model"`
+	Group    string `json:"group,omitempty"`
+	Workload string `json:"workload,omitempty"`
+}
+
+// smartKeyBlockedFormats 是平台开着 auto 时智能路由 key 不能用的对话格式，值是拒绝时的提示。
+// 这些格式 auto 改写不了：Gemini 原生的模型名在 URL 里（/v1beta/models/{模型}:generateContent），
+// /v1/completions 不在 auto 支持的协议里。不拒绝的话，在里面写个具体模型就绕开了 auto。
+// Responses WebSocket 不经过 Distribute，在 controller.ResponsesWebSocket 握手时单独拒绝。
+var smartKeyBlockedFormats = map[int]string{
+	relayconstant.RelayModeGemini:      i18n.MsgDistributorSmartKeyGeminiUnsupported,
+	relayconstant.RelayModeCompletions: i18n.MsgDistributorSmartKeyCompletionsUnsupported,
 }
 
 func Distribute() func(c *gin.Context) {
@@ -73,23 +84,58 @@ func Distribute() func(c *gin.Context) {
 			abortWithOpenAiMessage(c, invalidRequestStatus(err), i18n.T(c, i18n.MsgDistributorInvalidRequest, map[string]any{"Error": err.Error()}))
 			return
 		}
-		if modelRequest.ProviderRouting != nil {
-			routing := modelRequest.ProviderRouting.Normalized()
-			if routing == nil {
-				abortWithOpenAiMessage(c, http.StatusBadRequest, "provider.order must contain at least one provider")
-				return
-			}
-			common.SetContextKey(c, constant.ContextKeyProviderRouting, routing)
-			modelRequest.ProviderRouting = routing
-		}
 		if workload := strings.TrimSpace(modelRequest.Workload); workload != "" {
 			common.SetContextKey(c, constant.ContextKeySchedulerWorkload, workload)
 		}
+		// 能力门控在模型确定前构建：auto 用它筛候选模型，选定模型后再做渠道级收窄。
+		// 未配置、请求体不可用或没有任何模型级声明时返回 nil，行为与改动前一致。
+		capabilityGate := service.BuildCapabilityGate(c)
 		_, pinned, _ := constraints.ResolvedPin()
+		// 额度档位用完后，支持 auto 的请求改走 auto，忽略令牌模型池和路由偏好；
+		// 其他接口由计费拦截。业务场景的 key 不受限。
+		scene, _ := common.GetContextKeyType[common.TokenScene](c, constant.ContextKeyTokenScene)
+		businessKey := scene == common.TokenSceneBusiness
+		tierForcedAuto := false
+		if shouldSelectChannel && !pinned && !businessKey && service.IsAutoRouterRequest(c, autorouter.AutoModel) {
+			exhausted, err := model.UserQuotaTierExhausted(c.GetInt("id"))
+			if err != nil {
+				logger.LogError(c, common.LogText("failed to check the quota tier of user %d: %s", c.GetInt("id"), err.Error()))
+			} else if exhausted {
+				modelRequest.Model = autorouter.AutoModel
+				common.SetContextKey(c, constant.ContextKeyTokenModelLimitEnabled, false)
+				common.SetContextKey(c, constant.ContextKeyTokenAutoPreference, "")
+				common.SetContextKey(c, constant.ContextKeyTokenRoutingPreference, nil)
+				tierForcedAuto = true
+			}
+		}
+		// 令牌的模型配置方式（只在令牌鉴权的请求上有）。智能路由 key 在 chat / responses / messages 上
+		// 不管客户端传什么模型都改走 auto，模型池仍是 auto 的候选范围；embedding、图片等 auto 不支持的
+		// 接口按模型池直接调。smartKeyBlockedFormats 里的格式也是对话，但 auto 改写不了，平台开着 auto 时
+		// 整种格式都拒绝，不然写个具体模型就绕开了 auto。锁定模型 key（含旧令牌的空值）拒绝客户端传的 auto，
+		// 但平台关了 auto 时 "auto" 只是普通模型名，照常按白名单判断；额度档位用完时服务端强制的 auto 不拦。
+		if routingMode, ok := common.GetContextKeyType[common.TokenRoutingMode](c, constant.ContextKeyTokenRoutingMode); ok && shouldSelectChannel && !pinned && !tierForcedAuto {
+			blockedMessage, blockedFormat := smartKeyBlockedFormats[relayconstant.Path2RelayMode(c.Request.URL.Path)]
+			switch {
+			case routingMode == common.TokenRoutingModeSmart && service.IsAutoRouterRequest(c, autorouter.AutoModel):
+				modelRequest.Model = autorouter.AutoModel
+			case routingMode == common.TokenRoutingModeSmart && blockedFormat && autorouter_setting.GetAutoRouterSetting().Enabled:
+				abortWithOpenAiMessage(c, http.StatusForbidden, i18n.T(c, blockedMessage))
+				return
+			case routingMode != common.TokenRoutingModeSmart && service.IsAutoRouterRequest(c, modelRequest.Model):
+				abortWithOpenAiMessage(c, http.StatusForbidden, i18n.T(c, i18n.MsgDistributorTokenAutoForbidden))
+				return
+			}
+		}
+		autoRouting := shouldSelectChannel && service.IsAutoRouterRequest(c, modelRequest.Model)
+		if pinned && autoRouting {
+			abortWithOpenAiMessage(c, http.StatusBadRequest, "model auto is not supported for a token pinned to a channel")
+			return
+		}
 		if !pinned {
 			// Select a channel for the user
 			// check token model mapping
 			modelLimitEnable := common.GetContextKeyBool(c, constant.ContextKeyTokenModelLimitEnabled)
+			var tokenModelLimit map[string]bool
 			if modelLimitEnable {
 				s, ok := common.GetContextKey(c, constant.ContextKeyTokenModelLimit)
 				if !ok {
@@ -97,12 +143,12 @@ func Distribute() func(c *gin.Context) {
 					abortWithOpenAiMessage(c, http.StatusForbidden, i18n.T(c, i18n.MsgDistributorTokenNoModelAccess))
 					return
 				}
-				var tokenModelLimit map[string]bool
 				tokenModelLimit, ok = s.(map[string]bool)
 				if !ok {
 					tokenModelLimit = map[string]bool{}
 				}
-				if !TokenModelLimitAllows(tokenModelLimit, modelRequest.Model) {
+				// "auto" is not a whitelist entry; it resolves to a whitelisted model below.
+				if !TokenModelLimitAllows(tokenModelLimit, modelRequest.Model) && !autoRouting {
 					abortWithOpenAiMessage(c, http.StatusForbidden, i18n.T(c, i18n.MsgDistributorTokenModelForbidden, map[string]any{"Model": modelRequest.Model}))
 					return
 				}
@@ -130,13 +176,166 @@ func Distribute() func(c *gin.Context) {
 						common.SetContextKey(c, constant.ContextKeyUsingGroup, playgroundRequest.Group)
 					}
 				}
+
+				if autoRouting {
+					usingGroup := common.GetContextKeyString(c, constant.ContextKeyUsingGroup)
+					// The task and default lists hold every ranked model, each
+					// probed in up to five effort variants, so availability is
+					// memoized per request; without the memory cache every
+					// channel lookup is a query, so candidates are first narrowed
+					// to the groups' enabled models with one query per group.
+					var enabled map[string]bool
+					if !common.MemoryCacheEnabled {
+						enabled = map[string]bool{}
+						groups := []string{usingGroup}
+						if usingGroup == "auto" {
+							groups = service.GetRequestAutoGroups(c, common.GetContextKeyString(c, constant.ContextKeyUserGroup))
+						}
+						for _, group := range groups {
+							for _, name := range model.GetGroupEnabledModels(group) {
+								enabled[name] = true
+							}
+						}
+					}
+					refusals := map[string]string{}
+					channels := map[string][]int{}
+					// 选路阶段估价：只读价格配置，不预扣、不写额度。
+					userSetting, _ := common.GetContextKeyType[dto.UserSetting](c, constant.ContextKeyUserSetting)
+					pricer := helper.NewRoutingPricer(c, func(candidate string) int64 {
+						return service.RoutingInputTokens(c, candidate)
+					}, userSetting.AcceptUnsetRatioModel)
+					quotes := map[[2]string]helper.RoutingQuote{}
+					// quoteAt 是候选在某个计费分组下的报价（含分组倍率），按请求备忘。
+					quoteAt := func(candidate, billingGroup string) helper.RoutingQuote {
+						key := [2]string{candidate, billingGroup}
+						if quote, seen := quotes[key]; seen {
+							return quote
+						}
+						userGroup := common.GetContextKeyString(c, constant.ContextKeyUserGroup)
+						groupRatio, special := ratio_setting.GetGroupGroupRatio(userGroup, billingGroup)
+						if !special {
+							groupRatio = ratio_setting.GetGroupRatio(billingGroup)
+						}
+						quotes[key] = pricer.Quote(candidate, groupRatio)
+						return quotes[key]
+					}
+					// 令牌分组是 auto 时，计费分组是第一个对该模型有可用渠道的自动分组，倍率因模型而异；
+					// 固定分组下所有候选的倍率相同，在归一化里抵消。比价时再按首次会命中的分组重新报价（autoRouteCost）。
+					quoteOf := func(candidate string) helper.RoutingQuote {
+						billingGroup := usingGroup
+						if usingGroup == "auto" {
+							userGroup := common.GetContextKeyString(c, constant.ContextKeyUserGroup)
+							for _, group := range service.GetRequestAutoGroups(c, userGroup) {
+								if len(model.GetEnabledChannelIDsForGroupModel(group, candidate)) > 0 {
+									billingGroup = group
+									break
+								}
+							}
+						}
+						return quoteAt(candidate, billingGroup)
+					}
+					channelsOf := func(candidate string) []int {
+						channelIDs, seen := channels[candidate]
+						if !seen {
+							channelIDs = usableChannelIDs(c, candidate, usingGroup, c.Request.URL.Path, model.GetEnabledChannelIDsForGroupModel)
+							channels[candidate] = channelIDs
+						}
+						return channelIDs
+					}
+					// refusal 说明候选为什么不能服务这个请求，能服务时返回空串。候选按"模型+渠道"判定：
+					// 至少有一个可用渠道的生效能力满足请求，渠道级收窄在这里就生效，
+					// 不会选中一个渠道全被收窄淘汰的模型再 503。没有价格的模型计费时会直接失败，
+					// 所以任何路径都不选它们。判定顺序就是留痕里原因的优先级。
+					refusal := func(candidate string, ignoreClientReasoning bool) string {
+						key := candidate
+						if ignoreClientReasoning {
+							key += "|auto-reasoning"
+						}
+						if reason, seen := refusals[key]; seen {
+							return reason
+						}
+						reason := ""
+						switch {
+						case modelLimitEnable && !TokenModelLimitAllows(tokenModelLimit, candidate):
+							reason = autorouter.ReasonTokenLimit
+						case enabled != nil && !enabled[candidate] && !enabled[ratio_setting.FormatMatchingModelName(candidate)]:
+							reason = autorouter.ReasonGroupDisabled
+						case len(channelsOf(candidate)) == 0:
+							reason = autorouter.ReasonNoChannel
+						case quoteOf(candidate).Kind == helper.RoutingUnpriced:
+							reason = autorouter.ReasonUnpriced
+						case capabilityGate != nil && !capabilityGate.AllowsAnyChannel(candidate, channelsOf(candidate), ignoreClientReasoning):
+							reason = autorouter.ReasonCapability
+						}
+						refusals[key] = reason
+						return reason
+					}
+					serves := func(candidate string, ignoreClientReasoning bool) bool {
+						return refusal(candidate, ignoreClientReasoning) == ""
+					}
+					costs := autoRouteCost{c: c, usingGroup: usingGroup, gate: capabilityGate, serves: serves, channelsOf: channelsOf, quoteAt: quoteAt,
+						exclude: func(candidate, reason string) {
+							// 两种口径的备忘都记上，后面的兜底和最终解析都不会再选它。
+							refusals[candidate], refusals[candidate+"|auto-reasoning"] = reason, reason
+						}}
+					result, err := service.ResolveAutoModel(c, service.AutoCandidates{
+						Serves:   serves,
+						Why:      func(candidate string) string { return refusal(candidate, true) },
+						Channels: func(candidate string) []int { return channels[candidate] },
+						Price: func(candidate string) (float64, bool) {
+							quote := quoteOf(candidate)
+							return quote.PricePerMillion, quote.Kind == helper.RoutingPerToken
+						},
+						Costs: costs.estimate,
+					})
+					if capabilityGate != nil {
+						capabilityGate.LogSummary(c)
+					}
+					if err != nil {
+						if capabilityGate != nil && capabilityGate.AllEvaluatedRejected() {
+							abortWithOpenAiMessage(c, http.StatusServiceUnavailable, capabilityGate.ExplainModelRejection(), types.ErrorCodeModelNotFound)
+							return
+						}
+						abortWithOpenAiMessage(c, http.StatusServiceUnavailable, err.Error(), types.ErrorCodeModelNotFound)
+						return
+					}
+					modelRequest.Model = result.ResolvedModel
+					// 透传渠道（全局或渠道级）不重建请求体而是原样转发存储的字节，
+					// 所以 auto 定下的结论要直接写进存储的请求体：model 改成解析后的模型
+					// （否则上游收到的仍是 "auto"，而计费和日志记的是解析后的模型），
+					// 推理档位写进入站协议自己的字段。非透传渠道也读这份请求体。
+					protocol, _ := service.AutoRouterProtocol(c.Request.URL.Path)
+					if err := rewriteJSONBody(c, func(body []byte) ([]byte, error) {
+						return autorouter.PatchBody(body, protocol, result.ResolvedModel, result.EffortAction, result.AppliedEffort)
+					}); err != nil {
+						abortWithOpenAiMessage(c, http.StatusInternalServerError, "failed to rewrite the auto routed request: "+err.Error())
+						return
+					}
+				}
 			}
 		}
 		if !pinned && shouldSelectChannel {
 			usingGroup := common.GetContextKeyString(c, constant.ContextKeyUsingGroup)
 			var selectGroup string
+			allowedChannels := usableChannelIDs(c, modelRequest.Model, usingGroup, c.Request.URL.Path, model.GetRoutableChannelIDsForGroupModel)
+			if capabilityGate != nil {
+				narrowed := capabilityGate.FilterChannels(c, modelRequest.Model, allowedChannels)
+				if len(allowedChannels) > 0 && len(narrowed) == 0 {
+					capabilityGate.LogSummary(c)
+					abortWithOpenAiMessage(c, http.StatusServiceUnavailable, capabilityGate.ExplainChannelRejection(modelRequest.Model), types.ErrorCodeModelNotFound)
+					return
+				}
+				if len(narrowed) != len(allowedChannels) {
+					constraints.AddFilter(taskdto.ChannelFilter{
+						Kind:              taskdto.FilterCapability,
+						AllowedChannelIDs: narrowed,
+					})
+					allowedChannels = narrowed
+				}
+				capabilityGate.LogSummary(c)
+			}
 			if service.SchedulerClient().Enabled {
-				setSchedulerAllowedChannelIDs(c, modelRequest.Model, usingGroup, c.Request.URL.Path)
+				common.SetContextKey(c, constant.ContextKeySchedulerAllowedChannelIDs, allowedChannels)
 			}
 			if service.SchedulerEnforcedForRequest(c) {
 				if preferredChannelID, found := service.GetPreferredChannelByAffinity(c, modelRequest.Model, usingGroup); found {
@@ -163,6 +362,10 @@ func Distribute() func(c *gin.Context) {
 					if candidateErr != nil || candidateChannel == nil || candidateChannel.Status != common.ChannelStatusEnabled ||
 						!channelSupportsRequestPath(candidateChannel, c.Request.URL.Path, modelRequest.Model) {
 						abortWithOpenAiMessage(c, http.StatusServiceUnavailable, fmt.Sprintf("scheduler candidate channel %d unavailable", candidate.ChannelID), types.ErrorCodeModelNotFound)
+						return
+					}
+					if !channelPassesCapabilityFilter(c, candidateChannel.Id) {
+						abortWithOpenAiMessage(c, http.StatusServiceUnavailable, fmt.Sprintf("scheduler candidate channel %d rejected by capability constraints", candidate.ChannelID), types.ErrorCodeModelNotFound)
 						return
 					}
 					if usingGroup == "auto" {
@@ -193,12 +396,11 @@ func Distribute() func(c *gin.Context) {
 			usingGroup := common.GetContextKeyString(c, constant.ContextKeyUsingGroup)
 			var selectErr *service.ChannelSelectError
 			channel, _, selectErr = service.SelectChannelForRequest(c, modelRequest.Model, &service.RetryParam{
-				Ctx:             c,
-				ModelName:       modelRequest.Model,
-				TokenGroup:      usingGroup,
-				RequestPath:     c.Request.URL.Path,
-				ProviderRouting: modelRequest.ProviderRouting,
-				Retry:           common.GetPointer(0),
+				Ctx:         c,
+				ModelName:   modelRequest.Model,
+				TokenGroup:  usingGroup,
+				RequestPath: c.Request.URL.Path,
+				Retry:       common.GetPointer(0),
 			})
 			if selectErr != nil {
 				if selectErr.FilterKind == taskdto.FilterTaskPluginIdentity {
@@ -214,13 +416,9 @@ func Distribute() func(c *gin.Context) {
 				return
 			}
 		}
-		if !providerRoutingAllowsChannel(modelRequest.ProviderRouting, channel) {
-			abortWithOpenAiMessage(c, http.StatusForbidden, "provider routing conflicts with the selected channel")
-			return
-		}
 		common.SetContextKey(c, constant.ContextKeyRequestStartTime, time.Now())
 		SetupContextForSelectedChannel(c, channel, modelRequest.Model)
-		if !pinned && channel != nil && !service.SchedulerEnforcedForRequest(c) && !common.GetContextKeyBool(c, constant.ContextKeySchedulerAttemptReported) {
+		if !pinned && channel != nil && !service.SchedulerEnforcedForRequest(c) {
 			if err := service.RunSchedulerShadow(c, modelRequest.Model, common.GetContextKeyString(c, constant.ContextKeyUsingGroup)); err != nil {
 				common.SysLog(fmt.Sprintf("scheduler shadow skipped: %v", err))
 			}
@@ -229,28 +427,28 @@ func Distribute() func(c *gin.Context) {
 		if service.SchedulerEmergencyNativeActive(c) {
 			common.SysLog(fmt.Sprintf("scheduler degraded native selected: request_id=%s model=%s group=%s channel_id=%d status=%d", c.GetString(common.RequestIdKey), modelRequest.Model, common.GetContextKeyString(c, constant.ContextKeyUsingGroup), common.GetContextKeyInt(c, constant.ContextKeyChannelId), c.Writer.Status()))
 		}
-		if !pinned && channel != nil && !common.GetContextKeyBool(c, constant.ContextKeySchedulerAttemptReported) {
-			if err := service.ReportSchedulerShadowAttempt(c); err != nil {
-				common.SysLog(fmt.Sprintf("scheduler shadow attempt report skipped: %v", err))
-			}
-		}
 		if channel != nil && c.Writer != nil && c.Writer.Status() < http.StatusBadRequest {
 			service.RecordChannelAffinity(c, channel.Id)
 		}
 	}
 }
 
-// setSchedulerAllowedChannelIDs projects new-api's effective group/model
-// permissions into the Scheduler request. Scheduler ranks endpoints, but it
-// must never rank a channel outside the native permission scope.
-func setSchedulerAllowedChannelIDs(c *gin.Context, modelName, usingGroup, requestPath string) {
+// usableChannelIDs is new-api's effective group/model permission scope: the
+// enabled channels of the group (or auto groups) that serve the model on this
+// request path. Scheduler must never rank a channel outside it, and the auto
+// router only picks models that have one.
+// lookup 决定按什么口径找分组里的渠道：选定模型后的请求范围用
+// model.GetRoutableChannelIDsForGroupModel，与原生选路一致（带推理后缀的名字退到
+// 路由名）；auto 判断候选用 model.GetEnabledChannelIDsForGroupModel，强度变体只有
+// 渠道真的列了才算可用。
+func usableChannelIDs(c *gin.Context, modelName, usingGroup, requestPath string, lookup func(group, modelName string) []int) []int {
 	groups := []string{usingGroup}
 	if usingGroup == "auto" {
 		groups = service.GetRequestAutoGroups(c, common.GetContextKeyString(c, constant.ContextKeyUserGroup))
 	}
 	allowed := make(map[int]struct{})
 	for _, group := range groups {
-		for _, channelID := range model.GetEnabledChannelIDsForGroupModel(group, modelName) {
+		for _, channelID := range lookup(group, modelName) {
 			channel, err := model.CacheGetChannel(channelID)
 			if err != nil || channel == nil || channel.Status != common.ChannelStatusEnabled ||
 				!channelSupportsRequestPath(channel, requestPath, modelName) {
@@ -264,7 +462,7 @@ func setSchedulerAllowedChannelIDs(c *gin.Context, modelName, usingGroup, reques
 		ids = append(ids, channelID)
 	}
 	slices.Sort(ids)
-	common.SetContextKey(c, constant.ContextKeySchedulerAllowedChannelIDs, ids)
+	return ids
 }
 
 // getModelFromRequest 从请求中读取模型信息
@@ -272,19 +470,6 @@ func setSchedulerAllowedChannelIDs(c *gin.Context, modelName, usingGroup, reques
 // - application/json
 // - application/x-www-form-urlencoded
 // - multipart/form-data
-
-func providerRoutingAllowsChannel(routing *model.ProviderRouting, channel *model.Channel) bool {
-	if routing == nil || channel == nil {
-		return routing == nil
-	}
-	provider := channel.GetProviderSlug()
-	for _, requested := range routing.Order {
-		if requested == provider {
-			return true
-		}
-	}
-	return false
-}
 
 // noAvailableChannelMessage explains a 503 for a task-plugin-claimed model.
 // The response tells the caller the model is plugin-claimed without naming the
@@ -335,6 +520,23 @@ func channelMatchesExpectedTaskPlugin(c *gin.Context, channel *model.Channel, ex
 	}
 	plugin, ok := pinned.Generation.GetByChannelType(channel.Type)
 	return ok && plugin == pinned.Plugin
+}
+
+// channelPassesCapabilityFilter 复核渠道是否落在本请求的能力允许集内。
+// 没有能力过滤器时一律放行。
+func channelPassesCapabilityFilter(c *gin.Context, channelID int) bool {
+	for _, filter := range service.GetChannelConstraints(c).Filters {
+		if filter.Kind != taskdto.FilterCapability {
+			continue
+		}
+		if filter.AllowedChannelIDs == nil {
+			continue
+		}
+		if !slices.Contains(filter.AllowedChannelIDs, channelID) {
+			return false
+		}
+	}
+	return true
 }
 
 // channelSupportsRequestPath reports whether a channel can serve the request path.
@@ -441,21 +643,10 @@ func getModelFromJSONBody(c *gin.Context) (*ModelRequest, error) {
 	if err != nil {
 		return nil, err
 	}
-	var providerRouting *model.ProviderRouting
-	if values[2].Exists() && values[2].Type != gjson.Null {
-		if values[2].Type != gjson.JSON {
-			return nil, fmt.Errorf("field provider must be an object")
-		}
-		var parsed model.ProviderRouting
-		if err := common.Unmarshal([]byte(values[2].Raw), &parsed); err != nil {
-			return nil, fmt.Errorf("field provider is invalid: %w", err)
-		}
-		parsed.HasAllowFallbacks = values[2].Get("allow_fallbacks").Exists()
-		providerRouting = &parsed
-	}
+	providerPresent := values[2].Exists() && values[2].Type != gjson.Null
 	cleanedBody, err := sjson.DeleteBytes(requestBody, "provider")
 	if err != nil {
-		return nil, fmt.Errorf("failed to remove provider routing field: %w", err)
+		return nil, fmt.Errorf("failed to remove provider field: %w", err)
 	}
 	if string(cleanedBody) != string(requestBody) {
 		replacement, err := common.CreateBodyStorage(cleanedBody)
@@ -465,6 +656,13 @@ func getModelFromJSONBody(c *gin.Context) (*ModelRequest, error) {
 		_ = storage.Close()
 		c.Set(common.KeyBodyStorage, replacement)
 		storage = replacement
+	}
+	if providerPresent {
+		// 供应商层已移除。保留剥离动作是为了不让该字段透传给上游（部分供应商会 400），
+		// 但路由偏好不再生效，因此显式告警，避免管理员以为配置仍起作用。
+		logger.LogWarn(c.Request.Context(), common.LogText(
+			"request provider field is ignored: model=%s request_id=%s; provider routing has been removed",
+			modelName, c.GetString(common.RequestIdKey)))
 	}
 	workload, err := getJSONStringValue(values[3], "workload")
 	if err != nil {
@@ -477,10 +675,9 @@ func getModelFromJSONBody(c *gin.Context) (*ModelRequest, error) {
 	c.Request.Body = io.NopCloser(storage)
 
 	return &ModelRequest{
-		Model:           modelName,
-		Group:           group,
-		ProviderRouting: providerRouting,
-		Workload:        workload,
+		Model:    modelName,
+		Group:    group,
+		Workload: workload,
 	}, nil
 }
 
@@ -605,9 +802,6 @@ func getModelRequest(c *gin.Context) (*ModelRequest, bool, error) {
 			}
 			if req != nil {
 				modelRequest.Model = req.Model
-				if req.ProviderRouting != nil {
-					modelRequest.ProviderRouting = req.ProviderRouting
-				}
 			}
 		} else if c.Request.Method == http.MethodGet {
 			relayMode = relayconstant.RelayModeVideoFetchByID
@@ -623,9 +817,6 @@ func getModelRequest(c *gin.Context) (*ModelRequest, bool, error) {
 				return nil, false, err
 			}
 			modelRequest.Model = req.Model
-			if req.ProviderRouting != nil {
-				modelRequest.ProviderRouting = req.ProviderRouting
-			}
 			relayMode = relayconstant.RelayModeVideoSubmit
 		} else if c.Request.Method == http.MethodGet {
 			relayMode = relayconstant.RelayModeVideoFetchByID
@@ -649,9 +840,6 @@ func getModelRequest(c *gin.Context) (*ModelRequest, bool, error) {
 			return nil, false, err
 		}
 		modelRequest.Model = req.Model
-		if req.ProviderRouting != nil {
-			modelRequest.ProviderRouting = req.ProviderRouting
-		}
 	}
 	if strings.HasPrefix(c.Request.URL.Path, "/v1/realtime") {
 		//wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-10-01
@@ -683,9 +871,6 @@ func getModelRequest(c *gin.Context) (*ModelRequest, bool, error) {
 			req, err := getModelFromRequest(c)
 			if err == nil && req.Model != "" {
 				modelRequest.Model = req.Model
-				if req.ProviderRouting != nil {
-					modelRequest.ProviderRouting = req.ProviderRouting
-				}
 			}
 		}
 	}
@@ -698,9 +883,6 @@ func getModelRequest(c *gin.Context) (*ModelRequest, bool, error) {
 			// 先尝试从请求读取
 			if req, err := getModelFromRequest(c); err == nil && req.Model != "" {
 				modelRequest.Model = req.Model
-				if req.ProviderRouting != nil {
-					modelRequest.ProviderRouting = req.ProviderRouting
-				}
 			}
 			modelRequest.Model = common.GetStringIfEmpty(modelRequest.Model, "whisper-1")
 			relayMode = relayconstant.RelayModeAudioTranslation
@@ -708,9 +890,6 @@ func getModelRequest(c *gin.Context) (*ModelRequest, bool, error) {
 			// 先尝试从请求读取
 			if req, err := getModelFromRequest(c); err == nil && req.Model != "" {
 				modelRequest.Model = req.Model
-				if req.ProviderRouting != nil {
-					modelRequest.ProviderRouting = req.ProviderRouting
-				}
 			}
 			modelRequest.Model = common.GetStringIfEmpty(modelRequest.Model, "whisper-1")
 			relayMode = relayconstant.RelayModeAudioTranscription
@@ -725,9 +904,6 @@ func getModelRequest(c *gin.Context) (*ModelRequest, bool, error) {
 		}
 		modelRequest.Model = req.Model
 		modelRequest.Group = req.Group
-		if req.ProviderRouting != nil {
-			modelRequest.ProviderRouting = req.ProviderRouting
-		}
 		common.SetContextKey(c, constant.ContextKeyTokenGroup, modelRequest.Group)
 	}
 
@@ -812,14 +988,18 @@ func SetupContextForSelectedChannel(c *gin.Context, channel *model.Channel, mode
 	common.SetContextKey(c, constant.ContextKeyChannelId, channel.Id)
 	common.SetContextKey(c, constant.ContextKeyChannelName, channel.Name)
 	common.SetContextKey(c, constant.ContextKeyChannelTag, channel.GetTag())
-	common.SetContextKey(c, constant.ContextKeyProviderSlug, channel.GetProviderSlug())
 	common.SetContextKey(c, constant.ContextKeyChannelType, channel.Type)
 	common.SetContextKey(c, constant.ContextKeyChannelCreateTime, channel.CreatedTime)
-	common.SetContextKey(c, constant.ContextKeyChannelSetting, channel.GetSetting())
+	channelSetting := channel.GetSetting()
+	common.SetContextKey(c, constant.ContextKeyChannelSetting, channelSetting)
+	// 费用倍率按用户请求一侧的模型名查（和计费同侧），在这里就算好：这时还没有映射，
+	// 请求名还是请求名；结束时再查，拿到的是映射后、甚至被流式响应改过的上游名。
+	common.SetContextKey(c, constant.ContextKeyChannelCostMultiplier,
+		channelSetting.CostMultiplierForModel(model.CostMultiplierModel(channel.GetModels(), modelName)))
 	common.SetContextKey(c, constant.ContextKeyChannelOtherSetting, channel.GetOtherSettings())
 	switch channel.Type {
 	case constant.ChannelTypeTaskPlugin:
-		c.Set("task_plugin_key", channel.GetSetting().TaskPluginKey)
+		c.Set("task_plugin_key", channelSetting.TaskPluginKey)
 	case constant.ChannelTypeNewAPI:
 		// The bound plugin verified above executes; ordinary requests through
 		// the same gateway channel carry no pinned plugin.
@@ -840,19 +1020,10 @@ func SetupContextForSelectedChannel(c *gin.Context, channel *model.Channel, mode
 	}
 	common.SetContextKey(c, constant.ContextKeyChannelAutoBan, channel.GetAutoBan())
 	common.SetContextKey(c, constant.ContextKeyChannelModelMapping, channel.GetModelMapping())
+	common.SetContextKey(c, constant.ContextKeyChannelCapacityModel, model.ChannelCapacityModel(channel.GetModels(), channel.GetModelMapping(), modelName))
 	common.SetContextKey(c, constant.ContextKeyChannelStatusCodeMapping, channel.GetStatusCodeMapping())
 
-	var key string
-	var index int
-	var newAPIError *types.NewAPIError
-	if schedulerIndex, ok := common.GetContextKeyType[int](c, constant.ContextKeySchedulerKeyIndex); ok {
-		key, index, newAPIError = channel.GetEnabledKeyAt(schedulerIndex)
-		// The hint is per attempt. Consume it so a later native retry does not
-		// accidentally reuse a stale Scheduler selection.
-		c.Set(string(constant.ContextKeySchedulerKeyIndex), nil)
-	} else {
-		key, index, newAPIError = channel.GetNextEnabledKey()
-	}
+	key, index, newAPIError := channel.GetNextEnabledKey()
 	if newAPIError != nil {
 		return newAPIError
 	}

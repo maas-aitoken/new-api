@@ -154,7 +154,7 @@ func TestLogExportRules(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	db, _ := newAuditTestDatabase(t, "sqlite", "")
 	useLogExportDatabases(t, db, db, common.DatabaseTypeSQLite, common.DatabaseTypeSQLite)
-	require.NoError(t, db.AutoMigrate(&model.Channel{}, &model.Log{}, &model.QuotaData{}))
+	require.NoError(t, db.AutoMigrate(&model.User{}, &model.Channel{}, &model.Log{}, &model.QuotaData{}))
 	now := time.Now().Unix()
 	seedExportLogs(t, db, db, now)
 	logSetting := operation_setting.GetLogSetting()

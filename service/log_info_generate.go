@@ -92,6 +92,10 @@ func AppendRelayLogAdminInfo(ctx *gin.Context, relayInfo *relaycommon.RelayInfo,
 	}
 
 	AppendChannelAffinityAdminInfo(ctx, other)
+	// 成功和失败的请求日志都带上 auto 的决策过程：选了哪个模型、为什么、档位怎么定的。
+	if autoRouterResult := GetAutoRouterResult(ctx); autoRouterResult != nil {
+		other.SetAdmin("auto_router", autoRouterResult)
+	}
 	if events := RequestPolicy(ctx).Events(); len(events) > 0 {
 		other.SetAdmin("request_policy", events)
 	}

@@ -101,6 +101,7 @@ type RelayInfo struct {
 	RelayMode              int
 	OriginModelName        string
 	ResponseModel          *ResponseModel
+	TokenScene             common.TokenScene
 
 	// BillingModelName is the pricing identity for this request. It is kept
 	// separate from OriginModelName and UpstreamModelName so virtual pricing
@@ -599,6 +600,9 @@ func genBaseRelayInfo(c *gin.Context, request dto.Request) *RelayInfo {
 		tokenGroup = common.GetContextKeyString(c, constant.ContextKeyUserGroup)
 	}
 
+	tokenScene, _ := common.GetContextKeyType[common.TokenScene](c, constant.ContextKeyTokenScene)
+	tokenScene = common.NormalizeTokenScene(string(tokenScene))
+
 	startTime := common.GetContextKeyTime(c, constant.ContextKeyRequestStartTime)
 	if startTime.IsZero() {
 		startTime = time.Now()
@@ -637,11 +641,12 @@ func genBaseRelayInfo(c *gin.Context, request dto.Request) *RelayInfo {
 		TokenKey:       common.GetContextKeyString(c, constant.ContextKeyTokenKey),
 		TokenUnlimited: common.GetContextKeyBool(c, constant.ContextKeyTokenUnlimited),
 		TokenGroup:     tokenGroup,
+		TokenScene:     tokenScene,
 
 		isFirstResponse: true,
 		RelayMode:       relayconstant.Path2RelayMode(c.Request.URL.Path),
 		RequestURLPath:  c.Request.URL.String(),
-		RequestHeaders:  cloneRequestHeaders(c),
+		RequestHeaders:  CloneRequestHeaders(c),
 		IsStream:        isStream,
 
 		StartTime:         startTime,
@@ -697,7 +702,8 @@ func requestUsesFastServiceTier(request dto.Request) bool {
 	return tier == "fast" || tier == "priority"
 }
 
-func cloneRequestHeaders(c *gin.Context) map[string]string {
+// CloneRequestHeaders 复制请求头供计费表达式的 header() 使用；选路阶段估价也复用它，保证两处口径一致。
+func CloneRequestHeaders(c *gin.Context) map[string]string {
 	if c == nil || c.Request == nil {
 		return nil
 	}

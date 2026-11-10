@@ -21,6 +21,10 @@ export { DataTableColumnHeader } from './core/column-header'
 export { BadgeCell } from './core/badge-cell'
 export { BadgeListCell } from './core/badge-list-cell'
 export { TruncatedCell } from './core/truncated-cell'
+export {
+  DataTableDetailRow,
+  DataTableExpansionToggle,
+} from './core/expandable-row'
 export { DataTableViewOptions } from './toolbar/view-options'
 export { DataTableToolbar } from './toolbar/toolbar'
 export { DataTableMobileFilterPanel } from './toolbar/mobile-filter-panel'

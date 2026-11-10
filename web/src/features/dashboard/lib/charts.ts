@@ -713,15 +713,26 @@ const USER_COLORS = [
   '#5D7092',
 ]
 
+export interface UserChartSeriesOptions {
+  getSeriesKey?: (item: QuotaDataItem) => string
+  rankTitle?: string
+  trendTitle?: string
+}
+
 export function processUserChartData(
   data: QuotaDataItem[],
   timeGranularity: TimeGranularity = 'day',
   t?: TFunction,
-  limit = 10
+  limit = 10,
+  series: UserChartSeriesOptions = {}
 ): ProcessedUserChartData {
   const tt: TFunction = t ?? ((x) => x)
   const { config } = getCurrencyDisplay()
   const quotaPerUnit = config.quotaPerUnit
+  const getSeriesKey =
+    series.getSeriesKey ?? ((item: QuotaDataItem) => item.username || 'unknown')
+  const rankTitle = series.rankTitle ?? tt('User Consumption Ranking')
+  const trendTitle = series.trendTitle ?? tt('User Consumption Trend')
 
   const formatVal = (raw: number) => renderQuotaCompat(raw, 2)
 
@@ -735,7 +746,7 @@ export function processUserChartData(
       direction: 'horizontal',
       title: {
         visible: true,
-        text: tt('User Consumption Ranking'),
+        text: rankTitle,
         subtext: tt('No data available'),
       },
       legends: { visible: false },
@@ -750,7 +761,7 @@ export function processUserChartData(
       seriesField: 'User',
       title: {
         visible: true,
-        text: tt('User Consumption Trend'),
+        text: trendTitle,
         subtext: tt('No data available'),
       },
       legends: { visible: true, selectMode: 'single' },
@@ -764,7 +775,7 @@ export function processUserChartData(
 
   const userQuotaTotal = new Map<string, number>()
   data.forEach((item) => {
-    const username = item.username || 'unknown'
+    const username = getSeriesKey(item)
     const prev = userQuotaTotal.get(username) || 0
     userQuotaTotal.set(username, prev + (Number(item.quota) || 0))
   })
@@ -794,7 +805,7 @@ export function processUserChartData(
   data.forEach((item) => {
     const bucket = getChartBucketStart(Number(item.created_at), timeGranularity)
     allTimePoints.add(bucket)
-    const user = item.username || 'unknown'
+    const user = getSeriesKey(item)
     if (!topUserSet.has(user)) return
     let map = timeUserMap.get(bucket)
     if (!map) {
@@ -834,7 +845,7 @@ export function processUserChartData(
       direction: 'horizontal',
       title: {
         visible: true,
-        text: tt('User Consumption Ranking'),
+        text: rankTitle,
         subtext: `${tt('Total:')} ${formatVal(totalQuota)}`,
       },
       legends: { visible: false },
@@ -890,7 +901,7 @@ export function processUserChartData(
       stack: false,
       title: {
         visible: true,
-        text: tt('User Consumption Trend'),
+        text: trendTitle,
         subtext: `${tt('Total:')} ${formatVal(totalQuota)}`,
       },
       legends: { visible: true, selectMode: 'single' },

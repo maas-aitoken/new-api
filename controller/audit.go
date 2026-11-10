@@ -52,6 +52,10 @@ var auditContentTemplates = map[string]string{
 	"option.passkey_domains_blocked":   "Passkey domain change blocked: ${domains}; affected ${known}; unknown ${unknown}",
 	"option.passkey_domains_failed":    "Passkey domain update failed",
 
+	"autorouter.rank_refresh": "Started an auto router leaderboard refresh",
+	"autorouter.rank_restore": "Restored the built-in auto router ranking",
+	"autorouter.rank_edit":    "Edited the auto router ranking by hand: ${profiles} (added ${added}, removed ${removed}, rescored ${rescored})",
+
 	"channel.create":             "Created channel ${name} (type ${type}, count ${count})",
 	"channel.update":             "Updated channel ${name} (ID: ${id})",
 	"channel.delete":             "Deleted channel ${name} (ID: ${id})",

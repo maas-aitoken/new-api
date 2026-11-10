@@ -85,10 +85,6 @@ export interface PricingSidebarProps {
     hasContextLength: boolean
     hasParameterCount: boolean
     hasReleaseDate: boolean
-    hasFree: boolean
-    hasBatch: boolean
-    regions: string[]
-    quantizations: string[]
   }
   onAdvancedFilterChange: (
     key: keyof PricingAdvancedFilters,
@@ -334,58 +330,6 @@ export const PricingSidebar = memo(function PricingSidebar(
             ],
             onChange: (value: string) =>
               props.onAdvancedFilterChange('releaseDate', value),
-          },
-        ]
-      : []),
-    ...(props.advancedOptions.hasFree
-      ? [
-          {
-            title: t('Free routing mode'),
-            value: props.advancedFilters.free,
-            options: [{ value: 'supported', label: t('Supported') }],
-            onChange: (value: string) =>
-              props.onAdvancedFilterChange('free', value),
-          },
-        ]
-      : []),
-    ...(props.advancedOptions.hasBatch
-      ? [
-          {
-            title: t('Batch capability'),
-            value: props.advancedFilters.batch,
-            options: [{ value: 'supported', label: t('Supported') }],
-            onChange: (value: string) =>
-              props.onAdvancedFilterChange('batch', value),
-          },
-        ]
-      : []),
-    ...(props.advancedOptions.regions.length > 0
-      ? [
-          {
-            title: t('Region'),
-            value: props.advancedFilters.region,
-            options: props.advancedOptions.regions.map((region) => ({
-              value: region,
-              label: region,
-            })),
-            onChange: (value: string) =>
-              props.onAdvancedFilterChange('region', value),
-          },
-        ]
-      : []),
-    ...(props.advancedOptions.quantizations.length > 0
-      ? [
-          {
-            title: t('Quantization'),
-            value: props.advancedFilters.quantization,
-            options: props.advancedOptions.quantizations.map(
-              (quantization) => ({
-                value: quantization,
-                label: quantization,
-              })
-            ),
-            onChange: (value: string) =>
-              props.onAdvancedFilterChange('quantization', value),
           },
         ]
       : []),

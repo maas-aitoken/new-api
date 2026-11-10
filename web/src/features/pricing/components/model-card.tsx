@@ -16,7 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { ChevronRight } from 'lucide-react'
+import { ChevronRight, Server } from 'lucide-react'
 import { memo, useMemo, type ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 
@@ -38,10 +38,7 @@ import {
 } from '../lib/dynamic-price'
 import { parseTags } from '../lib/filters'
 import { isTokenBasedModel } from '../lib/model-helpers'
-import {
-  formatPrimaryProviderPrice as formatPrice,
-  formatRequestPrice,
-} from '../lib/price'
+import { formatPrice, formatRequestPrice } from '../lib/price'
 import { taskPriceLabel, taskUsageUnitLabel } from '../lib/task-price-display'
 import type { PricingModel, PriceType, TokenUnit } from '../types'
 import { ModelBillingModeBadge } from './model-billing-mode-badge'
@@ -327,6 +324,16 @@ export const ModelCard = memo(function ModelCard(props: ModelCardProps) {
                   +{tags.length - 2}
                 </span>
               )}
+            </div>
+          )}
+          {(props.model.channels?.length ?? 0) > 0 && (
+            <div className='text-muted-foreground flex items-center gap-1.5 text-xs'>
+              <Server className='size-3.5 shrink-0' aria-hidden='true' />
+              <span>
+                {t('{{count}} channels', {
+                  count: props.model.channels?.length,
+                })}
+              </span>
             </div>
           )}
         </div>
