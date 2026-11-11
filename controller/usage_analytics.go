@@ -9,6 +9,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/gin-gonic/gin"
 )
 
@@ -42,6 +43,31 @@ func usageOrgFilterFromQuery(c *gin.Context) model.UsageOrgFilter {
 		Department:   c.Query("department"),
 		Team:         c.Query("team"),
 	}
+}
+
+func usagePlatformFromQuery(c *gin.Context) string {
+	platform := strings.ToLower(strings.TrimSpace(c.Query("platform")))
+	if platform == "" {
+		return "local"
+	}
+	return platform
+}
+
+func GetUsagePlatforms(c *gin.Context) {
+	platforms := []gin.H{{"value": "local", "label": "Local"}}
+	configs, err := service.LoadExternalPlatformConfigs()
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	for _, config := range configs {
+		label := config.Label
+		if label == "" {
+			label = strings.ToUpper(config.Name)
+		}
+		platforms = append(platforms, gin.H{"value": config.Name, "label": label})
+	}
+	common.ApiSuccess(c, platforms)
 }
 
 // usageViewerScope: everyone (nil UserIDs) for administrators and SSO accounts above every department;
@@ -108,7 +134,38 @@ func GetUsageAnalytics(c *gin.Context) {
 		ModelName: c.Query("model"),
 		Org:       usageOrgFilterFromQuery(c),
 		UserIDs:   userIDs,
+		Platform: func() string {
+			if usagePlatformFromQuery(c) == "all" {
+				return "local"
+			}
+			return usagePlatformFromQuery(c)
+		}(),
 	})
+	if usagePlatformFromQuery(c) == "all" {
+		localParams := model.UsageAnalyticsParams{Start: start, End: end, GroupBy: groupBy, ModelName: c.Query("model"), Org: usageOrgFilterFromQuery(c), UserIDs: userIDs, Platform: "local"}
+		local, localErr := model.GetUsageAnalytics(localParams)
+		if localErr != nil {
+			common.ApiError(c, localErr)
+			return
+		}
+		results := []*model.UsageAnalyticsResult{local}
+		configs, configErr := service.LoadExternalPlatformConfigs()
+		if configErr != nil {
+			common.ApiError(c, configErr)
+			return
+		}
+		for _, config := range configs {
+			params := localParams
+			params.Platform = config.Name
+			external, externalErr := model.GetUsageAnalytics(params)
+			if externalErr != nil {
+				common.ApiError(c, externalErr)
+				return
+			}
+			results = append(results, external)
+		}
+		data = model.MergeUsageAnalyticsResults(results...)
+	}
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -171,6 +228,7 @@ func GetSelfUsageAnalytics(c *gin.Context) {
 		GroupBy:   groupBy,
 		ModelName: c.Query("model"),
 		UserID:    userID,
+		Platform:  usagePlatformFromQuery(c),
 	})
 	if err != nil {
 		common.ApiError(c, err)
@@ -192,6 +250,16 @@ func GetPeakTPM(c *gin.Context) {
 	userIDs, err := usageUserFilter(c, scope)
 	if err != nil {
 		common.ApiError(c, err)
+		return
+	}
+	platform := usagePlatformFromQuery(c)
+	if platform != "local" {
+		points, err := model.GetExternalPeakTPM(start, end, 0, platform)
+		if err != nil {
+			common.ApiError(c, err)
+			return
+		}
+		common.ApiSuccess(c, points)
 		return
 	}
 	points, err := model.GetPeakTPM(model.PeakTPMParams{
@@ -217,6 +285,16 @@ func GetSelfPeakTPM(c *gin.Context) {
 	}
 	start, end, ok := parseUsageAnalyticsRange(c, selfUsageAnalyticsMaxDays)
 	if !ok {
+		return
+	}
+	platform := usagePlatformFromQuery(c)
+	if platform != "local" {
+		points, err := model.GetExternalPeakTPM(start, end, userID, platform)
+		if err != nil {
+			common.ApiError(c, err)
+			return
+		}
+		common.ApiSuccess(c, points)
 		return
 	}
 	points, err := model.GetPeakTPM(model.PeakTPMParams{

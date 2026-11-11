@@ -300,6 +300,7 @@ type UsageAnalyticsSummary struct {
 // UsageAnalyticsRow uses pointers to omit unused dimensions while retaining zero values.
 type UsageAnalyticsRow struct {
 	UsageMetrics
+	Platform    *string `json:"platform,omitempty"`
 	ModelName   *string `json:"model_name,omitempty"`
 	UserID      *int    `json:"user_id,omitempty"`
 	Username    *string `json:"username,omitempty"`
@@ -334,11 +335,15 @@ type UsageAnalyticsParams struct {
 	// UserID > 0 restricts the query to one user (self analytics).
 	UserID int
 	// UserIDs restricts to these accounts; nil means all.
-	UserIDs []int
+	UserIDs  []int
+	Platform string
 }
 
 // GetUsageAnalytics aggregates hourly quota data in [Start, End].
 func GetUsageAnalytics(params UsageAnalyticsParams) (*UsageAnalyticsResult, error) {
+	if params.Platform != "" && params.Platform != "local" {
+		return getExternalUsageAnalytics(params)
+	}
 	scope := usageScope{UserID: params.UserID, Username: strings.TrimSpace(params.Username), Org: params.Org, UserIDs: params.UserIDs}
 	result := &UsageAnalyticsResult{Rows: []UsageAnalyticsRow{}}
 	if params.GroupBy == UsageAnalyticsGroupModelChannel {

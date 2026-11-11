@@ -126,6 +126,7 @@ type User struct {
 	UpdatedAt                int64                      `json:"updated_at" gorm:"autoUpdateTime;column:updated_at"`
 	LastLoginAt              int64                      `json:"last_login_at" gorm:"default:0;column:last_login_at"`
 	AuthVersion              int64                      `json:"-" gorm:"type:bigint;not null;default:1;column:auth_version"`
+	QuotaTierAutoAssign      bool                       `json:"-" gorm:"column:quota_tier_auto_assign"`
 	AdminPermissions         map[string]map[string]bool `json:"admin_permissions,omitempty" gorm:"-:all"`
 }
 
@@ -711,12 +712,23 @@ func ensureEmailAvailableWithTx(tx *gorm.DB, email string, excludeUserID int) er
 }
 
 func (user *User) Insert(inviterId int) error {
+	return user.insert(inviterId, false)
+}
+
+// InsertSso creates an SSO account without signup quota.
+func (user *User) InsertSso(inviterId int) error {
+	return user.insert(inviterId, true)
+}
+
+func (user *User) insert(inviterId int, skipSignupQuota bool) error {
 	if err := DB.Transaction(func(tx *gorm.DB) error {
 		return withNormalizedEmailLock(tx, user.Email, func(tx *gorm.DB) error {
 			if err := user.prepareForInsert(tx); err != nil {
 				return err
 			}
-			user.Quota = common.QuotaForNewUser
+			if !skipSignupQuota {
+				user.Quota = common.QuotaForNewUser
+			}
 			user.AffCode = common.GetRandomString(4)
 
 			// 初始化用户设置，包括默认的边栏配置
@@ -732,11 +744,11 @@ func (user *User) Insert(inviterId int) error {
 		return err
 	}
 
-	user.finishInsert(inviterId)
+	user.finishInsert(inviterId, !skipSignupQuota)
 	return nil
 }
 
-func (user *User) finishInsert(inviterId int) {
+func (user *User) finishInsert(inviterId int, recordSignupQuota bool) {
 	// 用户创建成功后，根据角色初始化边栏配置
 	// 需要重新获取用户以确保有正确的ID和Role
 	var createdUser User
@@ -752,7 +764,7 @@ func (user *User) finishInsert(inviterId int) {
 		}
 	}
 
-	if common.QuotaForNewUser > 0 {
+	if recordSignupQuota && common.QuotaForNewUser > 0 {
 		RecordLog(user.Id, LogTypeSystem, common.NewMessage("New user sign-up bonus {{quota}}", map[string]any{"quota": logger.FormatQuota(common.QuotaForNewUser)}))
 	}
 	if inviterId != 0 && operation_setting.IsPaymentComplianceConfirmed() {
@@ -769,7 +781,7 @@ func (user *User) finishInsert(inviterId int) {
 }
 
 func (user *User) FinishInsert(inviterId int) {
-	user.finishInsert(inviterId)
+	user.finishInsert(inviterId, true)
 }
 
 // InsertWithTx inserts a new user within an existing transaction.

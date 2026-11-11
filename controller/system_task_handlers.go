@@ -37,6 +37,29 @@ func RegisterScheduledSystemTasks() {
 	service.RegisterSystemTaskHandler(asyncTaskPollHandler{})
 	service.RegisterSystemTaskHandler(autoRouterRankHandler{})
 	service.RegisterSystemTaskHandler(ssoUserSyncHandler{})
+	service.RegisterSystemTaskHandler(externalUsageSyncHandler{})
+}
+
+type externalUsageSyncHandler struct{}
+
+func (externalUsageSyncHandler) Type() string { return model.SystemTaskTypeExternalUsageSync }
+
+func (externalUsageSyncHandler) Enabled() bool {
+	configs, err := service.LoadExternalPlatformConfigs()
+	return err == nil && len(configs) > 0
+}
+
+func (externalUsageSyncHandler) Interval() time.Duration { return 10 * time.Minute }
+
+func (externalUsageSyncHandler) NewPayload() any { return nil }
+
+func (externalUsageSyncHandler) Run(ctx context.Context, task *model.SystemTask, runnerID string) {
+	result, err := service.RunExternalPlatformSync(ctx)
+	status := model.SystemTaskStatusSucceeded
+	if err != nil {
+		status = model.SystemTaskStatusFailed
+	}
+	finishSystemTaskHandler(task, runnerID, status, result, err)
 }
 
 // autoRouterRankHandler regenerates the auto router's task → model lists from

@@ -36,10 +36,19 @@ func activeUserSubscriptions(tx *gorm.DB, userId int, now int64) *gorm.DB {
 	return billableSubscriptions(tx.Where("user_id = ?", userId), now)
 }
 
-// EnsureUserQuotaTier gives a user without a subscription the lowest enabled plan, with this
-// period's spend as used. Reports whether the user has one afterwards.
+// EnsureUserQuotaTier assigns the lowest enabled plan to an eligible user.
 func EnsureUserQuotaTier(userId int) (bool, error) {
 	if !operation_setting.IsQuotaTierEnabled() || userId <= 0 {
+		return false, nil
+	}
+	var eligible bool
+	if err := DB.Model(&User{}).
+		Where("id = ?", userId).
+		Select("COALESCE(quota_tier_auto_assign, ?)", false).
+		Scan(&eligible).Error; err != nil {
+		return false, err
+	}
+	if !eligible {
 		return false, nil
 	}
 	if has, err := HasActiveUserSubscription(userId); err != nil || has {
