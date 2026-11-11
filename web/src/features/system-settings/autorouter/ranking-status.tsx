@@ -52,10 +52,13 @@ export function RankingStatus() {
   const refresh = useRefreshAutoRouterRanking()
   const restore = useRestoreAutoRouterRanking()
   const [confirmingRestore, setConfirmingRestore] = useState(false)
+  const [confirmingRefresh, setConfirmingRefresh] = useState(false)
 
   const data = status.data?.data
   const task = data?.rank_refresh
   const refreshing = task?.status === 'pending' || task?.status === 'running'
+  // 手工编辑保存时在 rank_sources 里记下 edited_at；刷新和恢复内置都会把它连同改动一起换掉。
+  const edited = Boolean(data?.rank_sources?.edited_at)
 
   // The viewer holds the ranking from before the refresh until it is told to reload.
   const wasRefreshing = useRef(false)
@@ -92,6 +95,13 @@ export function RankingStatus() {
           variant={data.ranking_current ? 'success' : 'warning'}
           copyable={false}
         />
+        {edited ? (
+          <StatusBadge
+            label={t('Edited by hand')}
+            variant='info'
+            copyable={false}
+          />
+        ) : null}
       </div>
 
       {data.ranking_current ? null : (
@@ -154,7 +164,9 @@ export function RankingStatus() {
           type='button'
           size='sm'
           disabled={!data.rank_keys_ready || refreshing || refresh.isPending}
-          onClick={() => refresh.mutate()}
+          onClick={() =>
+            edited ? setConfirmingRefresh(true) : refresh.mutate()
+          }
         >
           <RefreshCw
             data-icon='inline-start'
@@ -182,12 +194,33 @@ export function RankingStatus() {
       )}
 
       <ConfirmDialog
+        open={confirmingRefresh}
+        onOpenChange={setConfirmingRefresh}
+        title={t('Replace the hand-edited ranking?')}
+        desc={t(
+          'A refresh rebuilds the ranking from public leaderboards and replaces the stored one, so your hand edits are lost.'
+        )}
+        confirmText={t('Refresh now')}
+        isLoading={refresh.isPending}
+        handleConfirm={() =>
+          refresh.mutate(undefined, {
+            onSuccess: () => setConfirmingRefresh(false),
+          })
+        }
+      />
+      <ConfirmDialog
         open={confirmingRestore}
         onOpenChange={setConfirmingRestore}
         title={t('Restore the built-in ranking?')}
-        desc={t(
-          'The stored ranking is replaced by the one shipped with this version. If periodic refresh is on, the next scheduled refresh replaces it again.'
-        )}
+        desc={
+          edited
+            ? t(
+                'The hand-edited ranking is replaced by the one shipped with this version, so your edits are lost.'
+              )
+            : t(
+                'The stored ranking is replaced by the one shipped with this version. If periodic refresh is on, the next scheduled refresh replaces it again.'
+              )
+        }
         confirmText={t('Restore')}
         isLoading={restore.isPending}
         handleConfirm={() =>

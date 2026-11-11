@@ -5,16 +5,16 @@ import (
 	"mime"
 	"strings"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/QuantumNous/new-api/common"
 	"github.com/gin-gonic/gin"
-	"github.com/tidwall/sjson"
 )
 
 // rewriteJSONBodyModel patches the top-level JSON "model" field and replaces
 // BodyStorage. Non-JSON bodies are left untouched.
 func rewriteJSONBodyModel(c *gin.Context, spelling string) error {
 	return rewriteJSONBody(c, func(raw []byte) ([]byte, error) {
-		return sjson.SetBytes(raw, "model", spelling)
+		return ojson.SetBytes(raw, "model", spelling)
 	})
 }
 

@@ -146,6 +146,7 @@ type iselfOwner struct {
 	UserID       int    `gorm:"column:user_id"`
 	Username     string `gorm:"column:username"`
 	DisplayName  string `gorm:"column:display_name"`
+	Avatar       string `gorm:"column:avatar"`
 	Email        string `gorm:"column:email"`
 	UserStatus   int    `gorm:"column:user_status"`
 	BusinessUnit string `gorm:"column:business_unit"`
@@ -161,6 +162,7 @@ func resolveIselfOwners(emails []string) (map[string]iselfOwner, error) {
 		var users []iselfOwner
 		err := DB.Table("users").
 			Select("users.id AS user_id, users.username AS username, COALESCE(users.display_name, '') AS display_name, "+
+				"COALESCE(users.avatar, '') AS avatar, "+
 				"LOWER(TRIM(users.email)) AS email, users.status AS user_status, "+
 				usageBusinessUnitExpr+" AS business_unit, "+usageDepartmentExpr+" AS department, "+
 				usageTeamExpr+" AS team, COALESCE(users.org_str, '') AS org_path").

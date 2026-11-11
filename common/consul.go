@@ -17,6 +17,7 @@ import (
 )
 
 type consulKVEntry struct {
+	Key   string `json:"Key"`
 	Value string `json:"Value"`
 }
 
@@ -192,6 +193,46 @@ func fetchConsulKV(ctx context.Context, client *http.Client, addr, token, key st
 		return nil, fmt.Errorf("decode Consul KV value %q: %w", key, err)
 	}
 	return payload, nil
+}
+
+// FetchConsulKVValue reads and decodes one Consul KV value.
+func FetchConsulKVValue(ctx context.Context, addr, token, kvPath string) ([]byte, error) {
+	path := strings.Trim(kvPath, "/")
+	endpoint, err := consulKVURL(addr, path)
+	if err != nil {
+		return nil, err
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, fmt.Errorf("create Consul request: %w", err)
+	}
+	if token != "" {
+		request.Header.Set("X-Consul-Token", token)
+	}
+	client := &http.Client{Timeout: defaultConsulTimeoutSeconds * time.Second}
+	response, err := client.Do(request)
+	if err != nil {
+		return nil, fmt.Errorf("request Consul KV value: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("Consul KV value %q returned %s", kvPath, response.Status)
+	}
+	var entries []consulKVEntry
+	if err := DecodeJson(io.LimitReader(response.Body, consulKVMaxResponseBytes), &entries); err != nil {
+		return nil, fmt.Errorf("decode Consul KV value %q: %w", path, err)
+	}
+	for _, entry := range entries {
+		if entry.Key != path || entry.Value == "" {
+			continue
+		}
+		value, decodeErr := base64.StdEncoding.DecodeString(entry.Value)
+		if decodeErr != nil {
+			return nil, fmt.Errorf("decode Consul KV value %q: %w", path, decodeErr)
+		}
+		return value, nil
+	}
+	return nil, fmt.Errorf("Consul KV value %q was not found", path)
 }
 
 func parseClickHouseLogDSN(ctx context.Context, payload []byte, probe func(context.Context, clickHouseConfig) error) (string, error) {

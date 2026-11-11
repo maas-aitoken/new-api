@@ -314,12 +314,16 @@ func (c Connections) RankKeysReady() bool {
 // ShippedOptions returns the embedded ranking as stored option values, the state
 // a restore puts the router back in.
 func ShippedOptions() (map[string]string, error) {
-	values := map[string]any{
+	return encodeOptions(map[string]any{
 		"autorouter_setting.task_models":    shippedRanking.TaskModels,
 		"autorouter_setting.task_scores":    shippedRanking.TaskScores,
 		"autorouter_setting.default_models": shippedRanking.DefaultModels,
 		"autorouter_setting.rank_sources":   shippedRanking.RankSources,
-	}
+	})
+}
+
+// encodeOptions 把榜单的几个列表和映射编码成选项表里存的 JSON 字符串。
+func encodeOptions(values map[string]any) (map[string]string, error) {
 	options := make(map[string]string, len(values))
 	for key, value := range values {
 		encoded, err := common.Marshal(value)

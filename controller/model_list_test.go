@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/setting"
+	"github.com/QuantumNous/new-api/setting/autorouter_setting"
 	"github.com/QuantumNous/new-api/setting/config"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
@@ -491,6 +493,74 @@ func TestListModelsTokenLimitUsesResolvedCustomAutoGroups(t *testing.T) {
 	require.Empty(t, anthropicResponse.Data)
 	require.Empty(t, anthropicResponse.FirstID)
 	require.Empty(t, anthropicResponse.LastID)
+}
+
+// /v1/models 与 Distribute 对令牌模型配置方式的处理一致：智能路由 key 的对话请求都改走 auto，
+// 所以只列 auto；锁定模型 key（含旧令牌）拒绝 auto，所以不列 auto；Gemini 原生格式对智能路由 key
+// 整个拒绝，列表为空，锁定模型 key 照常列模型池；平台关了 auto 时两种 key 都只列模型池。
+func TestListModelsFollowsTheKeyRoutingMode(t *testing.T) {
+	withSelfUseModeEnabled(t)
+	routerSetting := autorouter_setting.GetAutoRouterSetting()
+	saved := *routerSetting
+	t.Cleanup(func() { *routerSetting = saved })
+	routerSetting.TaskModels = map[string][]string{}
+	routerSetting.DefaultModels = []string{"zz-ranked-model"}
+
+	db := setupModelListControllerTestDB(t)
+	require.NoError(t, db.Create(&[]model.Ability{
+		{Group: "default", Model: "zz-ranked-model", ChannelId: 1, Enabled: true},
+		{Group: "default", Model: "zz-embed-model", ChannelId: 1, Enabled: true},
+	}).Error)
+
+	for _, tc := range []struct {
+		name      string
+		mode      common.TokenRoutingMode // empty: the request did not come with a key
+		modelType int
+		disabled  bool
+		want      []string
+	}{
+		{name: "without a key", modelType: constant.ChannelTypeOpenAI, want: []string{"auto", "zz-embed-model", "zz-ranked-model"}},
+		{name: "smart routing key", mode: common.TokenRoutingModeSmart, modelType: constant.ChannelTypeOpenAI, want: []string{"auto"}},
+		{name: "smart routing key, anthropic format", mode: common.TokenRoutingModeSmart, modelType: constant.ChannelTypeAnthropic, want: []string{"auto"}},
+		{name: "smart routing key, gemini native", mode: common.TokenRoutingModeSmart, modelType: constant.ChannelTypeGemini, want: []string{}},
+		{name: "locked key", mode: common.TokenRoutingModeFixed, modelType: constant.ChannelTypeOpenAI, want: []string{"zz-embed-model", "zz-ranked-model"}},
+		{name: "locked key, gemini native", mode: common.TokenRoutingModeFixed, modelType: constant.ChannelTypeGemini, want: []string{"zz-embed-model", "zz-ranked-model"}},
+		{name: "smart routing key with auto turned off", mode: common.TokenRoutingModeSmart, modelType: constant.ChannelTypeOpenAI, disabled: true, want: []string{"zz-embed-model", "zz-ranked-model"}},
+		{name: "smart routing key with auto turned off, gemini native", mode: common.TokenRoutingModeSmart, modelType: constant.ChannelTypeGemini, disabled: true, want: []string{"zz-embed-model", "zz-ranked-model"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			routerSetting.Enabled = !tc.disabled
+			recorder := httptest.NewRecorder()
+			ctx, _ := gin.CreateTestContext(recorder)
+			ctx.Request = httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+			common.SetContextKey(ctx, constant.ContextKeyUserGroup, "default")
+			if tc.mode != "" {
+				common.SetContextKey(ctx, constant.ContextKeyTokenRoutingMode, tc.mode)
+			}
+
+			ListModels(ctx, tc.modelType)
+
+			require.Equal(t, http.StatusOK, recorder.Code)
+			var payload struct {
+				Data []struct {
+					ID string `json:"id"`
+				} `json:"data"`
+				Models []struct {
+					Name string `json:"name"`
+				} `json:"models"`
+			}
+			require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &payload))
+			ids := []string{}
+			for _, item := range payload.Data {
+				ids = append(ids, item.ID)
+			}
+			for _, item := range payload.Models {
+				ids = append(ids, item.Name)
+			}
+			slices.Sort(ids)
+			assert.Equal(t, tc.want, ids)
+		})
+	}
 }
 
 func TestSetupLoginDoesNotTouchPasswordWhenPasswordFieldOmitted(t *testing.T) {

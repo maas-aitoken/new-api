@@ -337,7 +337,8 @@ export function hasAnyCacheTokens(
     (other.image_cache_tokens || 0) > 0 ||
     (other.cache_creation_tokens || 0) > 0 ||
     (other.cache_creation_tokens_5m || 0) > 0 ||
-    (other.cache_creation_tokens_1h || 0) > 0
+    (other.cache_creation_tokens_1h || 0) > 0 ||
+    (other.cache_creation_tokens_12h || 0) > 0
   )
 }
 
@@ -492,6 +493,8 @@ const AUDIT_TEMPLATES: Record<string, string> = {
   'option.update': 'Updated system setting {{key}}',
   'autorouter.rank_refresh': 'Started an auto router leaderboard refresh',
   'autorouter.rank_restore': 'Restored the built-in auto router ranking',
+  'autorouter.rank_edit':
+    'Edited the auto router ranking by hand: {{profiles}} (added {{added}}, removed {{removed}}, rescored {{rescored}})',
   'option.passkey_domains':
     'Updated Passkey domains: removed {{domains}}; affected {{known}}; unknown {{unknown}}',
   'option.passkey_domains_confirmed':

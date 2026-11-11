@@ -52,6 +52,7 @@ func TestIncreaseUserSubscriptionQuota(t *testing.T) {
 				"climbs tiers in place":           testQuotaIncreaseClimbsTiersInPlace,
 				"keeps original group for expiry": testQuotaIncreaseKeepsOriginalGroupForExpiry,
 				"assigns the lowest tier":         testQuotaTierAssignsLowestTier,
+				"does not assign legacy users":    testQuotaTierSkipsLegacyUser,
 				"serves only auto past the quota": testQuotaTierServesOnlyAutoPastQuota,
 				"admin changes the plan in place": testAdminChangesSubscriptionPlanInPlace,
 			} {
@@ -68,7 +69,7 @@ func TestIncreaseUserSubscriptionQuota(t *testing.T) {
 
 func seedQuotaIncreaseUser(t *testing.T, username string) User {
 	t.Helper()
-	user := User{Username: username, Password: "unused-password-hash", Role: common.RoleCommonUser, Status: common.UserStatusEnabled, Group: "default"}
+	user := User{Username: username, Password: "unused-password-hash", Role: common.RoleCommonUser, Status: common.UserStatusEnabled, Group: "default", QuotaTierAutoAssign: true}
 	require.NoError(t, DB.Create(&user).Error)
 	return user
 }
@@ -265,6 +266,17 @@ func testQuotaTierAssignsLowestTier(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, active, 1)
 	assert.EqualValues(t, 3000, active[0].Subscription.AmountTotal)
+}
+
+func testQuotaTierSkipsLegacyUser(t *testing.T) {
+	user := seedQuotaIncreaseUser(t, "quota-tier-legacy-user")
+	require.NoError(t, DB.Model(&User{}).Where("id = ?", user.Id).Update("quota_tier_auto_assign", false).Error)
+	seedQuotaIncreasePlan(t, SubscriptionPlan{Title: "v1", TotalAmount: 100, QuotaResetPeriod: SubscriptionResetMonthly}, true)
+
+	has, err := EnsureUserQuotaTier(user.Id)
+	require.NoError(t, err)
+	assert.False(t, has)
+	assert.Empty(t, activeQuotaIncreaseSubs(t, user.Id))
 }
 
 func testQuotaTierServesOnlyAutoPastQuota(t *testing.T) {

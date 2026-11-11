@@ -53,12 +53,11 @@ func TestTokenAutoPreferenceRoundTripsThroughRedisHashCache(t *testing.T) {
 	assert.Equal(t, "cost", cached.AutoPreference)
 	assert.Positive(t, server.TTL(getTokenCacheKey(token.Key)), "新字段占了 ARGV 位置，过期时间的下标要跟着后移")
 
-	// 升级前写进缓存的令牌没有这个字段：读出来为空，走平台默认，不报错。
+	// 升级前写进缓存的哈希没有签名：完整性校验拒绝，调用方回落数据库并重建缓存。
 	legacyKey := "token-auto-preference-legacy-key"
 	server.HSet(getTokenCacheKey(legacyKey), "Id", "45", "UserId", "7", "Name", "legacy")
-	legacy, err := cacheGetTokenByKey(legacyKey)
-	require.NoError(t, err)
-	assert.Empty(t, legacy.AutoPreference)
+	_, err = cacheGetTokenByKey(legacyKey)
+	require.Error(t, err)
 }
 
 func TestTokenSceneRoundTripsThroughRedisHashCache(t *testing.T) {
@@ -115,6 +114,48 @@ func TestTokenRPMRoundTripsThroughRedisHashCache(t *testing.T) {
 			require.NoError(t, err, "刷新 TTL 不得删除哈希")
 			assert.Equal(t, tc.rpm, cached.RPM)
 		})
+	}
+}
+
+// RoutingMode decides whether a key's chat requests are moved to "auto". Redis is
+// read first, and a field missing from the hash comes back empty, which means
+// "locked to its models": without it in cacheInitToken a smart routing key would
+// silently stop routing as soon as its cached copy is used.
+func TestTokenRoutingModeRoundTripsThroughRedisHashCache(t *testing.T) {
+	server := useUserCacheMiniRedis(t)
+	token := Token{Id: 47, UserId: 7, Key: "token-routing-mode-cache-key", Name: "routing-mode-cache", Scene: common.TokenSceneOffice, RoutingMode: common.TokenRoutingModeSmart}
+
+	initialized, err := cacheInitToken(token)
+	require.NoError(t, err)
+	require.Equal(t, 1, initialized)
+	cached, err := cacheGetTokenByKey(token.Key)
+	require.NoError(t, err)
+	assert.Equal(t, common.TokenRoutingModeSmart, cached.RoutingMode)
+	assert.True(t, cached.UsesSmartRouting())
+	assert.Positive(t, server.TTL(getTokenCacheKey(token.Key)), "新字段占了 ARGV 位置，过期时间的下标要跟着后移")
+
+	// 升级前写进缓存的哈希没有签名：完整性校验拒绝，调用方回落数据库并重建缓存。
+	legacyKey := "token-routing-mode-legacy-key"
+	server.HSet(getTokenCacheKey(legacyKey), "Id", "48", "UserId", "7", "Name", "legacy")
+	_, err = cacheGetTokenByKey(legacyKey)
+	require.Error(t, err)
+}
+
+func TestTokenUsesSmartRoutingOnlyForAnOfficeKeySetToSmart(t *testing.T) {
+	for _, tc := range []struct {
+		scene common.TokenScene
+		mode  common.TokenRoutingMode
+		want  bool
+	}{
+		{scene: common.TokenSceneOffice, mode: common.TokenRoutingModeSmart, want: true},
+		{scene: "", mode: common.TokenRoutingModeSmart, want: true}, // 空 scene 按办公处理
+		{scene: common.TokenSceneOffice, mode: common.TokenRoutingModeFixed},
+		{scene: common.TokenSceneOffice, mode: ""}, // 升级前的旧令牌
+		{scene: common.TokenSceneBusiness, mode: common.TokenRoutingModeSmart},
+		{scene: common.TokenSceneBusiness, mode: common.TokenRoutingModeFixed},
+	} {
+		token := Token{Scene: tc.scene, RoutingMode: tc.mode}
+		assert.Equal(t, tc.want, token.UsesSmartRouting(), "scene=%q mode=%q", tc.scene, tc.mode)
 	}
 }
 

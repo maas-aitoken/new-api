@@ -48,6 +48,7 @@ func SetApiRouter(router *gin.Engine) {
 		{
 			perfMetricsRoute.GET("/summary", controller.GetPerfMetricsSummary)
 			perfMetricsRoute.GET("/availability", middleware.UserAuth(), controller.GetModelAvailability)
+			perfMetricsRoute.GET("/health", middleware.UserAuth(), controller.GetModelHealth)
 			perfMetricsRoute.GET("", controller.GetPerfMetrics)
 		}
 		apiRouter.GET("/rankings", middleware.HeaderNavModuleAuth("rankings"), controller.GetRankings)
@@ -248,6 +249,7 @@ func SetApiRouter(router *gin.Engine) {
 			optionRoute.PUT("/", controller.UpdateOption)
 			optionRoute.PUT("/passkey/domains", controller.UpdatePasskeyDomains)
 			optionRoute.GET("/model_pricing", controller.GetModelPricingConfig)
+			optionRoute.GET("/model_pricing/issues", controller.GetModelPricingIssues)
 			optionRoute.PATCH("/model_pricing", controller.UpdateModelPricingConfig)
 			optionRoute.POST("/model_pricing/convert", controller.PreviewModelPricingConversion)
 			optionRoute.POST("/model_pricing/preview", controller.PreviewModelPricing)
@@ -393,6 +395,7 @@ func SetApiRouter(router *gin.Engine) {
 		dataRoute.GET("/", middleware.AdminAuth(), controller.GetAllQuotaDates)
 		// Cross-user analytics: the handlers limit non-administrators to the people they may see.
 		dataRoute.GET("/scope", middleware.UserAuth(), controller.GetUsageDataScope)
+		dataRoute.GET("/platforms", middleware.UserAuth(), controller.GetUsagePlatforms)
 		dataRoute.GET("/analytics", middleware.UserAuth(), controller.GetUsageAnalytics)
 		dataRoute.GET("/analytics/self", middleware.UserAuth(), controller.GetSelfUsageAnalytics)
 		dataRoute.GET("/org-options", middleware.UserAuth(), controller.GetUsageOrgOptions)
@@ -486,6 +489,7 @@ func SetApiRouter(router *gin.Engine) {
 		{
 			autoRouterRoute.GET("/status", controller.GetAutoRouterStatus)
 			autoRouterRoute.GET("/ranking", controller.GetAutoRouterRanking)
+			autoRouterRoute.PUT("/ranking", controller.UpdateAutoRouterRanking)
 			autoRouterRoute.POST("/ranking/refresh", controller.RefreshAutoRouterRanking)
 			autoRouterRoute.POST("/ranking/restore", controller.RestoreAutoRouterRanking)
 		}

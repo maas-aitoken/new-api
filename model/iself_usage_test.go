@@ -152,7 +152,7 @@ func TestIselfUsageIsAttributedToTheEmailAccount(t *testing.T) {
 		{Id: 11, Username: "alice", Password: "password-a", AffCode: "aff-a", Email: " Alice@Example.com ", Status: common.UserStatusEnabled,
 			SecondaryOrganization: "BU-A", OrgStr: "BU-A"},
 		{Id: 12, Username: "bob", Password: "password-b", AffCode: "aff-b", Email: "bob@example.com", Status: common.UserStatusEnabled,
-			SecondaryOrganization: "BU-B", OrgStr: "BU-B"},
+			SecondaryOrganization: "BU-B", OrgStr: "BU-B", Avatar: "https://avatar.example.com/bob.png"},
 		// Two accounts share this email, so its usage is not moved.
 		{Id: 13, Username: "twin1", Password: "password-t1", AffCode: "aff-t1", Email: "shared@example.com", Status: common.UserStatusEnabled},
 		{Id: 14, Username: "twin2", Password: "password-t2", AffCode: "aff-t2", Email: "shared@example.com", Status: common.UserStatusEnabled},
@@ -206,8 +206,10 @@ func TestIselfUsageIsAttributedToTheEmailAccount(t *testing.T) {
 			{"bob", 2, 200, 150, 0},
 			{"gateway", 1, 100, 100, 5},
 		}, got)
+		// bob has no quota rows, so these come from the iSelf owner lookup.
 		assert.Equal(t, "BU-B", *result.Rows[1].BusinessUnit)
 		assert.Equal(t, "bob@example.com", *result.Rows[1].Email)
+		assert.Equal(t, "https://avatar.example.com/bob.png", *result.Rows[1].Avatar)
 	})
 
 	t.Run("summary is unchanged by the move", func(t *testing.T) {

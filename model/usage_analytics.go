@@ -120,6 +120,7 @@ type attributedUsageRow struct {
 	ModelName    string `gorm:"column:model_name"`
 	Hour         int64  `gorm:"column:hour_bucket"`
 	DisplayName  string `gorm:"column:display_name"`
+	Avatar       string `gorm:"column:avatar"`
 	Email        string `gorm:"column:email"`
 	UserStatus   int    `gorm:"column:user_status"`
 	BusinessUnit string `gorm:"column:business_unit"`
@@ -204,7 +205,7 @@ func loadAttributedUsage(q attributedUsageQuery) ([]attributedUsageRow, error) {
 			owner := move.Owner
 			rows = append(rows, attributedUsageRow{
 				UserID: owner.UserID, Username: owner.Username, ModelName: move.ModelName, Hour: move.Hour,
-				DisplayName: owner.DisplayName, Email: owner.Email, UserStatus: owner.UserStatus,
+				DisplayName: owner.DisplayName, Avatar: owner.Avatar, Email: owner.Email, UserStatus: owner.UserStatus,
 				BusinessUnit: owner.BusinessUnit, Department: owner.Department, Team: owner.Team, OrgPath: owner.OrgPath,
 			})
 			i = len(rows) - 1
@@ -251,6 +252,7 @@ func (m *UsageMetrics) subtract(other UsageMetrics) {
 const usageUsersJoin = "LEFT JOIN users ON users.id = quota_data.user_id"
 
 const usageUserAttributesSelect = "COALESCE(MAX(users.display_name), '') AS display_name, " +
+	"COALESCE(MAX(users.avatar), '') AS avatar, " +
 	"COALESCE(MAX(users.email), '') AS email, " +
 	"COALESCE(MAX(users.status), 0) AS user_status, " +
 	"COALESCE(MAX(users.secondary_organization), '') AS business_unit, " +
@@ -298,13 +300,17 @@ type UsageAnalyticsSummary struct {
 // UsageAnalyticsRow uses pointers to omit unused dimensions while retaining zero values.
 type UsageAnalyticsRow struct {
 	UsageMetrics
+	Platform    *string `json:"platform,omitempty"`
 	ModelName   *string `json:"model_name,omitempty"`
 	UserID      *int    `json:"user_id,omitempty"`
 	Username    *string `json:"username,omitempty"`
 	DisplayName *string `json:"display_name,omitempty"`
+	Avatar      *string `json:"avatar,omitempty"`
 	ChannelID   *int    `json:"channel_id,omitempty"`
 	ChannelName *string `json:"channel_name,omitempty"`
-	UserCount   *int64  `json:"user_count,omitempty"`
+	// ChannelType is 0 when the channel no longer exists.
+	ChannelType *int   `json:"channel_type,omitempty"`
+	UserCount   *int64 `json:"user_count,omitempty"`
 	// UserStatus is 0 when the user no longer exists.
 	Email        *string `json:"email,omitempty"`
 	UserStatus   *int    `json:"user_status,omitempty"`
@@ -329,11 +335,15 @@ type UsageAnalyticsParams struct {
 	// UserID > 0 restricts the query to one user (self analytics).
 	UserID int
 	// UserIDs restricts to these accounts; nil means all.
-	UserIDs []int
+	UserIDs  []int
+	Platform string
 }
 
 // GetUsageAnalytics aggregates hourly quota data in [Start, End].
 func GetUsageAnalytics(params UsageAnalyticsParams) (*UsageAnalyticsResult, error) {
+	if params.Platform != "" && params.Platform != "local" {
+		return getExternalUsageAnalytics(params)
+	}
 	scope := usageScope{UserID: params.UserID, Username: strings.TrimSpace(params.Username), Org: params.Org, UserIDs: params.UserIDs}
 	result := &UsageAnalyticsResult{Rows: []UsageAnalyticsRow{}}
 	if params.GroupBy == UsageAnalyticsGroupModelChannel {
@@ -357,7 +367,8 @@ func GetUsageAnalytics(params UsageAnalyticsParams) (*UsageAnalyticsResult, erro
 		}
 		err := query.
 			Select("quota_data.model_name AS model_name, quota_data.channel_id AS channel_id, " +
-				"COALESCE(MAX(channels.name), '') AS channel_name, " + usageMetricsSelect).
+				"COALESCE(MAX(channels.name), '') AS channel_name, COALESCE(MAX(channels.type), 0) AS channel_type, " +
+				usageMetricsSelect).
 			Joins("LEFT JOIN channels ON channels.id = quota_data.channel_id").
 			Group("quota_data.model_name, quota_data.channel_id").
 			Order("request_count DESC, model_name ASC, channel_id ASC").
@@ -437,7 +448,7 @@ func GetUsageAnalytics(params UsageAnalyticsParams) (*UsageAnalyticsResult, erro
 			case UsageAnalyticsGroupModel:
 				g.row.ModelName = &row.ModelName
 			case UsageAnalyticsGroupUser, UsageAnalyticsGroupUserModel:
-				g.row.UserID, g.row.Username, g.row.DisplayName = &row.UserID, &row.Username, &row.DisplayName
+				g.row.UserID, g.row.Username, g.row.DisplayName, g.row.Avatar = &row.UserID, &row.Username, &row.DisplayName, &row.Avatar
 				g.row.Email, g.row.UserStatus, g.row.OrgPath = &row.Email, &row.UserStatus, &row.OrgPath
 				g.row.BusinessUnit, g.row.Department, g.row.Team = &row.BusinessUnit, &row.Department, &row.Team
 				if params.GroupBy == UsageAnalyticsGroupUserModel {

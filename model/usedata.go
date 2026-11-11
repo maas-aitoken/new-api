@@ -359,3 +359,33 @@ func GetAllQuotaDates(startTime int64, endTime int64, username string, org Usage
 	}
 	return quotaDatas, nil
 }
+
+// TokenPeriodUsage 是一个令牌在一段时间里的调用次数和消耗额度。
+type TokenPeriodUsage struct {
+	TokenID int   `gorm:"column:token_id"`
+	Calls   int64 `gorm:"column:calls"`
+	Quota   int64 `gorm:"column:quota"`
+}
+
+// GetTokensUsageSince 从看板的小时汇总表 quota_data 汇总这些令牌从 since 起的调用次数和额度，
+// 键是令牌 ID。count 只记成功的调用（最终失败的那行 count 为 0），所以次数不含失败。
+// 汇总表按 DataExportInterval 落库、只在 DataExportEnabled 开着时写，最近几分钟的调用可能还没进来。
+func GetTokensUsageSince(tokenIds []int, since int64) (map[int]TokenPeriodUsage, error) {
+	usage := make(map[int]TokenPeriodUsage, len(tokenIds))
+	if len(tokenIds) == 0 {
+		return usage, nil
+	}
+	var rows []TokenPeriodUsage
+	err := DB.Table("quota_data").
+		Select("token_id, sum(count) as calls, sum(quota) as quota").
+		Where("token_id IN ? AND created_at >= ?", tokenIds, since).
+		Group("token_id").
+		Find(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+	for _, row := range rows {
+		usage[row.TokenID] = row
+	}
+	return usage, nil
+}
