@@ -33,6 +33,7 @@ func InitChannelCache() {
 	}
 	if !common.MemoryCacheEnabled {
 		InvalidatePricingCache()
+		rebuildTaskAliasView()
 		return
 	}
 	newChannelId2channel := make(map[int]*Channel)
@@ -112,7 +113,6 @@ func InitChannelCache() {
 	channel2advancedCustomConfig = newChannel2advancedCustomConfig
 	channel2disabledModels = newChannel2disabledModels
 	channelSyncLock.Unlock()
-	rebuildTaskAliasView()
 	// Lock ordering: InvalidatePricingCache acquires updatePricingLock, and
 	// GetPricing (holding updatePricingLock) nests channelSyncLock.RLock via
 	// loadPricingAdvancedCustomConfigs. channelSyncLock MUST be released before
