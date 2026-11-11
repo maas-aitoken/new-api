@@ -36,6 +36,12 @@ const (
 	// The only CONSUL_* setting <prefix>/config may set; it selects a ClickHouse
 	// entry and is not needed to reach Consul.
 	consulClickHouseConfigNameEnv = "CONSUL_CLICKHOUSE_CONFIG_KEY"
+	consulConfigPathEnv           = "CONSUL_KV_CONFIG_PATH"
+	consulConfigTokenEnv          = "CONSUL_KV_CONFIG_TOKEN"
+	clickHouseConsulAddressEnv    = "CK_CONSUL_HTTP_ADDR"
+	clickHouseConsulTokenEnv      = "CK_CONSUL_HTTP_TOKEN"
+	clickHouseConsulPathEnv       = "CK_CONSUL_KV_PATH"
+	clickHouseConsulConfigKeyEnv  = "CK_CONSUL_CONFIG_KEY"
 )
 
 type clickHouseConfig struct {
@@ -46,14 +52,35 @@ type clickHouseConfig struct {
 	User     string `json:"user"`
 }
 
-// LoadConsulConfig loads the startup configuration under CONSUL_KV_PREFIX in a
-// single request and returns the log database DSN. It must run before InitEnv.
+// LoadConsulConfig loads startup configuration and returns the log database DSN.
+// The current deployment form uses CONSUL_KV_CONFIG_PATH and
+// CONSUL_KV_CONFIG_TOKEN to read the flat config key. The older
+// CONSUL_KV_PREFIX form remains supported for compatibility.
 //
 // <prefix>/config overrides environment variables so every existing env reader
 // prefers Consul; zero values ("", 0, false, null) keep the environment value.
 // <prefix>/clickhouse provides the log database. When Consul cannot supply the
 // log database, LOG_SQL_DSN is used, and startup fails only if it is also empty.
 func LoadConsulConfig() (string, error) {
+	if configPath := strings.Trim(strings.TrimSpace(os.Getenv(consulConfigPathEnv)), "/"); configPath != "" {
+		configToken := strings.TrimSpace(os.Getenv(consulConfigTokenEnv))
+		addr := strings.TrimSpace(os.Getenv("CONSUL_HTTP_ADDR"))
+		if configToken == "" || addr == "" {
+			return loadConsulFallback("config path requires CONSUL_HTTP_ADDR and CONSUL_KV_CONFIG_TOKEN")
+		}
+		configPayload, err := FetchConsulKVValue(context.Background(), addr, configToken, configPath)
+		if err != nil {
+			return loadConsulFallback(err.Error())
+		}
+		if err := applyConsulEnvConfig(configPayload); err != nil {
+			return loadConsulFallback(err.Error())
+		}
+		logDSN, err := loadClickHouseConfigFromConsul(context.Background(), pingConsulClickHouse)
+		if err != nil {
+			return loadConsulFallback(err.Error())
+		}
+		return logDSN, nil
+	}
 	prefix := strings.Trim(strings.TrimSpace(os.Getenv("CONSUL_KV_PREFIX")), "/")
 	if prefix == "" {
 		if strings.TrimSpace(os.Getenv("CONSUL_KV_DB_PATH")) != "" {
@@ -71,6 +98,37 @@ func LoadConsulConfig() (string, error) {
 		return logDSN, nil
 	}
 	return "", fmt.Errorf("log database unavailable from Consul and LOG_SQL_DSN is empty: %w", err)
+}
+
+func loadConsulFallback(reason string) (string, error) {
+	SysError(LogText("failed to load Consul config, using environment variables: %s", reason))
+	if logDSN := os.Getenv("LOG_SQL_DSN"); logDSN != "" {
+		return logDSN, nil
+	}
+	return "", fmt.Errorf("log database unavailable from Consul and LOG_SQL_DSN is empty: %s", reason)
+}
+
+func loadClickHouseConfigFromConsul(ctx context.Context, probe func(context.Context, clickHouseConfig) error) (string, error) {
+	addr := strings.TrimSpace(os.Getenv(clickHouseConsulAddressEnv))
+	if addr == "" {
+		addr = strings.TrimSpace(os.Getenv("CONSUL_HTTP_ADDR"))
+	}
+	token := strings.TrimSpace(os.Getenv(clickHouseConsulTokenEnv))
+	if token == "" {
+		token = strings.TrimSpace(os.Getenv("CONSUL_HTTP_TOKEN"))
+	}
+	path := strings.Trim(strings.TrimSpace(os.Getenv(clickHouseConsulPathEnv)), "/")
+	if path == "" {
+		path = strings.Trim(strings.TrimSpace(os.Getenv("CONSUL_KV_DB_PATH")), "/")
+	}
+	if addr == "" || token == "" || path == "" {
+		return "", fmt.Errorf("ClickHouse Consul configuration requires address, token and path")
+	}
+	payload, err := FetchConsulKVValue(ctx, addr, token, path)
+	if err != nil {
+		return "", err
+	}
+	return parseClickHouseLogDSN(ctx, payload, probe)
 }
 
 func loadConsulStartupConfig(ctx context.Context, prefix string, probe func(context.Context, clickHouseConfig) error) (string, error) {
@@ -277,7 +335,11 @@ func selectClickHouseConfig(configs map[string]clickHouseConfig) (string, clickH
 	if len(configs) == 0 {
 		return "", clickHouseConfig{}, fmt.Errorf("Consul KV value contains no clickhouse configuration")
 	}
-	if name := strings.TrimSpace(os.Getenv(consulClickHouseConfigNameEnv)); name != "" {
+	name := strings.TrimSpace(os.Getenv(clickHouseConsulConfigKeyEnv))
+	if name == "" {
+		name = strings.TrimSpace(os.Getenv(consulClickHouseConfigNameEnv))
+	}
+	if name != "" {
 		config, ok := configs[name]
 		if !ok {
 			return "", clickHouseConfig{}, fmt.Errorf("Consul KV value contains no clickhouse configuration for CONSUL_CLICKHOUSE_CONFIG_KEY=%q", name)

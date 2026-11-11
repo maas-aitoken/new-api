@@ -160,6 +160,19 @@ func TestFetchConsulKVValueDecodesStandardBase64Response(t *testing.T) {
 	assert.Equal(t, want, value)
 }
 
+func TestApplyConsulEnvConfigAllowsClickHouseNamespace(t *testing.T) {
+	t.Setenv("CK_CONSUL_HTTP_ADDR", "")
+	t.Setenv("CK_CONSUL_HTTP_TOKEN", "")
+	t.Setenv("CK_CONSUL_KV_PATH", "")
+	t.Setenv("CK_CONSUL_CONFIG_KEY", "")
+	payload := []byte(`{"CK_CONSUL_HTTP_ADDR":"consul.example.internal:8500","CK_CONSUL_HTTP_TOKEN":"ck-token","CK_CONSUL_KV_PATH":"database/logs","CK_CONSUL_CONFIG_KEY":"logs"}`)
+	require.NoError(t, applyConsulEnvConfig(payload))
+	assert.Equal(t, "consul.example.internal:8500", os.Getenv("CK_CONSUL_HTTP_ADDR"))
+	assert.Equal(t, "ck-token", os.Getenv("CK_CONSUL_HTTP_TOKEN"))
+	assert.Equal(t, "database/logs", os.Getenv("CK_CONSUL_KV_PATH"))
+	assert.Equal(t, "logs", os.Getenv("CK_CONSUL_CONFIG_KEY"))
+}
+
 func TestFetchConsulKVPrefixErrors(t *testing.T) {
 	for _, tt := range []struct {
 		name   string
