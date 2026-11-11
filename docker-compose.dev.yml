@@ -34,6 +34,7 @@ services:
       # and the ClickHouse log DB (e.g. database/autom/maas/clickhouse/maas_logs).
       # On Consul errors env values are kept; the log DB falls back to LOG_SQL_DSN.
       - CONSUL_KV_CONFIG_PATH=${CONSUL_KV_CONFIG_PATH:-}
+      - CONSUL_KV_CONFIG_TOKEN=${CONSUL_KV_CONFIG_TOKEN:-} # Token for the config key; empty uses CONSUL_HTTP_TOKEN
       - CONSUL_KV_DB_PATH=${CONSUL_KV_DB_PATH:-}
       # Optional exact key under clickhouse in the decoded KV JSON (e.g. prod_logs); the config key may override it.
       - CONSUL_CLICKHOUSE_CONFIG_KEY=${CONSUL_CLICKHOUSE_CONFIG_KEY:-}

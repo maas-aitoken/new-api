@@ -70,17 +70,26 @@ func LoadConsulConfig() (string, error) {
 }
 
 // loadConsulStartupConfig reads the config key first so it can set
-// CONSUL_CLICKHOUSE_CONFIG_KEY and LOG_SQL_DSN, then the ClickHouse key.
+// CONSUL_CLICKHOUSE_CONFIG_KEY and LOG_SQL_DSN, then the ClickHouse key. The
+// config key uses CONSUL_KV_CONFIG_TOKEN when set, otherwise CONSUL_HTTP_TOKEN.
 func loadConsulStartupConfig(ctx context.Context, configPath, dbPath string, probe func(context.Context, clickHouseConfig) error) (string, error) {
 	addr := strings.TrimSpace(os.Getenv("CONSUL_HTTP_ADDR"))
-	token := strings.TrimSpace(os.Getenv("CONSUL_HTTP_TOKEN"))
-	if addr == "" || token == "" {
-		return "", fmt.Errorf("CONSUL_KV_CONFIG_PATH and CONSUL_KV_DB_PATH require CONSUL_HTTP_ADDR and CONSUL_HTTP_TOKEN")
+	if addr == "" {
+		return "", fmt.Errorf("CONSUL_KV_CONFIG_PATH and CONSUL_KV_DB_PATH require CONSUL_HTTP_ADDR")
 	}
+	token := strings.TrimSpace(os.Getenv("CONSUL_HTTP_TOKEN"))
 	client := &http.Client{Timeout: defaultConsulTimeoutSeconds * time.Second}
 	if configPath != "" {
+		configToken := strings.TrimSpace(os.Getenv("CONSUL_KV_CONFIG_TOKEN"))
+		if configToken == "" {
+			configToken = token
+		}
 		// A config failure must not block the log database, so it is only logged.
-		payload, err := fetchConsulKV(ctx, client, addr, token, configPath)
+		var payload []byte
+		err := fmt.Errorf("CONSUL_KV_CONFIG_PATH requires CONSUL_KV_CONFIG_TOKEN or CONSUL_HTTP_TOKEN")
+		if configToken != "" {
+			payload, err = fetchConsulKV(ctx, client, addr, configToken, configPath)
+		}
 		if err == nil {
 			err = applyConsulEnvConfig(payload)
 		}
@@ -90,6 +99,9 @@ func loadConsulStartupConfig(ctx context.Context, configPath, dbPath string, pro
 	}
 	if dbPath == "" {
 		return os.Getenv("LOG_SQL_DSN"), nil
+	}
+	if token == "" {
+		return "", fmt.Errorf("CONSUL_KV_DB_PATH requires CONSUL_HTTP_TOKEN")
 	}
 	payload, err := fetchConsulKV(ctx, client, addr, token, dbPath)
 	if err != nil {

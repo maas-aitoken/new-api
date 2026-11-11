@@ -355,6 +355,7 @@ func TestApplyConsulEnvConfigKeepsEnvOnError(t *testing.T) {
 		{name: "nested value", payload: `{"SQL_DSN":"postgres://consul","RELAY_TIMEOUT":{"v":1}}`, want: `"RELAY_TIMEOUT" must be a string, number or boolean`},
 		{name: "connection key", payload: `{"SQL_DSN":"postgres://consul","CONSUL_HTTP_TOKEN":"other"}`, want: `"CONSUL_HTTP_TOKEN" is not allowed`},
 		{name: "path key", payload: `{"SQL_DSN":"postgres://consul","CONSUL_KV_DB_PATH":"other"}`, want: `"CONSUL_KV_DB_PATH" is not allowed`},
+		{name: "token key", payload: `{"SQL_DSN":"postgres://consul","CONSUL_KV_CONFIG_TOKEN":"other"}`, want: `"CONSUL_KV_CONFIG_TOKEN" is not allowed`},
 		{name: "invalid key", payload: `{"SQL_DSN":"postgres://consul","A=B":"x"}`, want: `"A=B" is not allowed`},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -381,6 +382,7 @@ func TestLoadConsulConfig(t *testing.T) {
 		status       int
 		values       map[string]string
 		token        string
+		configToken  string
 		envLogDSN    string
 		wantDSN      string
 		wantErr      string
@@ -460,6 +462,28 @@ func TestLoadConsulConfig(t *testing.T) {
 			wantErr:    "LOG_SQL_DSN is empty",
 		},
 		{
+			name:         "config key uses CONSUL_KV_CONFIG_TOKEN",
+			configPath:   configKey,
+			dbPath:       dbKey,
+			configToken:  "config-token",
+			values:       map[string]string{configKey: `{"SQL_DSN":"postgres://consul"}`, dbKey: ckPayload},
+			wantDSN:      ckDSN,
+			wantSQLDSN:   "postgres://consul",
+			wantRequests: bothKeys,
+		},
+		{
+			name:         "config token alone still reads config, log DB falls back",
+			configPath:   configKey,
+			dbPath:       dbKey,
+			token:        " ",
+			configToken:  "config-token",
+			values:       map[string]string{configKey: `{"LOG_SQL_DSN":"consul-log"}`, dbKey: ckPayload},
+			envLogDSN:    "env-log",
+			wantDSN:      "consul-log",
+			wantSQLDSN:   "postgres://env",
+			wantRequests: []string{"/v1/kv/" + configKey},
+		},
+		{
 			name:       "missing token falls back to LOG_SQL_DSN",
 			configPath: configKey,
 			dbPath:     dbKey,
@@ -498,6 +522,11 @@ func TestLoadConsulConfig(t *testing.T) {
 			var requests []string
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				requests = append(requests, r.URL.Path)
+				wantToken := "token"
+				if r.URL.Path == "/v1/kv/"+configKey && tt.configToken != "" {
+					wantToken = tt.configToken
+				}
+				assert.Equal(t, wantToken, r.Header.Get("X-Consul-Token"), r.URL.Path)
 				if tt.status != 0 {
 					w.WriteHeader(tt.status)
 					return
@@ -517,6 +546,7 @@ func TestLoadConsulConfig(t *testing.T) {
 			}
 			t.Setenv("CONSUL_HTTP_ADDR", server.URL)
 			t.Setenv("CONSUL_HTTP_TOKEN", token)
+			t.Setenv("CONSUL_KV_CONFIG_TOKEN", tt.configToken)
 			t.Setenv("CONSUL_KV_CONFIG_PATH", "")
 			t.Setenv("CONSUL_KV_DB_PATH", "")
 			if tt.configPath != "" {
