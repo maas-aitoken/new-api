@@ -5,7 +5,6 @@ import (
 	"gorm.io/gorm"
 )
 
-// TokenActor 记录调用者是以什么身份拿到这个令牌的，用于审计归因
 type TokenActor struct {
 	IsOwner         bool
 	IsProjectMember bool
@@ -31,11 +30,11 @@ func getTokenForActor(
 	}
 
 	if !actor.IsOwner && !actor.IsProjectMember && token.IsProjectKey() {
-		isLeader, err := IsLeaderOf(userId, token.UserId)
+		hasScope, err := IsInKeyViewTeam(userId, token.UserId)
 		if err != nil {
 			return nil, TokenActor{}, err
 		}
-		actor.IsLeader = isLeader
+		actor.IsLeader = hasScope
 	}
 	if !allow(actor) {
 		return nil, TokenActor{}, gorm.ErrRecordNotFound

@@ -303,19 +303,12 @@ func parseTokenFilter(c *gin.Context) (model.TokenFilter, bool) {
 	case "business":
 		filter.Scope = common.TokenScopeBusiness
 		filter.Scene = common.TokenSceneBusiness
-		isLeader, err := model.IsUserLeader(filter.UserId)
+		teamUserIds, err := model.GetKeyViewTeamUserIds(filter.UserId)
 		if err != nil {
 			common.ApiError(c, err)
 			return filter, false
 		}
-		if isLeader {
-			teamUserIds, err := model.GetLeaderTeamUserIds(filter.UserId)
-			if err != nil {
-				common.ApiError(c, err)
-				return filter, false
-			}
-			filter.TeamUserIds = teamUserIds
-		}
+		filter.TeamUserIds = teamUserIds
 	default:
 		common.ApiErrorT(c, "Invalid view filter")
 		return filter, false
@@ -996,24 +989,17 @@ func attachTokenMonthlyUsage(responses []*tokenResponse) {
 	}
 }
 
-// GetKeyViewScope 当前用户在业务视图里是不是 leader
 func GetKeyViewScope(c *gin.Context) {
 	userId := c.GetInt("id")
-	isLeader, err := model.IsUserLeader(userId)
+	teamUserIds, err := model.GetKeyViewTeamUserIds(userId)
 	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
-	memberCount := 0
-	if isLeader {
-		teamUserIds, err := model.GetLeaderTeamUserIds(userId)
-		if err != nil {
-			common.ApiError(c, err)
-			return
-		}
-		memberCount = len(teamUserIds)
-	}
-	common.ApiSuccess(c, gin.H{"is_leader": isLeader, "member_count": memberCount})
+	common.ApiSuccess(c, gin.H{
+		"is_leader":    len(teamUserIds) > 0,
+		"member_count": len(teamUserIds),
+	})
 }
 
 // SearchTokenMemberCandidates 供业务 Key 选管理员与项目成员用
