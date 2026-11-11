@@ -32,10 +32,12 @@ services:
 #      - LOG_SQL_DSN=clickhouse://default:123456@clickhouse:9000/new_api_logs # OPTIONAL: Use ClickHouse for logs only; also uncomment clickhouse in depends_on and the clickhouse service below
       - CONSUL_HTTP_ADDR=${CONSUL_HTTP_ADDR:-} # host:port defaults to http://
       - CONSUL_HTTP_TOKEN=${CONSUL_HTTP_TOKEN:-}
-      # Optional prefix (e.g. database/autom/maas) read once at startup: <prefix>/config (env overrides) and <prefix>/clickhouse/maas_logs (log DB).
+      # Optional full KV keys, each read once at startup, config first: env overrides (e.g. app/new-api/config)
+      # and the ClickHouse log DB (e.g. database/autom/maas/clickhouse/maas_logs).
       # On Consul errors env values are kept; the log DB falls back to LOG_SQL_DSN.
-      - CONSUL_KV_PREFIX=${CONSUL_KV_PREFIX:-}
-      # Optional exact key under clickhouse in the decoded KV JSON (e.g. prod_logs); <prefix>/config may override it.
+      - CONSUL_KV_CONFIG_PATH=${CONSUL_KV_CONFIG_PATH:-}
+      - CONSUL_KV_DB_PATH=${CONSUL_KV_DB_PATH:-}
+      # Optional exact key under clickhouse in the decoded KV JSON (e.g. prod_logs); the config key may override it.
       - CONSUL_CLICKHOUSE_CONFIG_KEY=${CONSUL_CLICKHOUSE_CONFIG_KEY:-}
       - RELAY_ATTEMPT_LOG_ENABLED=true
       - RELAY_ATTEMPT_LOG_SAMPLE_RATE=1

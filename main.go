@@ -327,7 +327,7 @@ func InitResources() error {
 		}
 	}
 
-	// 一次请求加载 Consul 初始配置，优先于环境变量；读取失败时回退环境变量
+	// 先后读取 Consul 的 config 和日志库配置，优先于环境变量；读取失败时回退环境变量
 	logDSN, err := common.LoadConsulConfig()
 	if err != nil {
 		return fmt.Errorf("load log database configuration: %w", err)

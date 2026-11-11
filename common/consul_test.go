@@ -20,20 +20,9 @@ import (
 
 func noProbe(context.Context, clickHouseConfig) error { return nil }
 
-// consulPrefixResponse renders a ?recurse response for the given relative keys.
-func consulPrefixResponse(prefix string, values map[string]string) string {
-	var b strings.Builder
-	b.WriteString("[")
-	first := true
-	for key, value := range values {
-		if !first {
-			b.WriteString(",")
-		}
-		first = false
-		fmt.Fprintf(&b, `{"Key":%q,"Value":%q}`, prefix+"/"+key, base64.StdEncoding.EncodeToString([]byte(value)))
-	}
-	b.WriteString("]")
-	return b.String()
+// consulKeyResponse renders the response of a single-key GET.
+func consulKeyResponse(value string) string {
+	return fmt.Sprintf(`[{"Key":"k","Value":%q}]`, base64.StdEncoding.EncodeToString([]byte(value)))
 }
 
 func TestParseClickHouseLogDSN(t *testing.T) {
@@ -128,35 +117,34 @@ func TestConsulKVURL(t *testing.T) {
 	}
 }
 
-// One recursive request returns every key under the prefix, including the
-// nested ClickHouse key; folder entries and empty values are dropped.
-func TestFetchConsulKVPrefix(t *testing.T) {
+// Each path is read with a plain GET of that exact key.
+func TestFetchConsulKV(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assert.Equal(t, "/v1/kv/database/example/", r.URL.Path)
-		assert.Equal(t, "true", r.URL.Query().Get("recurse"))
+		assert.Equal(t, "/v1/kv/app/example/config", r.URL.Path)
+		assert.Empty(t, r.URL.RawQuery)
 		assert.Equal(t, "test-token", r.Header.Get("X-Consul-Token"))
-		fmt.Fprintf(w, `[{"Key":"database/example/","Value":null},{"Key":"database/example/clickhouse/","Value":null},{"Key":"database/example/config","Value":%q},{"Key":"database/example/clickhouse/maas_logs","Value":%q},{"Key":"database/example/empty","Value":""}]`,
-			base64.StdEncoding.EncodeToString([]byte(`{"A":"1"}`)), base64.StdEncoding.EncodeToString([]byte(`{"clickhouse":{}}`)))
+		fmt.Fprint(w, consulKeyResponse(`{"A":"1"}`))
 	}))
 	defer server.Close()
 
-	values, err := fetchConsulKVPrefix(context.Background(), server.Client(), server.URL, "test-token", "database/example")
+	value, err := fetchConsulKV(context.Background(), server.Client(), server.URL, "test-token", "app/example/config")
 	require.NoError(t, err)
-	assert.Equal(t, map[string][]byte{"config": []byte(`{"A":"1"}`), "clickhouse/maas_logs": []byte(`{"clickhouse":{}}`)}, values)
+	assert.Equal(t, []byte(`{"A":"1"}`), value)
 }
 
-func TestFetchConsulKVPrefixErrors(t *testing.T) {
+func TestFetchConsulKVErrors(t *testing.T) {
 	for _, tt := range []struct {
 		name   string
 		status int
 		body   string
 		want   string
 	}{
-		{name: "empty prefix", status: http.StatusNotFound, want: `Consul KV prefix "p" has no keys`},
+		{name: "missing key", status: http.StatusNotFound, want: `Consul KV key "k" was not found`},
 		{name: "denied", status: http.StatusForbidden, want: "check CONSUL_HTTP_TOKEN"},
 		{name: "server error", status: http.StatusInternalServerError, want: "unexpected status"},
 		{name: "invalid response", body: `{`, want: "decode Consul KV response"},
-		{name: "invalid base64", body: `[{"Key":"p/config","Value":"%%%"}]`, want: `decode Consul KV value "p/config"`},
+		{name: "empty value", body: `[{"Key":"k","Value":null}]`, want: `Consul KV key "k" is empty`},
+		{name: "invalid base64", body: `[{"Key":"k","Value":"%%%"}]`, want: `decode Consul KV value "k"`},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -168,7 +156,7 @@ func TestFetchConsulKVPrefixErrors(t *testing.T) {
 			}))
 			defer server.Close()
 
-			_, err := fetchConsulKVPrefix(context.Background(), server.Client(), server.URL, "token", "p")
+			_, err := fetchConsulKV(context.Background(), server.Client(), server.URL, "token", "k")
 			require.ErrorContains(t, err, tt.want)
 		})
 	}
@@ -176,17 +164,17 @@ func TestFetchConsulKVPrefixErrors(t *testing.T) {
 
 // The HTTP helper accepts host:port and omits empty token headers; the public
 // loader still requires both address and token before using Consul.
-func TestFetchConsulKVPrefixWithoutToken(t *testing.T) {
+func TestFetchConsulKVWithoutToken(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, hasToken := r.Header["X-Consul-Token"]
 		assert.False(t, hasToken, "no empty token header should be sent")
-		fmt.Fprint(w, consulPrefixResponse("p", map[string]string{"config": "{}"}))
+		fmt.Fprint(w, consulKeyResponse("{}"))
 	}))
 	defer server.Close()
 
-	values, err := fetchConsulKVPrefix(context.Background(), server.Client(), strings.TrimPrefix(server.URL, "http://"), "", "p")
+	value, err := fetchConsulKV(context.Background(), server.Client(), strings.TrimPrefix(server.URL, "http://"), "", "k")
 	require.NoError(t, err)
-	assert.Equal(t, map[string][]byte{"config": []byte("{}")}, values)
+	assert.Equal(t, []byte("{}"), value)
 }
 
 func TestParseClickHouseLogDSNHostList(t *testing.T) {
@@ -366,7 +354,7 @@ func TestApplyConsulEnvConfigKeepsEnvOnError(t *testing.T) {
 		{name: "not an object", payload: `["SQL_DSN"]`, want: "decode Consul config"},
 		{name: "nested value", payload: `{"SQL_DSN":"postgres://consul","RELAY_TIMEOUT":{"v":1}}`, want: `"RELAY_TIMEOUT" must be a string, number or boolean`},
 		{name: "connection key", payload: `{"SQL_DSN":"postgres://consul","CONSUL_HTTP_TOKEN":"other"}`, want: `"CONSUL_HTTP_TOKEN" is not allowed`},
-		{name: "prefix key", payload: `{"SQL_DSN":"postgres://consul","CONSUL_KV_PREFIX":"other"}`, want: `"CONSUL_KV_PREFIX" is not allowed`},
+		{name: "path key", payload: `{"SQL_DSN":"postgres://consul","CONSUL_KV_DB_PATH":"other"}`, want: `"CONSUL_KV_DB_PATH" is not allowed`},
 		{name: "invalid key", payload: `{"SQL_DSN":"postgres://consul","A=B":"x"}`, want: `"A=B" is not allowed`},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -380,82 +368,146 @@ func TestApplyConsulEnvConfigKeepsEnvOnError(t *testing.T) {
 }
 
 func TestLoadConsulConfig(t *testing.T) {
-	const prefix = "database/example"
+	const configKey = "app/example/config"
+	const dbKey = "database/example/clickhouse/maas_logs"
 	const ckPayload = `{"clickhouse":{"cht_maas_log":{"database":"logs","host":"127.0.0.1","password":"secret","port":9000,"user":"logger"}}}`
 	const ckDSN = "clickhouse://logger:secret@127.0.0.1:9000/logs"
+	bothKeys := []string{"/v1/kv/" + configKey, "/v1/kv/" + dbKey}
 
 	for _, tt := range []struct {
-		name       string
-		status     int
-		values     map[string]string
-		token      string
-		envLogDSN  string
-		wantDSN    string
-		wantErr    string
-		wantSQLDSN string
+		name         string
+		configPath   string
+		dbPath       string
+		status       int
+		values       map[string]string
+		token        string
+		envLogDSN    string
+		wantDSN      string
+		wantErr      string
+		wantSQLDSN   string
+		wantRequests []string
 	}{
 		{
-			name:       "config and clickhouse in one request",
-			values:     map[string]string{consulConfigKey: `{"SQL_DSN":"postgres://consul"}`, consulClickHouseKey: ckPayload},
-			envLogDSN:  "env-log",
-			wantDSN:    ckDSN,
-			wantSQLDSN: "postgres://consul",
+			name:         "config then clickhouse in two requests",
+			configPath:   configKey,
+			dbPath:       dbKey,
+			values:       map[string]string{configKey: `{"SQL_DSN":"postgres://consul"}`, dbKey: ckPayload},
+			envLogDSN:    "env-log",
+			wantDSN:      ckDSN,
+			wantSQLDSN:   "postgres://consul",
+			wantRequests: bothKeys,
 		},
 		{
-			name:       "LOG_SQL_DSN from config when clickhouse is absent",
-			values:     map[string]string{consulConfigKey: `{"LOG_SQL_DSN":"consul-log"}`},
-			envLogDSN:  "env-log",
-			wantDSN:    "consul-log",
-			wantSQLDSN: "postgres://env",
+			name:         "LOG_SQL_DSN from config when clickhouse key is missing",
+			configPath:   configKey,
+			dbPath:       dbKey,
+			values:       map[string]string{configKey: `{"LOG_SQL_DSN":"consul-log"}`},
+			envLogDSN:    "env-log",
+			wantDSN:      "consul-log",
+			wantSQLDSN:   "postgres://env",
+			wantRequests: bothKeys,
 		},
 		{
-			name:    "no log database anywhere",
-			values:  map[string]string{consulConfigKey: `{"SQL_DSN":"postgres://consul"}`},
-			wantErr: `Consul KV key "database/example/clickhouse/maas_logs" was not found`,
+			name:       "no log database anywhere",
+			configPath: configKey,
+			dbPath:     dbKey,
+			values:     map[string]string{configKey: `{"SQL_DSN":"postgres://consul"}`},
+			wantErr:    `Consul KV key "database/example/clickhouse/maas_logs" was not found`,
 		},
 		{
-			name:       "invalid config keeps env but still loads clickhouse",
-			values:     map[string]string{consulConfigKey: `{"SQL_DSN":"postgres://consul","X":[1]}`, consulClickHouseKey: ckPayload},
-			wantDSN:    ckDSN,
-			wantSQLDSN: "postgres://env",
+			name:         "invalid config keeps env but still loads clickhouse",
+			configPath:   configKey,
+			dbPath:       dbKey,
+			values:       map[string]string{configKey: `{"SQL_DSN":"postgres://consul","X":[1]}`, dbKey: ckPayload},
+			wantDSN:      ckDSN,
+			wantSQLDSN:   "postgres://env",
+			wantRequests: bothKeys,
 		},
 		{
-			name:       "invalid clickhouse falls back to LOG_SQL_DSN",
-			values:     map[string]string{consulClickHouseKey: `{"clickhouse":{}}`},
-			envLogDSN:  "env-log",
-			wantDSN:    "env-log",
-			wantSQLDSN: "postgres://env",
+			name:         "missing config key still loads clickhouse",
+			configPath:   configKey,
+			dbPath:       dbKey,
+			values:       map[string]string{dbKey: ckPayload},
+			wantDSN:      ckDSN,
+			wantSQLDSN:   "postgres://env",
+			wantRequests: bothKeys,
 		},
 		{
-			name:       "Consul error falls back to LOG_SQL_DSN",
+			name:         "invalid clickhouse falls back to LOG_SQL_DSN",
+			configPath:   configKey,
+			dbPath:       dbKey,
+			values:       map[string]string{dbKey: `{"clickhouse":{}}`},
+			envLogDSN:    "env-log",
+			wantDSN:      "env-log",
+			wantSQLDSN:   "postgres://env",
+			wantRequests: bothKeys,
+		},
+		{
+			name:         "Consul error falls back to LOG_SQL_DSN",
+			configPath:   configKey,
+			dbPath:       dbKey,
+			status:       http.StatusInternalServerError,
+			envLogDSN:    "env-log",
+			wantDSN:      "env-log",
+			wantSQLDSN:   "postgres://env",
+			wantRequests: bothKeys,
+		},
+		{
+			name:       "Consul error without LOG_SQL_DSN fails startup",
+			configPath: configKey,
+			dbPath:     dbKey,
 			status:     http.StatusInternalServerError,
-			envLogDSN:  "env-log",
-			wantDSN:    "env-log",
-			wantSQLDSN: "postgres://env",
-		},
-		{
-			name:    "Consul error without LOG_SQL_DSN fails startup",
-			status:  http.StatusInternalServerError,
-			wantErr: "LOG_SQL_DSN is empty",
+			wantErr:    "LOG_SQL_DSN is empty",
 		},
 		{
 			name:       "missing token falls back to LOG_SQL_DSN",
+			configPath: configKey,
+			dbPath:     dbKey,
 			token:      " ",
 			envLogDSN:  "env-log",
 			wantDSN:    "env-log",
 			wantSQLDSN: "postgres://env",
 		},
+		{
+			name:         "only CONSUL_KV_DB_PATH reads only clickhouse",
+			dbPath:       dbKey,
+			values:       map[string]string{dbKey: ckPayload},
+			wantDSN:      ckDSN,
+			wantSQLDSN:   "postgres://env",
+			wantRequests: []string{"/v1/kv/" + dbKey},
+		},
+		{
+			name:         "only CONSUL_KV_CONFIG_PATH uses LOG_SQL_DSN from config",
+			configPath:   configKey,
+			values:       map[string]string{configKey: `{"LOG_SQL_DSN":"consul-log"}`},
+			envLogDSN:    "env-log",
+			wantDSN:      "consul-log",
+			wantSQLDSN:   "postgres://env",
+			wantRequests: []string{"/v1/kv/" + configKey},
+		},
+		{
+			name:         "only CONSUL_KV_CONFIG_PATH without LOG_SQL_DSN uses the main database",
+			configPath:   configKey,
+			status:       http.StatusInternalServerError,
+			wantDSN:      "",
+			wantSQLDSN:   "postgres://env",
+			wantRequests: []string{"/v1/kv/" + configKey},
+		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			requests := 0
+			var requests []string
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				requests++
-				assert.Equal(t, "/v1/kv/"+prefix+"/", r.URL.Path)
+				requests = append(requests, r.URL.Path)
 				if tt.status != 0 {
 					w.WriteHeader(tt.status)
 					return
 				}
-				fmt.Fprint(w, consulPrefixResponse(prefix, tt.values))
+				value, ok := tt.values[strings.TrimPrefix(r.URL.Path, "/v1/kv/")]
+				if !ok {
+					w.WriteHeader(http.StatusNotFound)
+					return
+				}
+				fmt.Fprint(w, consulKeyResponse(value))
 			}))
 			defer server.Close()
 
@@ -465,8 +517,14 @@ func TestLoadConsulConfig(t *testing.T) {
 			}
 			t.Setenv("CONSUL_HTTP_ADDR", server.URL)
 			t.Setenv("CONSUL_HTTP_TOKEN", token)
-			t.Setenv("CONSUL_KV_PREFIX", "/"+prefix+"/")
+			t.Setenv("CONSUL_KV_CONFIG_PATH", "")
 			t.Setenv("CONSUL_KV_DB_PATH", "")
+			if tt.configPath != "" {
+				t.Setenv("CONSUL_KV_CONFIG_PATH", "/"+tt.configPath+"/")
+			}
+			if tt.dbPath != "" {
+				t.Setenv("CONSUL_KV_DB_PATH", "/"+tt.dbPath+"/")
+			}
 			t.Setenv("LOG_SQL_DSN", tt.envLogDSN)
 			t.Setenv("SQL_DSN", "postgres://env")
 
@@ -478,15 +536,14 @@ func TestLoadConsulConfig(t *testing.T) {
 			require.NoError(t, err)
 			assert.Equal(t, tt.wantDSN, dsn)
 			assert.Equal(t, tt.wantSQLDSN, os.Getenv("SQL_DSN"))
-			assert.LessOrEqual(t, requests, 1)
+			assert.Equal(t, tt.wantRequests, requests)
 		})
 	}
 }
 
-// CONSUL_CLICKHOUSE_CONFIG_KEY may come from <prefix>/config; an empty value
-// there keeps the environment value.
+// CONSUL_CLICKHOUSE_CONFIG_KEY may come from the config key, which is read
+// before the ClickHouse key; an empty value there keeps the environment value.
 func TestLoadConsulConfigClickHouseConfigKey(t *testing.T) {
-	const prefix = "database/example"
 	const ckPayload = `{"clickhouse":{"prod_logs_key":{"database":"prod_logs","host":"127.0.0.1","password":"secret","port":9000,"user":"logger"},"cht_maas_log":{"database":"test_logs","host":"127.0.0.1","password":"secret","port":9000,"user":"logger"}}}`
 
 	for _, tt := range []struct {
@@ -500,14 +557,19 @@ func TestLoadConsulConfigClickHouseConfigKey(t *testing.T) {
 		{name: "unset everywhere uses default name", config: `{}`, want: "/test_logs"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-				fmt.Fprint(w, consulPrefixResponse(prefix, map[string]string{consulConfigKey: tt.config, consulClickHouseKey: ckPayload}))
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				value := ckPayload
+				if r.URL.Path == "/v1/kv/app/example/config" {
+					value = tt.config
+				}
+				fmt.Fprint(w, consulKeyResponse(value))
 			}))
 			defer server.Close()
 
 			t.Setenv("CONSUL_HTTP_ADDR", server.URL)
 			t.Setenv("CONSUL_HTTP_TOKEN", "token")
-			t.Setenv("CONSUL_KV_PREFIX", prefix)
+			t.Setenv("CONSUL_KV_CONFIG_PATH", "app/example/config")
+			t.Setenv("CONSUL_KV_DB_PATH", "database/example/clickhouse/maas_logs")
 			t.Setenv("CONSUL_CLICKHOUSE_CONFIG_KEY", tt.env)
 
 			dsn, err := LoadConsulConfig()
@@ -519,22 +581,13 @@ func TestLoadConsulConfigClickHouseConfigKey(t *testing.T) {
 	}
 }
 
-func TestLoadConsulConfigWithoutPrefix(t *testing.T) {
-	t.Setenv("CONSUL_KV_PREFIX", " / ")
+func TestLoadConsulConfigWithoutPaths(t *testing.T) {
+	t.Setenv("CONSUL_KV_CONFIG_PATH", " / ")
+	t.Setenv("CONSUL_KV_DB_PATH", "")
+	t.Setenv("CONSUL_HTTP_ADDR", "")
 	t.Setenv("LOG_SQL_DSN", "env-log")
 
-	t.Run("uses LOG_SQL_DSN", func(t *testing.T) {
-		t.Setenv("CONSUL_KV_DB_PATH", "")
-		dsn, err := LoadConsulConfig()
-		require.NoError(t, err)
-		assert.Equal(t, "env-log", dsn)
-	})
-
-	// A deployment still on the old setting must not silently lose its
-	// ClickHouse log database.
-	t.Run("rejects legacy CONSUL_KV_DB_PATH", func(t *testing.T) {
-		t.Setenv("CONSUL_KV_DB_PATH", "database/example/clickhouse/maas_logs")
-		_, err := LoadConsulConfig()
-		require.ErrorContains(t, err, "CONSUL_KV_DB_PATH is no longer supported")
-	})
+	dsn, err := LoadConsulConfig()
+	require.NoError(t, err)
+	assert.Equal(t, "env-log", dsn)
 }

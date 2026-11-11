@@ -17,7 +17,6 @@ import (
 )
 
 type consulKVEntry struct {
-	Key   string `json:"Key"`
 	Value string `json:"Value"`
 }
 
@@ -30,10 +29,7 @@ const (
 	defaultConsulClickHouseConfigName = "cht_maas_log"
 	consulKVMaxResponseBytes          = 1 << 20
 	defaultConsulTimeoutSeconds       = 10
-	// Keys read under CONSUL_KV_PREFIX (e.g. database/autom/maas).
-	consulConfigKey     = "config"
-	consulClickHouseKey = "clickhouse/maas_logs"
-	// The only CONSUL_* setting <prefix>/config may set; it selects a ClickHouse
+	// The only CONSUL_* setting the config key may set; it selects a ClickHouse
 	// entry and is not needed to reach Consul.
 	consulClickHouseConfigNameEnv = "CONSUL_CLICKHOUSE_CONFIG_KEY"
 )
@@ -46,53 +42,58 @@ type clickHouseConfig struct {
 	User     string `json:"user"`
 }
 
-// LoadConsulConfig loads the startup configuration under CONSUL_KV_PREFIX in a
-// single request and returns the log database DSN. It must run before InitEnv.
+// LoadConsulConfig reads the startup configuration from Consul and returns the
+// log database DSN. It must run before InitEnv.
 //
-// <prefix>/config overrides environment variables so every existing env reader
-// prefers Consul; zero values ("", 0, false, null) keep the environment value.
-// <prefix>/clickhouse provides the log database. When Consul cannot supply the
-// log database, LOG_SQL_DSN is used, and startup fails only if it is also empty.
+// CONSUL_KV_CONFIG_PATH names a flat JSON key that overrides environment
+// variables so every existing env reader prefers Consul; zero values ("", 0,
+// false, null) keep the environment value. CONSUL_KV_DB_PATH names the
+// ClickHouse log database key. Each path is optional and read with its own
+// request. When Consul cannot supply the log database, LOG_SQL_DSN is used, and
+// startup fails only if CONSUL_KV_DB_PATH is set and LOG_SQL_DSN is empty.
 func LoadConsulConfig() (string, error) {
-	prefix := strings.Trim(strings.TrimSpace(os.Getenv("CONSUL_KV_PREFIX")), "/")
-	if prefix == "" {
-		if strings.TrimSpace(os.Getenv("CONSUL_KV_DB_PATH")) != "" {
-			return "", fmt.Errorf("CONSUL_KV_DB_PATH is no longer supported; store the ClickHouse config at <CONSUL_KV_PREFIX>/%s and set CONSUL_KV_PREFIX", consulClickHouseKey)
-		}
+	configPath := strings.Trim(strings.TrimSpace(os.Getenv("CONSUL_KV_CONFIG_PATH")), "/")
+	dbPath := strings.Trim(strings.TrimSpace(os.Getenv("CONSUL_KV_DB_PATH")), "/")
+	if configPath == "" && dbPath == "" {
 		return os.Getenv("LOG_SQL_DSN"), nil
 	}
 
-	logDSN, err := loadConsulStartupConfig(context.Background(), prefix, pingConsulClickHouse)
+	logDSN, err := loadConsulStartupConfig(context.Background(), configPath, dbPath, pingConsulClickHouse)
 	if err == nil {
 		return logDSN, nil
 	}
 	SysError(LogText("failed to load Consul config, using environment variables: %s", err.Error()))
-	if logDSN = os.Getenv("LOG_SQL_DSN"); logDSN != "" {
+	if logDSN = os.Getenv("LOG_SQL_DSN"); logDSN != "" || dbPath == "" {
 		return logDSN, nil
 	}
 	return "", fmt.Errorf("log database unavailable from Consul and LOG_SQL_DSN is empty: %w", err)
 }
 
-func loadConsulStartupConfig(ctx context.Context, prefix string, probe func(context.Context, clickHouseConfig) error) (string, error) {
+// loadConsulStartupConfig reads the config key first so it can set
+// CONSUL_CLICKHOUSE_CONFIG_KEY and LOG_SQL_DSN, then the ClickHouse key.
+func loadConsulStartupConfig(ctx context.Context, configPath, dbPath string, probe func(context.Context, clickHouseConfig) error) (string, error) {
 	addr := strings.TrimSpace(os.Getenv("CONSUL_HTTP_ADDR"))
 	token := strings.TrimSpace(os.Getenv("CONSUL_HTTP_TOKEN"))
 	if addr == "" || token == "" {
-		return "", fmt.Errorf("CONSUL_KV_PREFIX requires CONSUL_HTTP_ADDR and CONSUL_HTTP_TOKEN")
+		return "", fmt.Errorf("CONSUL_KV_CONFIG_PATH and CONSUL_KV_DB_PATH require CONSUL_HTTP_ADDR and CONSUL_HTTP_TOKEN")
 	}
 	client := &http.Client{Timeout: defaultConsulTimeoutSeconds * time.Second}
-	values, err := fetchConsulKVPrefix(ctx, client, addr, token, prefix)
-	if err != nil {
-		return "", err
-	}
-	if payload, ok := values[consulConfigKey]; ok {
-		// A bad config key must not block the log database, so it is only logged.
-		if err := applyConsulEnvConfig(payload); err != nil {
+	if configPath != "" {
+		// A config failure must not block the log database, so it is only logged.
+		payload, err := fetchConsulKV(ctx, client, addr, token, configPath)
+		if err == nil {
+			err = applyConsulEnvConfig(payload)
+		}
+		if err != nil {
 			SysError(LogText("failed to load Consul config, using environment variables: %s", err.Error()))
 		}
 	}
-	payload, ok := values[consulClickHouseKey]
-	if !ok {
-		return "", fmt.Errorf("Consul KV key %q was not found", prefix+"/"+consulClickHouseKey)
+	if dbPath == "" {
+		return os.Getenv("LOG_SQL_DSN"), nil
+	}
+	payload, err := fetchConsulKV(ctx, client, addr, token, dbPath)
+	if err != nil {
+		return "", err
 	}
 	return parseClickHouseLogDSN(ctx, payload, probe)
 }
@@ -138,14 +139,12 @@ func applyConsulEnvConfig(payload []byte) error {
 	return nil
 }
 
-// fetchConsulKVPrefix reads every key under prefix in one request and returns
-// the base64-decoded values keyed by their path relative to prefix.
-func fetchConsulKVPrefix(ctx context.Context, client *http.Client, addr, token, prefix string) (map[string][]byte, error) {
-	endpoint, err := consulKVURL(addr, prefix+"/")
+// fetchConsulKV reads a single key and returns its base64-decoded value.
+func fetchConsulKV(ctx context.Context, client *http.Client, addr, token, key string) ([]byte, error) {
+	endpoint, err := consulKVURL(addr, key)
 	if err != nil {
 		return nil, err
 	}
-	endpoint += "?recurse=true"
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
@@ -162,9 +161,9 @@ func fetchConsulKVPrefix(ctx context.Context, client *http.Client, addr, token, 
 	switch resp.StatusCode {
 	case http.StatusOK:
 	case http.StatusNotFound:
-		return nil, fmt.Errorf("Consul KV prefix %q has no keys", prefix)
+		return nil, fmt.Errorf("Consul KV key %q was not found", key)
 	case http.StatusForbidden, http.StatusUnauthorized:
-		return nil, fmt.Errorf("Consul KV prefix %q denied (%s); check CONSUL_HTTP_TOKEN", prefix, resp.Status)
+		return nil, fmt.Errorf("Consul KV key %q denied (%s); check CONSUL_HTTP_TOKEN", key, resp.Status)
 	default:
 		return nil, fmt.Errorf("request Consul KV: unexpected status %s", resp.Status)
 	}
@@ -173,20 +172,14 @@ func fetchConsulKVPrefix(ctx context.Context, client *http.Client, addr, token, 
 	if err := DecodeJson(io.LimitReader(resp.Body, consulKVMaxResponseBytes), &entries); err != nil {
 		return nil, fmt.Errorf("decode Consul KV response: %w", err)
 	}
-	values := make(map[string][]byte, len(entries))
-	for _, entry := range entries {
-		key, ok := strings.CutPrefix(entry.Key, prefix+"/")
-		// Folder entries and empty values carry no configuration.
-		if !ok || key == "" || entry.Value == "" {
-			continue
-		}
-		payload, err := base64.StdEncoding.DecodeString(entry.Value)
-		if err != nil {
-			return nil, fmt.Errorf("decode Consul KV value %q: %w", entry.Key, err)
-		}
-		values[key] = payload
+	if len(entries) == 0 || entries[0].Value == "" {
+		return nil, fmt.Errorf("Consul KV key %q is empty", key)
 	}
-	return values, nil
+	payload, err := base64.StdEncoding.DecodeString(entries[0].Value)
+	if err != nil {
+		return nil, fmt.Errorf("decode Consul KV value %q: %w", key, err)
+	}
+	return payload, nil
 }
 
 func parseClickHouseLogDSN(ctx context.Context, payload []byte, probe func(context.Context, clickHouseConfig) error) (string, error) {
