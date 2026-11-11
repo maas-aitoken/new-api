@@ -145,6 +145,21 @@ func TestFetchConsulKVPrefix(t *testing.T) {
 	assert.Equal(t, map[string][]byte{"config": []byte(`{"A":"1"}`), "clickhouse/maas_logs": []byte(`{"clickhouse":{}}`)}, values)
 }
 
+func TestFetchConsulKVValueDecodesStandardBase64Response(t *testing.T) {
+	want := []byte(`{"platforms":[]}`)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/v1/kv/thirdparty/autom/maas/external-platforms", r.URL.Path)
+		assert.Empty(t, r.URL.RawQuery)
+		assert.Equal(t, "test-token", r.Header.Get("X-Consul-Token"))
+		fmt.Fprintf(w, `[{"Key":"thirdparty/autom/maas/external-platforms","Value":%q}]`, base64.StdEncoding.EncodeToString(want))
+	}))
+	defer server.Close()
+
+	value, err := FetchConsulKVValue(context.Background(), server.URL, "test-token", "thirdparty/autom/maas/external-platforms")
+	require.NoError(t, err)
+	assert.Equal(t, want, value)
+}
+
 func TestFetchConsulKVPrefixErrors(t *testing.T) {
 	for _, tt := range []struct {
 		name   string

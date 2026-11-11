@@ -394,6 +394,7 @@ func SetApiRouter(router *gin.Engine) {
 		dataRoute.GET("/", middleware.AdminAuth(), controller.GetAllQuotaDates)
 		// Cross-user analytics: the handlers limit non-administrators to the people they may see.
 		dataRoute.GET("/scope", middleware.UserAuth(), controller.GetUsageDataScope)
+		dataRoute.GET("/platforms", middleware.UserAuth(), controller.GetUsagePlatforms)
 		dataRoute.GET("/analytics", middleware.UserAuth(), controller.GetUsageAnalytics)
 		dataRoute.GET("/analytics/self", middleware.UserAuth(), controller.GetSelfUsageAnalytics)
 		dataRoute.GET("/org-options", middleware.UserAuth(), controller.GetUsageOrgOptions)
