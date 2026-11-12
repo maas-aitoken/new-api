@@ -27,6 +27,9 @@ export interface QuotaDataItem {
   user_id?: number
   username?: string
   model_name?: string
+  business_unit?: string
+  department?: string
+  team?: string
   created_at: number
   cache_read_tokens?: number
   cache_creation_tokens?: number
@@ -178,12 +181,23 @@ export interface ProcessedFlowData {
 // Usage Analytics Types (/api/data/analytics, /api/data/analytics/self)
 // ============================================================================
 
+export type UsageOrgLevel = 'business_unit' | 'department' | 'team'
+
 export type UsageAnalyticsGroupBy =
   | 'summary'
   | 'model'
   | 'user'
   | 'user_model'
   | 'model_channel'
+  | UsageOrgLevel
+
+// An empty level does not filter; usage follows each user's current organization.
+export type UsageOrgFilter = Partial<Record<UsageOrgLevel, string>>
+
+// Empty levels are unassigned.
+export type UsageOrgOption = Record<UsageOrgLevel, string>
+
+export type UserChartsDimension = 'user' | UsageOrgLevel
 
 // Aggregated quota_data counters shared by the summary and every grouped row.
 export interface UsageMetrics {
@@ -221,9 +235,16 @@ export interface UsageAnalyticsRow extends UsageMetrics {
   channel_id?: number
   channel_name?: string
   user_count?: number
+  // user_status is 0 for users that no longer exist.
+  email?: string
+  user_status?: number
+  business_unit?: string
+  department?: string
+  team?: string
+  org_path?: string
 }
 
-export interface UsageAnalyticsParams {
+export interface UsageAnalyticsParams extends UsageOrgFilter {
   start_timestamp: number
   end_timestamp: number
   group_by: UsageAnalyticsGroupBy
@@ -260,8 +281,11 @@ export interface IselfUsageRow {
   model_name: string
   request_count: number
   quota: number
+  // Includes cache reads and writes, like UsageMetrics.input_tokens.
   input_tokens: number
   completion_tokens: number
+  cache_read_tokens: number
+  cache_write_tokens: number
   token_used: number
   last_called_at: number
 }
@@ -371,6 +395,8 @@ export interface UserChartsFilters {
   timeGranularity: TimeGranularity
   selectedRange: number
   topUserLimit: number
+  dimension: UserChartsDimension
+  org: UsageOrgFilter
 }
 
 // ============================================================================

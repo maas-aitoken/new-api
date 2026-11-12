@@ -158,3 +158,35 @@ func TestCapacityPoolCapacityForBoundMembers(t *testing.T) {
 		{ChannelId: 9102, UpstreamModel: "claude-sonnet", RPMUsed: 1, TPMUsed: 10, InFlight: 1},
 	}, poolResponse.Data.Items[0].Members)
 }
+
+// 重置只认存在的池：记下请求等主节点下一轮来取；不存在的池不留请求。
+func TestResetCapacityPoolRecordsARequestOnlyForAnExistingPool(t *testing.T) {
+	db := setupCapacityPoolControllerTest(t)
+	require.NoError(t, db.Create(&model.ResourcePoolSource{Id: 1, Provider: model.ResourcePoolClaude, Name: "kiro", Endpoint: "https://k.example.com"}).Error)
+	pool := &model.CapacityPool{Name: "kiro-reset", Provider: model.ResourcePoolClaude}
+	require.NoError(t, model.SaveCapacityPool(pool, model.CapacityPoolConfig{SourceIds: []int64{1}}))
+
+	reset := func(id int) bool {
+		gin.SetMode(gin.TestMode)
+		recorder := httptest.NewRecorder()
+		context, _ := gin.CreateTestContext(recorder)
+		context.Request = httptest.NewRequest(http.MethodPost, fmt.Sprintf("/api/channel/resource_pools/capacity_pools/%d/reset", id), nil)
+		context.Params = gin.Params{{Key: "id", Value: fmt.Sprint(id)}}
+		ResetCapacityPool(context)
+		var response struct {
+			Success bool `json:"success"`
+		}
+		require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &response))
+		return response.Success
+	}
+	taken := func(id int) bool {
+		requested, err := channelcapacity.TakeResetRequest(channelcapacity.CapacityPoolID(id))
+		require.NoError(t, err)
+		return requested
+	}
+
+	assert.False(t, reset(pool.Id+1))
+	assert.False(t, taken(pool.Id+1), "不存在的池不留请求")
+	assert.True(t, reset(pool.Id))
+	assert.True(t, taken(pool.Id))
+}

@@ -3,6 +3,8 @@ package model
 import (
 	"errors"
 	"fmt"
+	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
@@ -11,6 +13,8 @@ import (
 	"github.com/bytedance/gopkg/util/gopool"
 	"gorm.io/gorm"
 )
+
+const projectMemberSeparator = ","
 
 type Token struct {
 	Id                 int     `json:"id"`
@@ -37,14 +41,19 @@ type Token struct {
 	AutoPreference string         `json:"auto_preference" gorm:"type:varchar(16)"`
 	DeletedAt      gorm.DeletedAt `gorm:"index"`
 	// 允许用此令牌查询所属用户的额度；新建令牌默认开启，已有令牌升级后保持关闭
-	AllowUserQuotaQuery bool `json:"allow_user_quota_query"`
+	AllowUserQuotaQuery bool   `json:"allow_user_quota_query"`
+	CacheExpiresAt      int64  `json:"-" gorm:"-"`
+	CacheMAC            string `json:"-" gorm:"-"`
 	// MaaS 改造字段
-	Scene       common.TokenScene       `json:"scene" gorm:"type:varchar(16);default:'office'"`
-	Description string                  `json:"description" gorm:"type:varchar(255);default:''"`
-	RoutingMode common.TokenRoutingMode `json:"routing_mode" gorm:"type:varchar(16);default:'smart'"`
+	Scene       common.TokenScene `json:"scene" gorm:"type:varchar(16);default:'office'"`
+	Description string            `json:"description" gorm:"type:varchar(255);default:''"`
+	// 默认值必须是空：加这一列时已有令牌全部取默认值，空值等同锁定模型，保持原来的行为。
+	// 写成 smart 会让所有旧令牌的对话请求都被改成 auto。
+	RoutingMode common.TokenRoutingMode `json:"routing_mode" gorm:"type:varchar(16);default:''"`
 	// RPM 为该令牌每分钟允许的请求数：0 继承平台级配置（TokenRequestRateLimitCount），
 	// -1 表示该令牌不限流，正数为该令牌自己的上限
-	RPM int `json:"rpm" gorm:"default:0"`
+	RPM            int    `json:"rpm" gorm:"default:0"`
+	ProjectMembers string `json:"-" gorm:"type:text"`
 }
 
 func (token *Token) GetAutoGroups() ([]string, error) {
@@ -126,8 +135,100 @@ func (token *Token) UpdateRateLimit() error {
 	return DB.Model(token).Select("rpm").Updates(token).Error
 }
 
+func (token *Token) UpdateStatus() error {
+	if cacheErr := invalidateTokenCacheForMutation(token.Key); cacheErr != nil {
+		common.SysLog("failed to invalidate token cache before status update: " + cacheErr.Error())
+	}
+	return DB.Model(token).Select("status").Updates(token).Error
+}
+
 func (token *Token) Clean() {
 	token.Key = ""
+}
+
+// GetProjectMembers 解析 ProjectMembers 字段，返回去重的成员 user id 列表
+func (token *Token) GetProjectMembers() []int {
+	if token.ProjectMembers == "" {
+		return nil
+	}
+	parts := strings.Split(token.ProjectMembers, projectMemberSeparator)
+	members := make([]int, 0, len(parts))
+	seen := make(map[int]struct{}, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+
+		id, err := strconv.Atoi(part)
+		if err != nil || id <= 0 {
+			continue
+		}
+		// 去重
+		if _, dup := seen[id]; dup {
+			continue
+		}
+		seen[id] = struct{}{}
+		members = append(members, id)
+	}
+
+	if len(members) == 0 {
+		return nil
+	}
+
+	return members
+}
+
+func (token *Token) SetProjectMembers(memberIds []int) error {
+	members := make([]int, 0, len(memberIds))
+	seen := make(map[int]struct{}, len(memberIds))
+	for _, id := range memberIds {
+		if id <= 0 {
+			return common.NewMessage("Invalid member ID")
+		}
+		if id == token.UserId {
+			continue
+		}
+		if _, dup := seen[id]; dup {
+			continue
+		}
+		seen[id] = struct{}{}
+		members = append(members, id)
+	}
+	if len(members) == 0 {
+		token.ProjectMembers = ""
+		return nil
+	}
+	slices.Sort(members)
+	parts := make([]string, 0, len(members))
+	for _, id := range members {
+		parts = append(parts, strconv.Itoa(id))
+	}
+	token.ProjectMembers = projectMemberSeparator + strings.Join(parts, projectMemberSeparator) + projectMemberSeparator
+	return nil
+}
+
+func projectMemberLikePattern(userId int) string {
+	return "%" + projectMemberSeparator + strconv.Itoa(userId) + projectMemberSeparator + "%"
+}
+
+// IsProjectKey 判断是否是带管理员与成员语义的业务 Key
+func (token *Token) IsProjectKey() bool {
+	return token.Scene == common.TokenSceneBusiness
+}
+
+// UsesSmartRouting 判断令牌是否走智能路由：只有办公场景且显式设成 smart 的才算。
+// 业务 key 一律锁定模型，库里即使存着 smart（早期前端给业务 key 默认提交 smart）也不算。
+func (token *Token) UsesSmartRouting() bool {
+	return token.RoutingMode == common.TokenRoutingModeSmart && token.Scene != common.TokenSceneBusiness
+}
+
+// IsProjectMember 判断 userId 是否在该业务 Key 的成员列表里
+func (token *Token) IsProjectMember(userId int) bool {
+	if userId <= 0 || !token.IsProjectKey() {
+		return false
+	}
+	return slices.Contains(token.GetProjectMembers(), userId)
 }
 
 func MaskTokenKey(key string) string {
@@ -179,6 +280,8 @@ type TokenFilter struct {
 	Scene       common.TokenScene
 	RoutingMode common.TokenRoutingMode
 	Status      int
+	Scope       common.TokenViewScope
+	TeamUserIds []int
 }
 
 // apply 把过滤条件叠加到查询上
@@ -186,18 +289,34 @@ func (f TokenFilter) apply(query *gorm.DB) *gorm.DB {
 	if f.UserId <= 0 {
 		return query.Where("1 = 0")
 	}
-	query = query.Where("user_id = ?", f.UserId)
+	switch f.Scope {
+	case common.TokenScopePersonal, common.TokenScopeBusiness:
+		userIds := make([]int, 0, len(f.TeamUserIds)+1)
+		userIds = append(userIds, f.UserId)
+		for _, id := range f.TeamUserIds {
+			if id > 0 && id != f.UserId {
+				userIds = append(userIds, id)
+			}
+		}
+		query = query.Where("(user_id IN ? OR project_members LIKE ?)",
+			userIds, projectMemberLikePattern(f.UserId))
+	default:
+		query = query.Where("user_id = ?", f.UserId)
+	}
 	switch f.Scene {
 	case common.TokenSceneBusiness:
 		query = query.Where("scene = ?", string(common.TokenSceneBusiness))
 	case common.TokenSceneOffice:
 		query = query.Where("(scene IS NULL OR scene <> ?)", string(common.TokenSceneBusiness))
 	}
+	// 两个分支互为补集，口径与 UsesSmartRouting 一致：空值和业务 key 都归到锁定模型。
 	switch f.RoutingMode {
 	case common.TokenRoutingModeFixed:
-		query = query.Where("routing_mode = ?", string(common.TokenRoutingModeFixed))
+		query = query.Where("(routing_mode IS NULL OR routing_mode <> ? OR scene = ?)",
+			string(common.TokenRoutingModeSmart), string(common.TokenSceneBusiness))
 	case common.TokenRoutingModeSmart:
-		query = query.Where("(routing_mode IS NULL OR routing_mode <> ?)", string(common.TokenRoutingModeFixed))
+		query = query.Where("routing_mode = ? AND (scene IS NULL OR scene <> ?)",
+			string(common.TokenRoutingModeSmart), string(common.TokenSceneBusiness))
 	}
 	if f.Status != 0 {
 		query = query.Where("status = ?", f.Status)
@@ -402,8 +521,8 @@ func GetTokenByKey(key string, fromDB bool) (token *Token, err error) {
 		return nil, err
 	}
 	if common.RedisEnabled {
-		// 冷缓存时用数据库快照初始化；已存在的哈希只刷新 TTL，
-		// 避免快照覆盖 Redis 中已被原子预扣的余额。初始化失败不影响本次读取。
+		// 用数据库快照初始化或修复元数据，Lua 保留正在使用的额度计数。
+		// 初始化失败不影响本次读取。
 		if _, cacheErr := cacheInitToken(*token); cacheErr != nil {
 			common.SysLog(common.LogText("failed to init token cache: %s", cacheErr.Error()))
 		}
@@ -426,7 +545,8 @@ func (token *Token) Update() (err error) {
 	return DB.Model(token).Select("name", "status", "expired_time", "remain_quota", "unlimited_quota",
 		"model_limits_enabled", "model_limits", "allow_ips", "group", "cross_group_retry", "auto_groups",
 		"allow_user_quota_query", "auto_preference", "scene", "description",
-		"routing_mode").Updates(token).Error
+		"routing_mode", "project_members",
+		"user_id").Updates(token).Error
 }
 
 func (token *Token) SelectUpdate() (err error) {
@@ -625,4 +745,15 @@ func invalidateTokensCache(tokens []Token) error {
 		}
 	}
 	return firstErr
+}
+
+func TokenRoleFor(token *Token, userId int) string {
+	switch {
+	case token.UserId == userId:
+		return common.TokenRoleOwner
+	case token.IsProjectMember(userId):
+		return common.TokenRoleMember
+	default:
+		return common.TokenRoleLeader
+	}
 }

@@ -56,6 +56,10 @@ var streamAggregators = []streamAggregatorEntry{
 		newAggregator: newClaudeStreamAggregator,
 	},
 	{
+		apiTypes:      []int{constant.APITypeGemini, constant.APITypeVertexAi},
+		newAggregator: newGeminiStreamAggregator,
+	},
+	{
 		newAggregator: newOpenAIChatStreamAggregator,
 	},
 }

@@ -18,7 +18,7 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { useQuery } from '@tanstack/react-query'
 import { Info } from 'lucide-react'
-import { useMemo, useState } from 'react'
+import { useMemo, useState, type ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import {
@@ -128,6 +128,44 @@ export function LastCalledCell(props: { timestamp: number }) {
   )
 }
 
+/** "value / failures"; failures include interrupted streams. */
+export function OutcomeCountsCell(props: {
+  value: ReactNode
+  valueClassName?: string
+  succeeded: number
+  interrupted: number
+  failed: number
+}) {
+  const { t, i18n } = useTranslation()
+  const locale = toIntlLocale(i18n.resolvedLanguage || i18n.language)
+  const failures = props.interrupted + props.failed
+
+  return (
+    <TruncatedCell
+      tooltipContent={t(
+        '{{success}} succeeded · {{interrupted}} interrupted · {{failed}} failed',
+        {
+          success: formatNumber(props.succeeded, locale),
+          interrupted: formatNumber(props.interrupted, locale),
+          failed: formatNumber(props.failed, locale),
+        }
+      )}
+    >
+      <span className='inline-flex items-baseline gap-1 font-mono whitespace-nowrap tabular-nums'>
+        <span className={props.valueClassName}>{props.value}</span>
+        <span className='text-muted-foreground'>/</span>
+        <span
+          className={
+            failures > 0 ? 'text-destructive' : 'text-muted-foreground'
+          }
+        >
+          {formatCompactNumber(failures, locale)}
+        </span>
+      </span>
+    </TruncatedCell>
+  )
+}
+
 export function SuccessRateCell(props: {
   metrics: Pick<
     UsageMetrics,
@@ -135,20 +173,15 @@ export function SuccessRateCell(props: {
   >
 }) {
   const rate = successRate(props.metrics)
-  const failed = props.metrics.failed_count
 
   return (
-    <span className='inline-flex items-baseline gap-1 font-mono whitespace-nowrap tabular-nums'>
-      <span className={getSuccessRateTextClass(rate ?? Number.NaN)}>
-        {formatPercent(rate)}
-      </span>
-      <span className='text-muted-foreground'>/</span>
-      <span
-        className={failed > 0 ? 'text-destructive' : 'text-muted-foreground'}
-      >
-        {formatCompactNumber(failed)}
-      </span>
-    </span>
+    <OutcomeCountsCell
+      value={formatPercent(rate)}
+      valueClassName={getSuccessRateTextClass(rate ?? Number.NaN)}
+      succeeded={props.metrics.tracked_count - props.metrics.stream_error_count}
+      interrupted={props.metrics.stream_error_count}
+      failed={props.metrics.failed_count}
+    />
   )
 }
 

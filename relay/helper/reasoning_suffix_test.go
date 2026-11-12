@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/pkg/autorouter"
@@ -17,7 +18,6 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/tidwall/gjson"
 )
 
 func mustApplyReasoningModelSuffix(t *testing.T, info *relaycommon.RelayInfo, outbound ...dto.Request) {
@@ -592,7 +592,7 @@ func TestApplyReasoningModelSuffixThinkingMinusOnePassthrough(t *testing.T) {
 	require.NotNil(t, info.ReasoningConversion.BudgetTokens)
 	assert.Equal(t, -1, *info.ReasoningConversion.BudgetTokens)
 	require.NotEmpty(t, request.Reasoning)
-	assert.Equal(t, float64(-1), gjson.GetBytes(request.Reasoning, "max_tokens").Num)
+	assert.Equal(t, float64(-1), ojson.GetBytes(request.Reasoning, "max_tokens").Num)
 }
 
 func TestApplyReasoningModelSuffixPreservesGpt51CodexMax(t *testing.T) {

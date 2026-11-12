@@ -7,11 +7,13 @@ import (
 	"math/rand/v2"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"gorm.io/gorm"
 )
 
@@ -21,6 +23,22 @@ type SsoUserInfo struct {
 	Name                  string `json:"name"`
 	Avatar                string `json:"avatar"`
 	DepartmentTreePathStr string `json:"department_tree_path_str"`
+	// StraightLineManagerUid 是直属上级的 SSO uid，0 表示顶层或该接口未返回此字段。
+	// 类型与 ssoUserListItem 和 User.StraightLineManagerUid 保持一致。
+	StraightLineManagerUid int64 `json:"straight_line_manager_uid"`
+}
+
+func SyncLoginUserLeader(userId int, managerUid int64) {
+	if userId <= 0 {
+		return
+	}
+	if managerUid <= 0 {
+		common.SysLog(common.LogText("SSO login: no straight-line manager for user %d, leader edge left to full sync", userId))
+		return
+	}
+	if err := model.SyncUserLeader(userId, strconv.FormatInt(managerUid, 10)); err != nil {
+		common.SysError(common.LogText("SSO login: failed to sync leader edge for user %d: %s", userId, err.Error()))
+	}
 }
 
 func parseOrgInfo(departmentTreePathStr string) (secondary, tertiary, team string) {
@@ -97,11 +115,12 @@ func VerifySsoToken(token string) (*SsoUserInfo, error) {
 // Like the org fields, the reporting-line and org-id values only overwrite an
 // existing user when they are non-empty and changed, so callers without them
 // (the login path) pass zero values to leave the stored columns untouched.
+// isCharge must be able to drop to 0: the sync passes it, the login path passes nil.
 func ProvisionSsoUser(
 	hoidcId, email, name, avatar, departmentTreePathStr string,
 	straightLineManagerEmail, straightLineManagerName string,
 	straightLineManagerUid, mentorUid, dottedLineManagerUid, organizationOid, departmentOid int64,
-	isCharge int,
+	isCharge *int,
 	allowSignup bool,
 ) (*model.User, error) {
 	email = strings.TrimSpace(strings.ToLower(email))
@@ -170,8 +189,8 @@ func ProvisionSsoUser(
 		if departmentOid != 0 && departmentOid != user.DepartmentOid {
 			updates["department_oid"] = departmentOid
 		}
-		if isCharge != 0 && isCharge != user.IsCharge {
-			updates["is_charge"] = isCharge
+		if isCharge != nil && *isCharge != user.IsCharge {
+			updates["is_charge"] = *isCharge
 		}
 		if len(updates) > 0 {
 			model.DB.Model(&user).Updates(updates)
@@ -209,10 +228,18 @@ func ProvisionSsoUser(
 		DottedLineManagerUid:     dottedLineManagerUid,
 		OrganizationOid:          organizationOid,
 		DepartmentOid:            departmentOid,
-		IsCharge:                 isCharge,
+		QuotaTierAutoAssign:      true,
 	}
-	if err := newUser.Insert(0); err != nil {
+	if isCharge != nil {
+		newUser.IsCharge = *isCharge
+	}
+	if err := newUser.InsertSso(0); err != nil {
 		return nil, fmt.Errorf("failed to create SSO user: %w", err)
+	}
+	if operation_setting.IsQuotaTierEnabled() {
+		if _, err := model.EnsureUserQuotaTier(newUser.Id); err != nil {
+			common.SysError(common.LogText("failed to assign the quota tier of new SSO user %d: %s", newUser.Id, err.Error()))
+		}
 	}
 	return newUser, nil
 }

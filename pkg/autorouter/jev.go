@@ -73,6 +73,20 @@ func TaskTypes() []string {
 	return types
 }
 
+// RankingProfiles 列出榜单里的全部画像，按名字排序：每个二级类和它的一级类各有一份列表，
+// 一级类 general 没有自己的列表，它就是 DefaultModels 用的 DefaultProfile。
+// 手工编辑榜单时必须正好覆盖这些画像。
+func RankingProfiles() []string {
+	profiles := TaskTypes()
+	for _, taskType := range TaskTypes() {
+		if class := TaskClass(taskType); !slices.Contains(profiles, class) {
+			profiles = append(profiles, class)
+		}
+	}
+	slices.Sort(profiles)
+	return profiles
+}
+
 type jevQuestion struct {
 	Type         string `json:"type"`
 	Instructions string `json:"instructions"`

@@ -150,14 +150,29 @@ jev 返回各二级类的概率，并选出概率最高的一个，记为 `leaf`
 
 | 条件 | 画像 |
 | --- | --- |
-| `leaf` 不是 `unknown` | `leaf` |
+| `leaf` 是二级类 | `leaf` |
 | `leaf` 是 `unknown` | 沿用上一次路由；没有上一次时用 `default_models` |
+| 没有合法判断 | 同 `unknown` |
 
 确定画像后按 `task_models[leaf] → task_models[parent] → default_models` 依次取模型。`general` 没有一级列表，这一步即 `default_models`。每一级 `task_models` 列表先按第 7.3 节比较质量和价格；列表里没有带榜单分且可比价的可用模型时，取该列表第一个可用的模型；仍然没有才进入下一级。`default_models` 用 `general` 画像的榜单分，同样按第 7.3 节比较；比不出结果时取列表里第一个可用的模型。
 
-可信的判断要求 `leaf` 不是 `unknown`、难度大于 0，来源可以是现调 jev、判断缓存命中、延续上一任务，或可信的会话继承。可信的判断自己定思考强度，按模型的渠道声明收敛后写进请求体，覆盖客户端写的推理字段。模型没有推理声明时不动客户端的字段。不可信的兜底（辅助请求、jev 失败、`leaf` 是 `unknown`）沿用上一次路由或 `default_models`，不碰客户端的推理字段。
+jev 的回答分三种：
 
-思考强度、`larger_model_benefit` 提档、同任务延续（`task_change < continuation_task_change` 时沿用上一次的模型、思考强度不降）的规则不变。`ResolveVariant` 解析思考强度变体的规则不变，只补了一处：档位不在档位表里时也探测 `-medium` 后缀。“可用”的含义见第 7.3 节。
+- **合法判断**：答出了难度（大于 0），任务类型是给定的 12 个二级类或 `unknown` 之一。现调 jev 和判断缓存命中都一样。`unknown` 是合法的答案，意思是这条消息离开前文说不出要做什么。
+- **不合法判断**：jev 答了，但没有难度，或者任务类型不在给定的选项里。
+- **没有判断**：jev 调用失败、超时，或 60 秒内刚失败过、不再重试。辅助请求和读不出指令的请求不调 jev，也没有判断。
+
+`leaf` 是二级类时，按上表的顺序选模型，思考强度由这次判断定下，按模型的渠道声明收敛后写进请求体，覆盖客户端写的推理字段；模型没有推理声明时不动客户端的字段。`leaf` 是 `unknown` 时没有榜单可用，沿用上一次路由，没有上一次时用 `default_models` 和 `default_effort`，不碰客户端的推理字段；不合法判断和没有判断时也这样做，原因记进选路日志。没有可读文字的子 agent 沿用所在会话最近一条人类指令的路由；那条路由的档位由判断定下时，子 agent 同样覆盖推理字段。
+
+`leaf` 是 `unknown`，但 `larger_model_benefit` 达到 `upgrade_benefit` 时，模型照上面的办法定：上一次的模型仍可用就沿用，没有才比较 `default_models`；思考强度则由这次判断按下面的规则定，和 `leaf` 是二级类时一样写进请求体、覆盖客户端的推理字段。这类消息多是对上一轮结果不满、要求重做（“还是不行”“不对，重来”），任务类型说不出来，但需要更强的推理。判断模型时撇开客户端的推理字段，`source` 记 `jev` 或 `cache`。
+
+思考强度按顺序定：
+
+1. 按难度从 `difficulty_efforts` 取档位，难度超出档位表的用最后一档。
+2. 沿用上一次的模型时（同任务延续，即 `task_change < continuation_task_change`；或上面的 `unknown` 情形），上一次的档位更高就取上一次的。
+3. `larger_model_benefit` ≥ `upgrade_benefit` 时提升一档，到 `max` 为止：沿用上一次的模型时比上一次的档位高一档，第 2 步的档位已经到了就不再加；没有沿用时比第 1 步的档位高一档。
+
+提升按上一次算：本轮难度给的档位已经比上一次高，就算已经提升过了，不再多加一档。用户连续几轮都不满意时，每一轮都比上一轮高一档。`ResolveVariant` 解析思考强度变体时，档位不在档位表里也探测 `-medium` 后缀。“可用”的含义见第 7.3 节。
 
 路由日志与 trace 记录 `task_type`（jev 选中的二级类）、`route_profile`（实际使用的画像）和 `route_fallback`（`leaf` / `class` / `default`），用于复核分类和兜底的发生频率。消费日志的 `admin_info.auto_router` 带完整的决策过程，包括第 7.3 节的比较明细，成功和失败的请求都写，样例见第 7.4 节。一次请求是怎么一步步走到最后那个模型的，另存在选路日志里，见第 7.5 节。
 
@@ -190,12 +205,12 @@ jev 返回各二级类的概率，并选出概率最高的一个，记为 `leaf`
 
 不直接对三档的 w 求平均，是因为默认的 0 / 0.07 / 0.3 间距不均：直接平均时三项各占三分之一得 0.123，一半能力一半成本得 0.15，拿不准的判断会偏向成本。这样折算后，判断完全确定时就是该档的 w，对称的不确定落在均衡档，概率从能力移向成本时 w 不会变小。三档的 w 在间距均匀时两种算法的结果相同；代价是只看期望位置，“一半能力一半成本”和“全是均衡”得到同一个 w。折线假定三档的 w 按能力、均衡、成本递增，界面和接口目前不强制这一点。
 
-没有可用的 `mode` 答案（没有判断、答案缺失、概率含负数或 NaN、总和不为正）时用均衡档的 w，选路日志里 `mode.reason` 是 `no_answer`。`mode` 与任务类型是否可信无关：任务类型是 `unknown`、改走默认模型时，成本倾向照样用。沿用上一轮模型的请求不做比较，w 只记录不使用。w 每次请求用缓存里的概率和当前的 `cost_weights` 重新算，平台改了三档的 w，已缓存的判断立刻按新值读。
+没有可用的 `mode` 答案（没有判断、答案缺失、概率含负数或 NaN、总和不为正）时用均衡档的 w，选路日志里 `mode.reason` 是 `no_answer`。`mode` 与任务类型无关：任务类型是 `unknown`、改走默认模型时，成本倾向照样用。沿用上一轮模型的请求不做比较，w 只记录不使用。w 每次请求用缓存里的概率和当前的 `cost_weights` 重新算，平台改了三档的 w，已缓存的判断立刻按新值读。
 
 **候选**：列表里同时满足下面三条的模型。
 
 - 在该画像下有榜单分（`task_scores`）。
-- 当前可用：令牌白名单允许、所在分组启用，并且至少有一个渠道可用（已启用、支持当前请求路径、没被熔断，渠道的生效能力满足请求）。判断时撇开客户端自己写的推理档位，因为可信的判断会自己定档位。
+- 当前可用：令牌白名单允许、所在分组启用，并且至少有一个渠道可用（已启用、支持当前请求路径、没被熔断，渠道的生效能力满足请求）。判断时撇开客户端自己写的推理档位，因为按榜单选模型时档位由判断定下。
 - 有可比较的价格：按 token 计价，且用户侧价格已配置。
 
 没配置价格的模型计费时会直接失败，任何路径都不选。按次计价的模型可以被选中，但没法和按 token 计价的模型比价，所以不进入比较，只会在比较选不出结果时按列表顺序出现。
@@ -217,7 +232,7 @@ w 既是候选带的宽度，也是折扣的上限，所以选中的模型比参
 
 **会落到哪个渠道**：
 
-- Scheduler 决定渠道（强制模式，或金丝雀命中）时，问 Scheduler 的只读预览 `POST /v1/preview`：一次问候选带里所有模型，各自现在会被调度到哪个渠道。预览与正式调度共用同一段排序，同一份评分、额度和用量下选的是同一个渠道；预览不写决策审计、不计调度指标。预览不可用、超时（整次 `SchedulerShadowTimeoutMS`，默认 100ms）、Scheduler 版本太旧（404，一分钟内不再问），或某个模型还没被 Scheduler 加载过时，这个模型按下面的原生规则估算。
+- Scheduler 决定渠道（强制模式，或金丝雀命中）时，问 Scheduler 的只读预览 `POST /v1/preview`：一次问候选带里所有模型，各自现在会被调度到哪个渠道。预览与正式调度共用同一段排序，同一份评分、额度和用量下选的是同一个渠道；预览不写决策审计、不计调度指标。一次最多问 64 个模型，多出的按原生规则估算。Scheduler 地址按顺序问，回 404 的地址（版本太旧，或前面的网关只放行 `/v1/schedule`）一分钟内跳过、接着问下一个。预览不可用、超时（整次 `SchedulerShadowTimeoutMS`，默认 100ms）、所有地址都回 404，或某个模型还没被 Scheduler 加载过时，这个模型按下面的原生规则估算；真正问过却没拿到回答时记一条 WARN 日志，原因同时写进选路日志（见 7.5 节的 `pick.preview`）。
 - 其余情况按原生选渠道的规则：会话亲和绑定了渠道就是那个渠道；否则按分组顺序取第一个过滤后还有渠道的分组，在最高优先级那一档里按权重算各渠道的命中概率，倍率取期望。
 - 渠道范围与选定模型后一致：令牌分组里可用的渠道，能力门控 enforce 下再按同一口径收窄。计费分组取首次会命中的分组（令牌分组是 `auto` 时，是第一个在这个渠道上服务该模型的分组），用户价按这个分组的倍率算。
 
@@ -237,7 +252,7 @@ w 既是候选带的宽度，也是折扣的上限，所以选中的模型比参
 
 **例 1：同一个请求，三档偏好选出三个模型**
 
-jev 判成 `code.build`，概率 0.82，叶子可信，所有模型都可用。榜单第一名是 `claude-fable-5-1`（0.9865 分，20 美元）。
+jev 判成 `code.build`，概率 0.82，所有模型都可用。榜单第一名是 `claude-fable-5-1`（0.9865 分，20 美元）。
 
 - 能力优先（w=0）：候选带只剩并列最高分的模型，选 `claude-fable-5-1`。
 - 均衡（w=0.07）：候选带的下限是 0.9865 − 0.07 = 0.9165。`claude-sonnet-5-5`（0.9052）和 `gemini-4-argon`（0.9012）低于下限，不参与。带内 4 个模型：
@@ -315,7 +330,7 @@ jev 判成 `general.design`，均衡档。参照分是 `claude-opus-5-5` 的 1.0
 | --- | --- | --- |
 | `code.build` 0.82、`code.ops` 0.10、`general.chat` 0.08 | `code.build` | 按概率最高的叶子的榜单比较 |
 | `general.chat` 0.40、`code.build` 0.35、`code.ops` 0.25 | `general.chat` | 概率最高的叶子是 `general.chat`，按它的榜单比较 |
-| `unknown` 0.40、`code.build` 0.30、`code.ops` 0.30 | 沿用上一次，没有则默认 | 概率最高的是 `unknown`，判断不可信，不碰客户端的推理档位 |
+| `unknown` 0.40、`code.build` 0.30、`code.ops` 0.30 | 沿用上一次，没有则默认 | 概率最高的是 `unknown`，没有榜单可用；`larger_model_benefit` 不到 `upgrade_benefit` 时不碰客户端的推理档位 |
 
 **例 7：某一级没有可用模型**
 
@@ -401,7 +416,8 @@ w 从 0.07 调到 0.075，下限降低，`mimo-v2.6-pro`（0.9288 分，0.54 美
 - `preference` 是这次请求用的偏好：令牌自己设的，没设则是平台的 `default_preference`。
 - `pick` 只在做过质量/价格比较时出现。`weight` 是这次用的 w，`band` 是候选带，`discount` 是价格折扣，`utility` 是折后分，`chosen` 是选中的。沿用上一轮模型和按列表顺序取第一个时没有 `pick`。线上日志里的数值是完整精度，不是示例里的四位小数。
 - 估算过渠道时，`band` 的每一项还有 `cost_multiplier`（首次会落到的渠道的费用倍率）、`cost`（比较成本 = `price` × 倍率，`discount` 按它算）、`cost_source`（`scheduler` 调度器预览、`affinity` 会话亲和、`expected` 按命中概率的期望）、`channel_id`（确定会落到的渠道）和 `channels`（参与期望的渠道个数）。`price` 仍是用户侧价格。`channel_id` 来自预览时，和使用日志里实际落到的渠道对照，就能看出预览和正式调度有没有选得不一样。
-- `effort` 是难度给出的期望档位，`applied_effort` 是按模型的渠道声明收敛后真正写进请求体的档位，`effort_action` 是 `set`（写入）、`keep`（不碰客户端字段）或 `strip`（模型不支持推理，去掉客户端字段）。`effort_override` 为 true 表示这是可信的判断，覆盖了客户端的推理字段。`effort_in_body` 为 true 表示档位写进请求体、模型名保持裸名；为 false 时档位拼在模型名后缀上（如 `gpt-5-high`）。
+- 配了 Scheduler 时，`pick.preview` 记这次比价问预览的结果：`status` 为 `answered` 表示 Scheduler 回答了；其余是没拿到回答的原因，`not_scheduler_decided`（这次不由 Scheduler 定渠道：影子模式、金丝雀没命中或紧急停用）、`not_configured`、`circuit_open`、`unsupported`（地址都回 404）、`timeout`、`failed`（带 `http_status`，连不上时没有）、`bad_response`。回答了、某个模型却没用上它的答案时，`band` 里那一项的 `preview` 写原因：`not_cached`（还没加载）、`error`、`unusable_channel`（给的渠道在 new-api 这边没法报价）、`over_limit`（超过 64 个）。选路过程里，整次的原因写在候选表上方，单个模型的原因写在它的“费用倍率”下面。
+- `effort` 是第 7.2 节定出的期望档位，`applied_effort` 是按模型的渠道声明收敛后真正写进请求体的档位，`effort_action` 是 `set`（写入）、`keep`（不碰客户端字段）或 `strip`（模型不支持推理，去掉客户端字段）。`effort_override` 为 true 表示档位由这次判断定下（`leaf` 是二级类，或 `unknown` 但收益达到提档阈值），覆盖了客户端的推理字段。`effort_in_body` 为 true 表示档位写进请求体、模型名保持裸名；为 false 时档位拼在模型名后缀上（如 `gpt-5-high`）。
 
 ### 7.5 选路日志
 
@@ -411,10 +427,10 @@ w 从 0.07 调到 0.075，下限降低，`mimo-v2.6-pro`（0.9288 分，0.54 美
 
 - 请求长什么样：协议、人类轮数、指令和上一句的字数、有没有被截断。只记长度，不记内容。
 - 判断从哪来：现调了 jev、命中判断缓存、jev 刚失败过（60 秒内不重试）、jev 调用失败、会话继承、后台辅助请求、没有可分类的指令，或者根本没有模型能服务。
-- 判断可不可信，不可信的原因（jev 没答、答案没有难度、任务类型是 `unknown`）。
+- 判断合不合法：合法时按哪些榜单选（`unknown` 没有榜单）；不合法或没有判断时的原因（jev 没答、答案没有难度、任务类型不在给定选项里）。
 - 有上一轮路由时，是否延续，以及任务变化值对阈值。
 - 自适应偏好的请求：三个偏好各占的概率、期望位置、本次用的 w 和当时平台设的三档 w；没有可用判断时写明回退到均衡档。抽屉里只在这次真的做了质量/价格比较时才显示这一步，沿用上一轮模型或按榜单顺序取第一个的请求没用到 w。
-- 难度怎么变成档位：难度对应的档位、是否因大模型收益提了一档、是否被上一轮的档位抬高。
+- 难度怎么变成档位：难度对应的档位、是否被上一轮的档位抬高、是否因大模型收益再提了一档。
 - 各榜单依次试了什么，每一级的结果（质量/价格比较选出、按列表顺序取第一个、没有可用的、沿用上一轮），以及榜单里分数够高却没被选中的模型各自的原因：令牌的模型白名单不允许、分组里没启用、没有启用的渠道、没有配价格、渠道能力不满足请求、按次计费没法比价、被客户端自己的推理设置排除、Scheduler 此刻没有能接它的渠道（强制模式下预览给出的）。每个榜单最多记 8 个，其余只计数。
 - 没有任何模型能服务时，按原因汇总所有榜单里的模型个数，并各列几个例子。
 
@@ -439,21 +455,21 @@ w 从 0.07 调到 0.075，下限降低，`mimo-v2.6-pro`（0.9288 分，0.54 美
 沿用系统任务 `autorouter_rank`：master 节点在数据库租约下按 `rank_refresh_interval_hours`（默认 24，最小 1）执行，依次写入 `task_models`、`task_scores`、`default_models`、`rank_sources`，其他节点经配置同步生效，不需要重启。任一来源失败或任一画像没有模型时不写配置，线上保留上一份榜单。
 
 - **启用条件**：`autorouter_setting.enabled` 与 `rank_refresh_enabled` 为 true，且有 Artificial Analysis 的 key，以及 Design Arena 或 OpenRouter 的 key 之一。key 优先取系统设置（Auto 路由 → 基础）里存的值，没存时回退到同名环境变量，见下表。OpenRouter 模型列表是公开接口，不需要 key。
-- **管理**：系统设置（Auto 路由 → 榜单）可以看当前生效的榜单、立即刷新、恢复内置榜单；jev 的地址、模型、密钥和三个榜单来源的 key 也在界面里配。`*_api_key` 类选项只写不读，选项接口不会返回它们的值，状态接口只说明每个值来自选项、环境变量还是没设。
+- **管理**：系统设置（Auto 路由 → 榜单）可以看当前生效的榜单、手工编辑（第 8.1 节）、立即刷新、恢复内置榜单；jev 的地址、模型、密钥和三个榜单来源的 key 也在界面里配。`*_api_key` 类选项只写不读，选项接口不会返回它们的值，状态接口只说明每个值来自选项、环境变量还是没设。
 - **网络**：网关需能访问 `openrouter.ai`、`livebench.ai`、`hf-mirror.com`、`artificialanalysis.ai`、`www.designarena.ai`。不再逐模型查询端点延迟，一次刷新通常在一分钟内完成。
 - **数据新鲜度**：按 OpenRouter 目录的上架时间（`created`）取每个来源评过分的最新 10 个候选（`-stale-probe`），某项指标在这 10 个里都没有数据时视为停更，本轮不参与打分，记入 `rank_sources.stale_metrics` 和刷新记录。来源评过分的候选不足 10 个时不做判断；视觉指标只看支持图像输入的候选。
 - **分类版本**：`rank_sources` 记录 `taxonomy_version`。启动或配置同步时若已存的版本与代码中的分类不一致，运行时改用内置 `task_models.json`，并立即触发一次刷新，不等周期。`task_scores` 与 `task_models` 按同一个版本判定，一起退回内置的，避免旧分类下的分数配上新分类的列表。
 
 | 配置项 | 默认值 | 说明 |
 | --- | --- | --- |
-| `autorouter_setting.rank_refresh_enabled` | `true` | 是否定时刷新 |
+| `autorouter_setting.rank_refresh_enabled` | `true` | 是否定时刷新；保存手工编辑的榜单时自动设为 `false` |
 | `autorouter_setting.rank_refresh_interval_hours` | `24` | 刷新周期，单位小时 |
 | `autorouter_setting.task_models` | 内置榜单 | 画像名 → 模型列表 |
 | `autorouter_setting.task_scores` | 内置榜单 | 画像名 → 模型 → 榜单分，第 7.3 节比较用；与 `task_models` 一起生成、一起刷新 |
 | `autorouter_setting.default_models` | 内置榜单 | 默认模型列表 |
 | `autorouter_setting.default_preference` | `balanced` | 令牌没设 auto 偏好时用的偏好：`capability`、`balanced`、`cost`、`adaptive`；不认识的值按 `balanced` |
 | `autorouter_setting.cost_weights` | `{"capability":0,"balanced":0.07,"cost":0.3}` | 第 7.3 节三个固定偏好的 w：为了价格最多让出的榜单分；JSON 里没写的偏好用内置值，负数和 NaN 按 0，大于 1 按 1；只接受这三个键，`adaptive` 没有自己的 w，写进来会被拒绝，自适应请求从这三个 w 里折算 |
-| `autorouter_setting.rank_sources` | 内置榜单 | 各来源快照日期、生成时间、`taxonomy_version` |
+| `autorouter_setting.rank_sources` | 内置榜单 | 各来源快照日期、生成时间、`taxonomy_version`；手工编辑保存后多一项 `edited_at`，刷新和恢复内置会连同改动一起换掉 |
 | `autorouter_setting.jev_endpoint`、`jev_model`、`jev_api_key` | 空 | jev 的地址、模型和密钥；为空时分别回退到环境变量 `JEV_ENDPOINT`、`JEV_MODEL`、`JEV_API_KEY`。写入前服务端校验：地址必须是 http/https，密钥和模型不能含空白或换行 |
 | `autorouter_setting.artificial_analysis_api_key`、`design_arena_api_key`、`openrouter_api_key` | 空 | 三个榜单来源的 key；为空时回退到下面同名的环境变量 |
 | `autorouter_setting.route_log_mode` | `decisions` | 第 7.5 节：选路日志记哪些请求，`off`、`decisions`、`all` |
@@ -463,6 +479,16 @@ w 从 0.07 调到 0.075，下限降低，`mimo-v2.6-pro`（0.9288 分，0.54 美
 | 环境变量 `OPENROUTER_API_KEY` | 无 | 未设置 `DESIGN_ARENA_API_KEY` 时读取 OpenRouter 转发的 Design Arena 数据 |
 
 `modelrank` 命令行同步调整：新增 `-aa-key-env`（默认 `ARTIFICIAL_ANALYSIS_API_KEY`）、`-da-key-env`（默认 `DESIGN_ARENA_API_KEY`）、`-openrouter-key-env`（默认 `OPENROUTER_API_KEY`）、`-artificial-analysis`、`-design-arena`（接口地址），去掉 `-api-key-env`；去掉 `-usage-bonus`、`-latency-tolerance`。输出文件的 `weights` 改为 `profiles`（画像名 → 指标列表），`evidence` 记录每个模型在各画像下的分数、有数据的指标数和各指标归一化值。
+
+### 8.1 手工编辑
+
+管理员可以在系统设置（Auto 路由 → 榜单 → 显示榜单 → 编辑榜单）里直接改榜单：改分、把模型从某个画像里移除、调整没有分数的模型的顺序，以及把一个模型（包括只有网关上才有的私有模型）一次加进多个画像。保存时 `PUT /api/autorouter/ranking` 把整份榜单写回 `task_models`、`task_scores`、`default_models`、`rank_sources` 四项，同一个事务里把 `rank_refresh_enabled` 设为 `false`，免得下一次定时刷新把改动整个覆盖。之后点“立即刷新”或“恢复内置榜单”仍会替换手工改动，界面在这两步之前都会确认；恢复内置不会重新打开定时刷新。
+
+- **校验**：画像必须正好是 12 个二级类加 `code`、`data`、`general`。`general` 的列表写进 `default_models` 和 `task_scores.general`，不写进 `task_models`（写进去会多出一份与 `default_models` 重复的一级列表）。`general` 不能清空，它是最后一层兜底；其它画像可以清空，清空后退到一级类的列表或 `default_models`。模型名去掉首尾空白，同一画像里不能重复，不能是 `auto`，不能含换行或控制字符；分数为空（只当兜底）或 0 到 1。库里存的是旧分类下的榜单时，编辑页看到和改的是运行时在用的内置那份，保存后直接生效。
+- **冲突与刷新**：保存要带进入编辑时看到的 `rank_sources.generated_at` 和 `edited_at`，与当前榜单对不上（期间被刷新、恢复内置或别人保存过）就拒绝，要重新加载再改；刷新任务进行中、或内容与当前榜单完全一样时也拒绝。审计动作 `autorouter.rank_edit` 记下改了哪些画像，以及新增、移除、改分的模型数。
+- **分数和顺序**：有分数的模型按第 7.3 节比较质量和价格，列表顺序只在比不出结果时才起作用（第 7.2 节）。所以编辑页里有分数的模型自动按分数从高到低排（同分保持原顺序），没有分数的只当兜底、排在后面，顺序由管理员定。改过 `general` 之后，它的兜底顺序从“帕累托前沿按价格升序”（第 7.1 节）变成按分数排；没改过的画像原样写回。
+- **私有模型**：要让 auto 选到一个榜单外的模型，它必须进列表并且有分数，只进列表不给分只能当兜底。分数按画像归一，尺度差很多（按 2026-10-28 的内置榜单，0.90 在 `code.frontend` 排第 2/114，在 `data.business` 排第 24/146），所以添加对话框让管理员选一个榜单里的参照模型，按“参照分 + 偏移”填各画像的分数，并显示会排第几、比网关上能用的最高分低多少、能进哪几档偏好的比较。这个估算只看渠道启用与否，不看价格、令牌白名单和分组。**私有模型要先在网关定价**：没定价时自用模式按默认倍率报价（约 $75/M），手工给的分再高，均衡档和成本优先也可能因为价格选更便宜的模型。
+- **网关有没有**：`GET /api/autorouter/ranking` 的每个模型带 `served`：网关上有启用的渠道服务它（裸名或任一档位后缀名），判定与选路的 `ModelAvailable` 相同。编辑页用它标记模型，并可以只看网关有的模型。
 
 ## 9. 代码改动
 
@@ -484,18 +510,22 @@ w 从 0.07 调到 0.075，下限降低，`mimo-v2.6-pro`（0.9288 分，0.54 美
 | `controller/system_task_handlers.go` | 刷新任务的启用条件改为检查 `ARTIFICIAL_ANALYSIS_API_KEY`，以及 `DESIGN_ARENA_API_KEY` 或 `OPENROUTER_API_KEY`；刷新时同时写 `task_scores` |
 | `middleware/distributor.go`、`relay/helper/price.go` | 候选按“模型 + 渠道”判定可用；`RoutingPricer` 按用户侧价格给候选报价，只读价格配置，不写 `PriceData`、不碰额度 |
 | `service/autorouter.go`、`service/log_info_generate.go` | 调用 jev 前先检查有没有可用模型；比较过程写进 `admin_info.auto_router` |
-| `pkg/autorouter/trace.go`、`policy.go`、`select.go` | 第 7.5 节：`SelectRoute` 多收一个可为 nil 的 `trace` 参数，记判断是否可信、是否延续、难度怎么变成档位、各榜单试了什么，以及比较里被跳过的模型和原因（只进 trace，`Pick` 里的这部分字段不导出，消费日志的摘要不变大）；`Policy.ExplainUnroutable` 按原因汇总 |
+| `pkg/autorouter/trace.go`、`policy.go`、`select.go` | 第 7.5 节：`SelectRoute` 多收一个可为 nil 的 `trace` 参数，记判断是否合法、按哪些榜单、是否延续、难度怎么变成档位、各榜单试了什么，以及比较里被跳过的模型和原因（只进 trace，`Pick` 里的这部分字段不导出，消费日志的摘要不变大）；`Policy.ExplainUnroutable` 按原因汇总 |
 | `model/auto_route_log.go`、`service/auto_route_log.go`、`service/event_writer.go` | 选路日志表、按 `route_log_mode` 决定记不记、异步批量写入（与能力门控事件共用泛型 writer）、详情超过 32KB 时精简、过期清理（`purgeBefore`，也供能力门控用） |
 | `controller/auto_route_log.go`、`controller/autorouter.go`、`controller/system_task_handlers.go`、`router/api-router.go` | 选路日志的列表和按请求 id 取单条；auto 管理接口（状态、有效榜单、立即刷新、恢复内置）；清理任务 `auto_route_log_cleanup`；访问令牌路由表登记上述接口 |
 | `setting/autorouter_setting/` | 另外：jev 连接和三个榜单来源 key 改走选项（为空回退环境变量）；`route_log_mode`、`route_log_retention_days`；所有 `autorouter_setting.*` 写入前由服务端校验，避免存进去却因为解析失败永远不生效 |
 | `web/src/features/system-settings/autorouter/` | 系统设置里的“Auto 路由”分类：基础、偏好与成本、判断与推理强度、榜单、选路日志五节；选路日志含记录设置、日志列表和选路过程抽屉（`route-log/`） |
+| `pkg/autorouter/policy.go`、`trace.go` | 第 7.2 节的思考强度顺序：沿用上一轮模型时按上一轮的档位提升，难度给的档位已经到了就不再加；`unknown` 且收益达到 `upgrade_benefit` 时照 `unknown` 的办法定模型、由判断定档位（`inherited` 为 false，覆盖客户端推理字段） |
 | `web/src/features/usage-logs/` | 使用日志里标出 auto 请求并能按它筛选（`auto_routed` 列，老数据的空值按“不是 auto”算）；详情里的“Auto 路由”小节和“查看选路过程” |
 | `model/channel_cache.go`、`model/ability.go` | `FirstAttemptChannelShares`：首次尝试落到各渠道的概率，与实际抽签共用 `retryTierLocked` / `databaseRetryTier` |
 | `service/channel_affinity.go`、`service/capability_gate.go`、`service/autorouter.go` | 只读的 `PeekPreferredChannelByAffinity`、`KeptChannels`；`AutoServingModel` 是最终解析和比价共用的服务名规则；Scheduler 的 workload 改在选路之前写 |
-| `service/scheduler_preview.go` | 调 Scheduler 的 `/v1/preview`：整次一个截止时间，只读熔断状态、失败不计入熔断，404 后一分钟内不再问 |
+| `service/scheduler_preview.go` | 调 Scheduler 的 `/v1/preview`：整次一个截止时间，只读熔断状态、失败不计入熔断；回 404 的地址一分钟内跳过、接着问下一个；一次最多问 64 个（不能比 Scheduler 的上限大，调大时先升级 Scheduler）；结果带状态写进选路留痕，问过没拿到回答时记 WARN |
 | `pkg/autorouter/select.go`、`policy.go`、`trace.go` | `Candidates.Costs`：带定下来之后一次取齐比较成本，折扣与同分取舍都按比较成本；`Excluded` 的模型离开带；跳过原因 `scheduler_no_candidate`；`band` 多出成本相关字段 |
 | `middleware/auto_route_cost.go`、`middleware/distributor.go` | 实现 `Costs`：调度器预览或原生规则定渠道、按首次命中的分组报价、乘渠道费用倍率；预览说没有渠道的模型记进这次请求的拒绝原因 |
-| `web/src/features/system-settings/autorouter/route-log/` | 候选表在估算过渠道时多“费用倍率”“比较成本”两列，跳过原因多一项 |
+| `web/src/features/system-settings/autorouter/route-log/` | 候选表在估算过渠道时多“费用倍率”“比较成本”两列，跳过原因多一项；没用上调度器预览时在表上方说明原因，单个模型没用上时写在它的倍率下面 |
+| `pkg/autorouter/jev.go`、`setting/autorouter_setting/ranking_edit.go`、`config.go` | 第 8.1 节：`RankingProfiles()` 列出全部画像；`EditedRanking` 校验整份手工榜单、与当前榜单比出改动，返回要写的四项榜单和关掉的定时刷新；`Ranking.Profiles()` 是读写共用的画像列表；`encodeOptions` 与恢复内置共用 |
+| `controller/autorouter.go`、`controller/audit.go`、`router/api-router.go`、`middleware/access_token_routes.go` | `PUT /api/autorouter/ranking`（刷新进行中拒绝、审计 `autorouter.rank_edit`、访问令牌作用域 `option:write`）；`GET /api/autorouter/ranking` 按全部画像列出并给每个模型加 `served` |
+| `web/src/features/system-settings/autorouter/` | 榜单编辑（`ranking-viewer.tsx`、`ranking-table.tsx`、`ranking-add-dialog.tsx`，纯逻辑在 `ranking-draft.ts`）；状态卡标出手工编辑过的榜单，立即刷新前确认 |
 
 ## 10. 已知限制
 
@@ -506,13 +536,18 @@ w 从 0.07 调到 0.075，下限降低，`mimo-v2.6-pro`（0.9288 分，0.54 美
 - **w 是全局的，窗口宽度随画像变**：见第 7.4 节例 4。只含 elo 指标的画像候选带窄，含 ratio 指标的宽。按 2026-10-28 的内置榜单和榜单文件里的价格，12 个二级类里，均衡档（w=0.07）有 8 个选的不是榜单第一名，平均比第一名低 0.0178 分，最多低 0.0455，价格中位数是第一名的一半；成本优先（w=0.3）有 11 个不是第一名，平均低 0.0781，最多低 0.2329（`code.build` 选了 `claude-haiku-5-5`），价格中位数是第一名的 6%；能力优先 12 个都选第一名。这些权重是按这份快照定的起步值，榜单或价格刷新后要看日志里的 `band` 重新评估。按画像分别标定还没做。
 - **w 调大，选中的不一定更便宜**：见第 7.4 节例 9。候选带随 w 变宽，进带的更便宜的模型会拉低价格下限，改变带内所有模型的折扣，所以 w 的取值和选中的模型之间不是单调的。
 - **折后分接近时选择不稳**：例 1 的均衡档里 `gpt-6.1-sol` 只比 `claude-opus-5-5` 高 0.0011，价格或榜单分的一点变动就会换人。这是 w 取值的自然结果，不是错误；`band` 里能看到这种近乎并列的情形。
-- **偏好只管选哪个模型**：思考强度仍由难度决定，不随偏好变；Scheduler 的路由倾向也与它无关。对话中途换偏好，要到下一个新任务才生效（同任务延续沿用上一次的模型）。
+- **偏好只管选哪个模型**：思考强度由难度、上一轮的档位和大模型收益决定（第 7.2 节），不随偏好变；Scheduler 的路由倾向也与它无关。对话中途换偏好，要到下一个新任务才生效（同任务延续沿用上一次的模型）。
 - **`mode` 的线索很少**：送去判断的只有用户最近两句话，“省钱”“这是线上事故要稳”这类线索只能出自这两句话的措辞，多数请求没有，`mode` 会集中在 `balanced`，自适应偏好对普通流量的影响因此很小，值不值得开主要看三项判据怎么写。先看真实分布再把令牌切过去：选路日志默认模式 `decisions` 记下每次现调 jev 的请求，里面的 `decision.mode_probabilities` 就是 `mode` 的原始答案；有 Langfuse 导出时也可以用 `jevexp` 离线汇总。
 - **`mode` 的返回格式只在测试桩上验证过**：`mode` 是 choice 题，和 `task_type` 一样应该返回各选项的概率，但真实 jev 对这道新题是否如此还没有验证。只返回 `choice` 而没有概率时，三项都按 0 读，等于没有可用答案，自适应偏好退回均衡档，不会出错。
 - **自适应偏好每次都多问一题**：每次调 jev 多一个问题，延迟增加多少未测，上线后看选路日志的 `jev_latency_ms`。升到 v6 时已缓存的判断失效一次，之后每个仍活跃的（令牌，指令）多调一次 jev。
 - **单指标画像的分数偏薄**：`general.browser`、`general.research` 只有一个指标；`general.design`、`general.search`、`general.writing` 在 2026-10-28 的快照里因 `da.slides`、`lma.search`、`lma.document` 停更，实际只剩一到两个有效指标。用很小的分差换很大的价差，依据比多指标画像弱。
+- **提档受模型声明的档位限制**：期望档位按模型渠道声明的档位收敛，声明里最高只到 `high` 的模型，期望档位提到 `xhigh` 也按 `high` 发出。提档只改思考强度，不换更强的模型。
+- **OpenAI / Codex 渠道还受网关的推理强度上限限制**：系统设置（模型 → 推理强度策略，`global.gpt_request_policy.reasoning_policy`）设了上限时，转发层把请求体里高于上限的档位降到上限，计费和消费日志按降后的档位记，所以不会超过上限。auto 定档时不看这个上限：期望档位是 `max` 时，走 OpenAI / Codex 渠道实际按 `xhigh` 发出，选路日志里"实际发送的推理强度"记的是 auto 写进请求体的档位，不含这一步。
 - **比价用的是平台成本**：运行时按第 7.3 节比较“用户侧价格 × 首次会落到的渠道的费用倍率”。榜单文件里的 `price_per_mtok` 是 OpenRouter 的价格，只用来给 `default_models` 排序和本文示例，和运行时的价格可能差很多。
 - **成本优先替平台省钱**：倍率不同的候选之间，“成本优先”选的是平台成本低的那个，用户的扣费不一定更低（例如用户价 10 美元、倍率 0.2 的模型会胜过用户价 3 美元、倍率 1 的模型）。所有候选的倍率都一样（或都没配）时与只比用户价相同。
 - **只估首次尝试**：同一档里有几个渠道时用命中概率的期望，单次请求实际落到的渠道倍率可能不同；重试走原生选路、可能换渠道，不在估算里。
 - **预览与正式调度之间隔着几毫秒**：准入是只读的，这期间别的请求改了计数池用量，两次可能选不同的渠道，`band` 里的 `channel_id` 和使用日志里实际的渠道对照就能量出这个比例。预览给出的渠道不会当作偏好渠道传给正式调度（那会被 Scheduler 记成会话亲和命中）。没被 Scheduler 加载过的模型先按原生规则估，被真实流量加载后才走预览。
-- **能力收窄按撇开客户端推理字段的口径估**：可信的判断最终写进请求体的档位还会再收窄一次渠道，估算时还不知道这个档位，个别渠道可能估进去了、实际却被淘汰。
+- **能力收窄按撇开客户端推理字段的口径估**：档位由判断定下时，最终写进请求体的档位还会再收窄一次渠道，估算时还不知道这个档位，个别渠道可能估进去了、实际却被淘汰。
+- **手工编辑与定时刷新二选一**：保存手工编辑会关掉定时刷新，公开榜单的新模型和新分数从此进不来；之后任何一次刷新或恢复内置都会把手工改动整个换掉。手工给的分数是一次性的快照，公开榜单变了不会跟着变。
+- **编辑页的“网关有”和可选范围只是粗估**：只看渠道启用与否，不看令牌白名单、分组、能力声明和价格，一个请求实际能不能选中某个模型以选路日志为准。
+- **多节点下保存有几秒延迟**：处理保存请求的节点立刻生效，其他节点等下一次选项同步（`SYNC_FREQUENCY`，默认 60 秒），这期间仍按旧榜单选路。冲突检查比的是处理请求那个节点上的榜单，两位管理员在同步间隔内通过不同节点各自保存时，后一次可能没被拦住。

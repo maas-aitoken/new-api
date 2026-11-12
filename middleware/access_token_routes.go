@@ -154,6 +154,8 @@ var accessTokenRouteRules = map[string]accessTokenRouteRule{
 	"GET /api/subscription/admin/users/:id/subscriptions":            accessTokenScopeRule("billing:read"),
 	"POST /api/subscription/admin/users/:id/subscriptions":           accessTokenScopeRule("billing:write"),
 	"POST /api/subscription/admin/users/:id/subscriptions/reset":     accessTokenScopeRule("billing:write"),
+	"POST /api/subscription/admin/users/:id/subscriptions/change":    accessTokenScopeRule("billing:write"),
+	"GET /api/subscription/admin/current_subscriptions":              accessTokenScopeRule("billing:read"),
 	"POST /api/subscription/admin/user_subscriptions/:id/invalidate": accessTokenScopeRule("billing:write"),
 	"DELETE /api/subscription/admin/user_subscriptions/:id":          accessTokenScopeRule("billing:write"),
 
@@ -164,6 +166,7 @@ var accessTokenRouteRules = map[string]accessTokenRouteRule{
 	"PUT /api/option/":                                           accessTokenScopeRule("option:write"),
 	"PUT /api/option/passkey/domains":                            accessTokenScopeRule("option:write"),
 	"GET /api/option/model_pricing":                              accessTokenScopeRule("option:read"),
+	"GET /api/option/model_pricing/issues":                       accessTokenScopeRule("option:read"),
 	"PATCH /api/option/model_pricing":                            accessTokenScopeRule("option:write"),
 	"POST /api/option/model_pricing/convert":                     accessTokenScopeRule("option:read"),
 	"POST /api/option/model_pricing/preview":                     accessTokenScopeRule("option:read"),
@@ -194,6 +197,7 @@ var accessTokenRouteRules = map[string]accessTokenRouteRule{
 	// router/api-router.go: /api/autorouter
 	"GET /api/autorouter/status":           accessTokenScopeRule("option:read"),
 	"GET /api/autorouter/ranking":          accessTokenScopeRule("option:read"),
+	"PUT /api/autorouter/ranking":          accessTokenScopeRule("option:write"),
 	"POST /api/autorouter/ranking/refresh": accessTokenScopeRule("option:write"),
 	"POST /api/autorouter/ranking/restore": accessTokenScopeRule("option:write"),
 	"GET /api/auto-route-logs/":            accessTokenScopeRule("log:read"),
@@ -240,6 +244,8 @@ var accessTokenRouteRules = map[string]accessTokenRouteRule{
 	"GET /api/token/":                       accessTokenScopeRule("api_key:read"),
 	"GET /api/token/search":                 accessTokenScopeRule("api_key:read"),
 	"GET /api/token/auto-groups":            accessTokenScopeRule("api_key:read"),
+	"GET /api/token/view-scope":             accessTokenScopeRule("api_key:read"),
+	"GET /api/token/member-candidates":      accessTokenScopeRule("user:read"), // 检索用户而非密钥，故用 user:read
 	"GET /api/token/:id":                    accessTokenScopeRule("api_key:read"),
 	"GET /api/token/:id/routing-preference": accessTokenScopeRule("api_key:read"),
 	"PUT /api/token/:id/routing-preference": accessTokenScopeRule("api_key:write"),
@@ -249,6 +255,10 @@ var accessTokenRouteRules = map[string]accessTokenRouteRule{
 	"DELETE /api/token/:id":                 accessTokenScopeRule("api_key:write"),
 	"POST /api/token/batch":                 accessTokenScopeRule("api_key:write"),
 	"POST /api/token/batch/keys":            accessTokenScopeRule("api_key:reveal"),
+	"GET /api/token/admin":                  accessTokenSessionRule,
+	"PATCH /api/token/admin/:id/status":     accessTokenSessionRule,
+	"PATCH /api/token/admin/:id/rate-limit": accessTokenSessionRule,
+	"DELETE /api/token/admin/:id":           accessTokenSessionRule,
 
 	// router/api-router.go: /api/redemption
 	"GET /api/redemption/":           accessTokenScopeRule("redemption:read"),
@@ -276,6 +286,8 @@ var accessTokenRouteRules = map[string]accessTokenRouteRule{
 	"GET /api/data/self":                        accessTokenScopeRule("usage:read"),
 	"GET /api/data/flow":                        accessTokenScopeRule("log:read"),
 	"GET /api/data/flow/self":                   accessTokenScopeRule("usage:read"),
+	"GET /api/data/scope":                       accessTokenScopeRule("usage:read"),
+	"GET /api/data/platforms":                   accessTokenScopeRule("usage:read"),
 	"GET /api/data/analytics":                   accessTokenScopeRule("log:read"),
 	"GET /api/data/analytics/self":              accessTokenScopeRule("usage:read"),
 	"GET /api/data/org-options":                 accessTokenScopeRule("log:read"),
@@ -284,6 +296,7 @@ var accessTokenRouteRules = map[string]accessTokenRouteRule{
 	"GET /api/data/peak-tpm":                    accessTokenScopeRule("log:read"),
 	"GET /api/data/peak-tpm/self":               accessTokenScopeRule("usage:read"),
 	"GET /api/perf-metrics/availability":        accessTokenAnyRule,
+	"GET /api/perf-metrics/health":              accessTokenAnyRule,
 
 	// router/api-router.go: /api/group, /api/prefill_group
 	"GET /api/group/":               accessTokenScopeRule("group:read"),

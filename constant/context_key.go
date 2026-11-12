@@ -34,6 +34,11 @@ const (
 	// for this request, so the usage log can tell it apart from one that asked for that model.
 	ContextKeyAutoRouted ContextKey = "auto_routed"
 	ContextKeyTokenScene ContextKey = "token_scene"
+	// ContextKeyTokenRoutingMode holds the key's effective routing mode, smart or fixed (an empty
+	// stored value and a business-scene key are fixed), set by SetupContextForToken. Distribute and
+	// ListModels apply it only when present; the console playground sets up its temporary key after
+	// Distribute has run, so a playground request is not bound by it.
+	ContextKeyTokenRoutingMode ContextKey = "token_routing_mode"
 	// ContextKeyTokenRPM holds the token's per-minute request limit; 0 means unlimited.
 	// TokenRateLimit reads it from the context so it does not repeat the token lookup.
 	ContextKeyTokenRPM ContextKey = "token_rpm"

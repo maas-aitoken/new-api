@@ -37,6 +37,51 @@ func RegisterScheduledSystemTasks() {
 	service.RegisterSystemTaskHandler(asyncTaskPollHandler{})
 	service.RegisterSystemTaskHandler(autoRouterRankHandler{})
 	service.RegisterSystemTaskHandler(ssoUserSyncHandler{})
+	service.RegisterSystemTaskHandler(externalUsageSyncHandler{})
+	service.RegisterSystemTaskHandler(subscriptionUsageAlertHandler{})
+}
+
+type subscriptionUsageAlertHandler struct{}
+
+func (subscriptionUsageAlertHandler) Type() string { return model.SystemTaskTypeSubscriptionUsage }
+
+func (subscriptionUsageAlertHandler) Enabled() bool {
+	return operation_setting.IsQuotaTierEnabled() && common.QuotaIncreaseNotifyUrl != ""
+}
+
+func (subscriptionUsageAlertHandler) Interval() time.Duration { return 10 * time.Minute }
+
+func (subscriptionUsageAlertHandler) NewPayload() any { return nil }
+
+func (subscriptionUsageAlertHandler) Run(ctx context.Context, task *model.SystemTask, runnerID string) {
+	result, err := service.NotifySubscriptionUsage(ctx)
+	status := model.SystemTaskStatusSucceeded
+	if err != nil {
+		status = model.SystemTaskStatusFailed
+	}
+	finishSystemTaskHandler(task, runnerID, status, result, err)
+}
+
+type externalUsageSyncHandler struct{}
+
+func (externalUsageSyncHandler) Type() string { return model.SystemTaskTypeExternalUsageSync }
+
+func (externalUsageSyncHandler) Enabled() bool {
+	configs, err := service.LoadExternalPlatformConfigs()
+	return err == nil && len(configs) > 0
+}
+
+func (externalUsageSyncHandler) Interval() time.Duration { return 10 * time.Minute }
+
+func (externalUsageSyncHandler) NewPayload() any { return nil }
+
+func (externalUsageSyncHandler) Run(ctx context.Context, task *model.SystemTask, runnerID string) {
+	result, err := service.RunExternalPlatformSync(ctx)
+	status := model.SystemTaskStatusSucceeded
+	if err != nil {
+		status = model.SystemTaskStatusFailed
+	}
+	finishSystemTaskHandler(task, runnerID, status, result, err)
 }
 
 // autoRouterRankHandler regenerates the auto router's task → model lists from
@@ -409,7 +454,7 @@ func runSsoUserSync(_ context.Context) (*ssoSyncResult, error) {
 			hoidcId, email, u.Name, u.Avatar, u.DepartmentTreePathStr,
 			u.StraightLineManagerEmail, u.StraightLineManagerName,
 			u.StraightLineManagerUid, u.MentorUid, u.DottedLineManagerUid, u.OrganizationOid, u.DepartmentOid,
-			u.IsCharge,
+			&u.IsCharge,
 			common.HoidcAllowSignup,
 		)
 		if err != nil {
@@ -421,6 +466,21 @@ func runSsoUserSync(_ context.Context) (*ssoSyncResult, error) {
 	}
 	common.SysLog(fmt.Sprintf("SSO user sync completed: fetched=%d synced=%d skipped=%d failed=%d",
 		result.Fetched, result.Synced, result.Skipped, result.Failed))
+
+	edges := make(map[string]string, len(users))
+	for _, u := range users {
+		if u.Uid == 0 || u.StraightLineManagerUid == 0 {
+			continue
+		}
+		// 上游把 manager uid 定义成 int64，这里要用 FormatInt 而不是 Itoa。
+		// 两边都转成字符串去对 users.hoidc_id。
+		edges[strconv.Itoa(u.Uid)] = strconv.FormatInt(u.StraightLineManagerUid, 10)
+	}
+	if rebuilt, err := model.ReplaceAllUserLeaders(edges); err != nil {
+		common.SysError(fmt.Sprintf("SSO sync: failed to rebuild leader edges: %v", err))
+	} else {
+		common.SysLog(fmt.Sprintf("SSO sync: rebuilt %d leader edges from %d candidates", rebuilt, len(edges)))
+	}
 
 	cutoff := time.Now().Unix() - 24*3600
 	disabled, err := model.DisableStaleSsoUsers(cutoff)

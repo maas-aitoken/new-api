@@ -20,7 +20,7 @@ type SubscriptionCreemPayRequest struct {
 }
 
 func SubscriptionRequestCreemPay(c *gin.Context) {
-	if !requirePaymentCompliance(c) {
+	if !requirePaymentCompliance(c) || !requireSubscriptionSelfPurchase(c) {
 		return
 	}
 

@@ -26,6 +26,8 @@ const (
 	SystemTaskTypeAsyncTaskPoll        = "async_task_poll"
 	SystemTaskTypeAutoRouterRank       = "autorouter_rank"
 	SystemTaskTypeSSOUserSync          = "sso_user_sync"
+	SystemTaskTypeExternalUsageSync    = "external_usage_sync"
+	SystemTaskTypeSubscriptionUsage    = "subscription_usage_alert"
 )
 
 var ErrSystemTaskLockLost = errors.New("system task lock lost")

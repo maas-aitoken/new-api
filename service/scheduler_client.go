@@ -159,7 +159,9 @@ func resetSchedulerCircuit() {
 	schedulerEndpointCircuitState.Lock()
 	schedulerEndpointCircuitState.states = make(map[string]*schedulerEndpointCircuit)
 	schedulerEndpointCircuitState.Unlock()
-	schedulerPreviewUnsupportedUntil.Store(0)
+	schedulerPreviewUnsupported.Lock()
+	schedulerPreviewUnsupported.until = nil
+	schedulerPreviewUnsupported.Unlock()
 }
 
 func schedulerCircuitAllows(now time.Time) bool {
@@ -528,7 +530,7 @@ func schedulerDecisionError(statusCode int, body []byte) *SchedulerDecisionError
 	}
 }
 
-func schedulerDoRequestWithFallback(ctx context.Context, config SchedulerClientConfig, method, path string, payload []byte, includeAuth bool) (schedulerRequestOutcome, error) {
+func schedulerDoRequestWithFallback(ctx context.Context, config SchedulerClientConfig, method, path, requestID string, payload []byte, includeAuth bool) (schedulerRequestOutcome, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -561,6 +563,10 @@ func schedulerDoRequestWithFallback(ctx context.Context, config SchedulerClientC
 			req.Header.Set("Authorization", "Bearer "+config.Token)
 		}
 		req.Header.Set("Content-Type", "application/json")
+		// 调度器的访问日志按这个头记请求号，与 new-api 的日志、选路留痕对得上。
+		if requestID != "" {
+			req.Header.Set(common.RequestIdKey, requestID)
+		}
 		if includeAuth {
 			signSchedulerRequest(req, config.SigningSecret, payload)
 		}
@@ -930,7 +936,7 @@ func RunSchedulerShadow(c *gin.Context, modelName, group string) (err error) {
 	if err != nil {
 		return err
 	}
-	outcome, err := schedulerDoRequestWithFallback(decideCtx, config, http.MethodPost, "/v1/schedule", payload, true)
+	outcome, err := schedulerDoRequestWithFallback(decideCtx, config, http.MethodPost, "/v1/schedule", requestID, payload, true)
 	if err != nil {
 		return err
 	}

@@ -30,6 +30,26 @@ func TestSetupContextForTokenWithoutRoutingPreferenceInheritsDefault(t *testing.
 	assert.False(t, ok)
 }
 
+// Distribute 和 /v1/models 只认上下文里的有效模式：空值（旧令牌）和业务 key 都是锁定模型。
+func TestSetupContextForTokenSetsTheEffectiveRoutingMode(t *testing.T) {
+	for _, tc := range []struct {
+		scene common.TokenScene
+		mode  common.TokenRoutingMode
+		want  common.TokenRoutingMode
+	}{
+		{scene: common.TokenSceneOffice, mode: common.TokenRoutingModeSmart, want: common.TokenRoutingModeSmart},
+		{scene: common.TokenSceneOffice, mode: common.TokenRoutingModeFixed, want: common.TokenRoutingModeFixed},
+		{scene: common.TokenSceneOffice, mode: "", want: common.TokenRoutingModeFixed},
+		{scene: common.TokenSceneBusiness, mode: common.TokenRoutingModeSmart, want: common.TokenRoutingModeFixed},
+	} {
+		ctx := newTokenAutoGroupsContext()
+		require.NoError(t, SetupContextForToken(ctx, &model.Token{Id: 1, UserId: 2, Scene: tc.scene, RoutingMode: tc.mode}))
+		got, ok := common.GetContextKeyType[common.TokenRoutingMode](ctx, constant.ContextKeyTokenRoutingMode)
+		require.True(t, ok)
+		assert.Equal(t, tc.want, got, "scene=%q mode=%q", tc.scene, tc.mode)
+	}
+}
+
 func TestSetupContextForTokenMalformedRoutingPreferenceFallsBackToDefault(t *testing.T) {
 	ctx := newTokenAutoGroupsContext()
 	token := &model.Token{Id: 1, UserId: 2, RoutingPreference: `not-json`}

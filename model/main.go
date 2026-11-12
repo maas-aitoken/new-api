@@ -368,6 +368,11 @@ func migrateDB() error {
 		&Midjourney{},
 		&TopUp{},
 		&QuotaData{},
+		&ExternalQuotaData{},
+		&ExternalUsageSyncState{},
+		&ExternalPeakTPM{},
+		&ExternalChannelCapability{},
+		&ExternalFlowData{},
 		&Task{},
 		&TaskPlugin{},
 		&Model{},
@@ -380,6 +385,7 @@ func migrateDB() error {
 		&SubscriptionOrder{},
 		&UserSubscription{},
 		&SubscriptionPreConsumeRecord{},
+		&SubscriptionUsageAlert{},
 		&CustomOAuthProvider{},
 		&UserOAuthBinding{},
 		&PerfMetric{},
@@ -391,6 +397,8 @@ func migrateDB() error {
 		&RelayAttempt{},
 		&UserAccessToken{},
 		&UserDataScope{},
+		&UserDataScopeOrg{},
+		&UserLeader{},
 	)
 	if err != nil {
 		return err
@@ -443,6 +451,11 @@ func migrateDBFast() error {
 		{&Midjourney{}, "Midjourney"},
 		{&TopUp{}, "TopUp"},
 		{&QuotaData{}, "QuotaData"},
+		{&ExternalQuotaData{}, "ExternalQuotaData"},
+		{&ExternalUsageSyncState{}, "ExternalUsageSyncState"},
+		{&ExternalPeakTPM{}, "ExternalPeakTPM"},
+		{&ExternalChannelCapability{}, "ExternalChannelCapability"},
+		{&ExternalFlowData{}, "ExternalFlowData"},
 		{&Task{}, "Task"},
 		{&Model{}, "Model"},
 		{&Vendor{}, "Vendor"},
@@ -454,6 +467,7 @@ func migrateDBFast() error {
 		{&SubscriptionOrder{}, "SubscriptionOrder"},
 		{&UserSubscription{}, "UserSubscription"},
 		{&SubscriptionPreConsumeRecord{}, "SubscriptionPreConsumeRecord"},
+		{&SubscriptionUsageAlert{}, "SubscriptionUsageAlert"},
 		{&CustomOAuthProvider{}, "CustomOAuthProvider"},
 		{&UserOAuthBinding{}, "UserOAuthBinding"},
 		{&PerfMetric{}, "PerfMetric"},
@@ -462,6 +476,8 @@ func migrateDBFast() error {
 		{&SystemTaskLock{}, "SystemTaskLock"},
 		{&RelayAttempt{}, "RelayAttempt"},
 		{&UserDataScope{}, "UserDataScope"},
+		{&UserDataScopeOrg{}, "UserDataScopeOrg"},
+		{&UserLeader{}, "UserLeader"},
 	}
 	// 动态计算migration数量，确保errChan缓冲区足够大
 	errChan := make(chan error, len(migrations))

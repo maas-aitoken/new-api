@@ -89,15 +89,18 @@ type usageScope struct {
 	UserID   int
 	Username string
 	Org      UsageOrgFilter
+	// UserIDs: nil = all, empty = none.
+	UserIDs []int
 }
 
 func (s usageScope) IsZero() bool {
-	return s.UserID == 0 && s.Username == "" && s.Org.IsZero()
+	return s.UserID == 0 && s.Username == "" && s.Org.IsZero() && s.UserIDs == nil
 }
 
 func (s usageScope) covers(owner iselfOwner) bool {
 	return (s.UserID == 0 || owner.UserID == s.UserID) &&
 		(s.Username == "" || owner.Username == s.Username) &&
+		(s.UserIDs == nil || slices.Contains(s.UserIDs, owner.UserID)) &&
 		s.Org.matches(owner.BusinessUnit, owner.Department, owner.Team)
 }
 
@@ -117,6 +120,7 @@ type attributedUsageRow struct {
 	ModelName    string `gorm:"column:model_name"`
 	Hour         int64  `gorm:"column:hour_bucket"`
 	DisplayName  string `gorm:"column:display_name"`
+	Avatar       string `gorm:"column:avatar"`
 	Email        string `gorm:"column:email"`
 	UserStatus   int    `gorm:"column:user_status"`
 	BusinessUnit string `gorm:"column:business_unit"`
@@ -148,6 +152,9 @@ func loadAttributedUsage(q attributedUsageQuery) ([]attributedUsageRow, error) {
 	}
 	if q.Scope.Username != "" {
 		query = query.Where("quota_data.username = ?", q.Scope.Username)
+	}
+	if q.Scope.UserIDs != nil {
+		query = query.Where("quota_data.user_id IN ?", q.Scope.UserIDs)
 	}
 	if modelName := strings.TrimSpace(q.ModelName); modelName != "" {
 		query = query.Where("quota_data.model_name = ?", modelName)
@@ -198,7 +205,7 @@ func loadAttributedUsage(q attributedUsageQuery) ([]attributedUsageRow, error) {
 			owner := move.Owner
 			rows = append(rows, attributedUsageRow{
 				UserID: owner.UserID, Username: owner.Username, ModelName: move.ModelName, Hour: move.Hour,
-				DisplayName: owner.DisplayName, Email: owner.Email, UserStatus: owner.UserStatus,
+				DisplayName: owner.DisplayName, Avatar: owner.Avatar, Email: owner.Email, UserStatus: owner.UserStatus,
 				BusinessUnit: owner.BusinessUnit, Department: owner.Department, Team: owner.Team, OrgPath: owner.OrgPath,
 			})
 			i = len(rows) - 1
@@ -245,6 +252,7 @@ func (m *UsageMetrics) subtract(other UsageMetrics) {
 const usageUsersJoin = "LEFT JOIN users ON users.id = quota_data.user_id"
 
 const usageUserAttributesSelect = "COALESCE(MAX(users.display_name), '') AS display_name, " +
+	"COALESCE(MAX(users.avatar), '') AS avatar, " +
 	"COALESCE(MAX(users.email), '') AS email, " +
 	"COALESCE(MAX(users.status), 0) AS user_status, " +
 	"COALESCE(MAX(users.secondary_organization), '') AS business_unit, " +
@@ -292,13 +300,17 @@ type UsageAnalyticsSummary struct {
 // UsageAnalyticsRow uses pointers to omit unused dimensions while retaining zero values.
 type UsageAnalyticsRow struct {
 	UsageMetrics
+	Platform    *string `json:"platform,omitempty"`
 	ModelName   *string `json:"model_name,omitempty"`
 	UserID      *int    `json:"user_id,omitempty"`
 	Username    *string `json:"username,omitempty"`
 	DisplayName *string `json:"display_name,omitempty"`
+	Avatar      *string `json:"avatar,omitempty"`
 	ChannelID   *int    `json:"channel_id,omitempty"`
 	ChannelName *string `json:"channel_name,omitempty"`
-	UserCount   *int64  `json:"user_count,omitempty"`
+	// ChannelType is 0 when the channel no longer exists.
+	ChannelType *int   `json:"channel_type,omitempty"`
+	UserCount   *int64 `json:"user_count,omitempty"`
 	// UserStatus is 0 when the user no longer exists.
 	Email        *string `json:"email,omitempty"`
 	UserStatus   *int    `json:"user_status,omitempty"`
@@ -322,11 +334,17 @@ type UsageAnalyticsParams struct {
 	Org       UsageOrgFilter
 	// UserID > 0 restricts the query to one user (self analytics).
 	UserID int
+	// UserIDs restricts to these accounts; nil means all.
+	UserIDs  []int
+	Platform string
 }
 
 // GetUsageAnalytics aggregates hourly quota data in [Start, End].
 func GetUsageAnalytics(params UsageAnalyticsParams) (*UsageAnalyticsResult, error) {
-	scope := usageScope{UserID: params.UserID, Username: strings.TrimSpace(params.Username), Org: params.Org}
+	if params.Platform != "" && params.Platform != "local" {
+		return getExternalUsageAnalytics(params)
+	}
+	scope := usageScope{UserID: params.UserID, Username: strings.TrimSpace(params.Username), Org: params.Org, UserIDs: params.UserIDs}
 	result := &UsageAnalyticsResult{Rows: []UsageAnalyticsRow{}}
 	if params.GroupBy == UsageAnalyticsGroupModelChannel {
 		// iSelf moves have no channel, so this grouping keeps the recorded accounts.
@@ -338,6 +356,9 @@ func GetUsageAnalytics(params UsageAnalyticsParams) (*UsageAnalyticsResult, erro
 		if scope.Username != "" {
 			query = query.Where("quota_data.username = ?", scope.Username)
 		}
+		if scope.UserIDs != nil {
+			query = query.Where("quota_data.user_id IN ?", scope.UserIDs)
+		}
 		if modelName := strings.TrimSpace(params.ModelName); modelName != "" {
 			query = query.Where("quota_data.model_name = ?", modelName)
 		}
@@ -346,7 +367,8 @@ func GetUsageAnalytics(params UsageAnalyticsParams) (*UsageAnalyticsResult, erro
 		}
 		err := query.
 			Select("quota_data.model_name AS model_name, quota_data.channel_id AS channel_id, " +
-				"COALESCE(MAX(channels.name), '') AS channel_name, " + usageMetricsSelect).
+				"COALESCE(MAX(channels.name), '') AS channel_name, COALESCE(MAX(channels.type), 0) AS channel_type, " +
+				usageMetricsSelect).
 			Joins("LEFT JOIN channels ON channels.id = quota_data.channel_id").
 			Group("quota_data.model_name, quota_data.channel_id").
 			Order("request_count DESC, model_name ASC, channel_id ASC").
@@ -426,7 +448,7 @@ func GetUsageAnalytics(params UsageAnalyticsParams) (*UsageAnalyticsResult, erro
 			case UsageAnalyticsGroupModel:
 				g.row.ModelName = &row.ModelName
 			case UsageAnalyticsGroupUser, UsageAnalyticsGroupUserModel:
-				g.row.UserID, g.row.Username, g.row.DisplayName = &row.UserID, &row.Username, &row.DisplayName
+				g.row.UserID, g.row.Username, g.row.DisplayName, g.row.Avatar = &row.UserID, &row.Username, &row.DisplayName, &row.Avatar
 				g.row.Email, g.row.UserStatus, g.row.OrgPath = &row.Email, &row.UserStatus, &row.OrgPath
 				g.row.BusinessUnit, g.row.Department, g.row.Team = &row.BusinessUnit, &row.Department, &row.Team
 				if params.GroupBy == UsageAnalyticsGroupUserModel {
@@ -478,10 +500,43 @@ type UsageOrgOption struct {
 	Team         string `json:"team"`
 }
 
+// MatchUsageUserIds matches username, email or display name, ignoring case, deleted accounts too.
+// Matched in Go, not LIKE, so "_" and "%" are literal on every database.
+func MatchUsageUserIds(keyword string) ([]int, error) {
+	needle := strings.ToLower(strings.TrimSpace(keyword))
+	var users []struct {
+		Id          int
+		Username    string
+		Email       string
+		DisplayName string
+	}
+	err := DB.Unscoped().Table("users").
+		Select("id, COALESCE(username, '') AS username, COALESCE(email, '') AS email, COALESCE(display_name, '') AS display_name").
+		Order("id").
+		Scan(&users).Error
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]int, 0)
+	for _, user := range users {
+		if strings.Contains(strings.ToLower(user.Username), needle) ||
+			strings.Contains(strings.ToLower(user.Email), needle) ||
+			strings.Contains(strings.ToLower(user.DisplayName), needle) {
+			ids = append(ids, user.Id)
+		}
+	}
+	return ids, nil
+}
+
 // GetUsageOrgOptions keeps soft-deleted users, whose past usage still counts for their path.
-func GetUsageOrgOptions() ([]UsageOrgOption, error) {
+// Non-nil userIDs limits the paths to those accounts.
+func GetUsageOrgOptions(userIDs []int) ([]UsageOrgOption, error) {
 	options := make([]UsageOrgOption, 0)
-	err := DB.Table("users").
+	query := DB.Table("users")
+	if userIDs != nil {
+		query = query.Where("users.id IN ?", userIDs)
+	}
+	err := query.
 		Select(usageBusinessUnitExpr + " AS business_unit, " + usageDepartmentExpr + " AS department, " + usageTeamExpr + " AS team").
 		Group(usageBusinessUnitExpr + ", " + usageDepartmentExpr + ", " + usageTeamExpr).
 		Order(usageBusinessUnitExpr + ", " + usageDepartmentExpr + ", " + usageTeamExpr).
@@ -502,6 +557,8 @@ type PeakTPMParams struct {
 	Org       UsageOrgFilter
 	// UserID > 0 restricts the peaks to one user (self analytics).
 	UserID int
+	// UserIDs restricts to these accounts; nil means all.
+	UserIDs []int
 }
 
 // iselfAttributedLogFilter selects the logs of scoped accounts, minus iSelf
@@ -517,6 +574,9 @@ func iselfAttributedLogFilter(scope usageScope, start, end int64, modelName stri
 	if scope.Username != "" {
 		users = users.Where("users.username = ?", scope.Username)
 	}
+	if scope.UserIDs != nil {
+		users = users.Where("users.id IN ?", scope.UserIDs)
+	}
 	if err := scope.Org.apply(users).Scan(&scopeUsers).Error; err != nil {
 		return "", nil, err
 	}
@@ -527,6 +587,13 @@ func iselfAttributedLogFilter(scope usageScope, start, end int64, modelName stri
 	}
 	if scope.Username != "" {
 		own, args = append(own, "logs.username = ?"), append(args, scope.Username)
+	}
+	if scope.UserIDs != nil {
+		if len(scope.UserIDs) == 0 {
+			own = append(own, "1 = 0")
+		} else {
+			own, args = append(own, "logs.user_id IN ?"), append(args, scope.UserIDs)
+		}
 	}
 	if !scope.Org.IsZero() {
 		ids := make([]int, 0, len(scopeUsers))
@@ -621,7 +688,7 @@ func GetPeakTPM(params PeakTPMParams) ([]PeakTPMPoint, error) {
 	if modelName := strings.TrimSpace(params.ModelName); modelName != "" {
 		perMinute = perMinute.Where("model_name = ?", modelName)
 	}
-	scope := usageScope{UserID: params.UserID, Username: strings.TrimSpace(params.Username), Org: params.Org}
+	scope := usageScope{UserID: params.UserID, Username: strings.TrimSpace(params.Username), Org: params.Org, UserIDs: params.UserIDs}
 	if !scope.IsZero() {
 		condition, args, err := iselfAttributedLogFilter(scope, params.Start, params.End, params.ModelName)
 		if err != nil {

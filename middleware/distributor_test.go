@@ -323,6 +323,44 @@ func TestSharedEndpointRebindsToSelectedType61Plugin(t *testing.T) {
 	assert.Equal(t, "beta", c.MustGet(jsplugin.ContextKeyPinnedEndpoint).(jsplugin.PinnedEndpoint).Plugin.Meta.Key)
 }
 
+// On a native path two plugins declare, the selected channel names the
+// executing plugin, which takes over the route and the task identity.
+func TestSharedNativeRouteRebindsToSelectedPlugin(t *testing.T) {
+	registry := jsplugin.NewRegistry()
+	for _, key := range []string{"route-alpha", "route-beta"} {
+		_, err := registry.Register(fmt.Sprintf(`
+export const meta = {apiVersion: 1, key: %q, name: %q, version: "1.0.0", author: {name: "Test"}, models: ["task-model"], fetchMode: "per_task",
+	routes: [{method: "POST", path: "/probe/v1/jobs", type: "submit", decode: "decode", render: "render"}]};
+export const native = {decode() { return {}; }, render() { return {}; }};
+export function buildSubmitRequest() { return {}; }
+export function parseSubmitResponse() { return {}; }
+export function buildQueryRequest() { return {}; }
+export function parseTaskResult() { return {}; }
+`, key, key), jsplugin.Options{})
+		require.NoError(t, err)
+	}
+	generation := registry.Generation()
+	candidates := generation.LookupDeclaredRoutes("POST", "/probe/v1/jobs")
+	require.Len(t, candidates, 2)
+	c, _ := gin.CreateTestContext(nil)
+	c.Set(jsplugin.ContextKeyPinnedPlugin, jsplugin.PinnedPlugin{Generation: generation, Plugin: candidates[0].Plugin})
+	c.Set(jsplugin.ContextKeyPinnedRoute, jsplugin.PinnedRoute{Generation: generation, Plugin: candidates[0].Plugin, Route: candidates[0].Route, Candidates: candidates})
+	c.Set("expected_task_plugin_key", "route-alpha")
+	channel := &model.Channel{Id: 3, Type: constant.ChannelTypeTaskPlugin}
+	channel.SetSetting(dto.ChannelSettings{TaskPluginKey: "unrelated"})
+	assert.False(t, channelMatchesExpectedTaskPlugin(c, channel, "route-alpha"))
+	channel.SetSetting(dto.ChannelSettings{TaskPluginKey: "route-beta"})
+
+	require.Nil(t, SetupContextForSelectedChannel(c, channel, "task-model"))
+	pinned := c.MustGet(jsplugin.ContextKeyPinnedRoute).(jsplugin.PinnedRoute)
+	assert.Same(t, candidates[1].Plugin, pinned.Plugin)
+	assert.Equal(t, candidates[1].Route, pinned.Route)
+	assert.Same(t, candidates[1].Plugin, c.MustGet(jsplugin.ContextKeyPinnedPlugin).(jsplugin.PinnedPlugin).Plugin)
+	for _, key := range []string{"expected_task_plugin_key", "task_plugin_key", "platform"} {
+		assert.Equal(t, "route-beta", c.GetString(key), key)
+	}
+}
+
 func TestChannelMatchesExpectedTaskPluginUsesNewAPIExtensions(t *testing.T) {
 	channel := &model.Channel{Type: constant.ChannelTypeNewAPI}
 	channel.SetSetting(dto.ChannelSettings{TaskPluginKey: "single", TaskExtendPluginKeys: []string{"ext-alpha", "ext-beta"}})
@@ -436,7 +474,8 @@ func serveAutoRoutingRequest(t *testing.T, path string, tokenID int, body string
 func serveAutoRoutingRequestIn(t *testing.T, path, usingGroup string, tokenID int, body string, setup ...func(*gin.Context)) (stored string, originalModel string, recorder *httptest.ResponseRecorder) {
 	t.Helper()
 	router := gin.New()
-	router.POST(path, RequestId(), func(c *gin.Context) {
+	// 用通配路由：Gemini 原生路径（/v1beta/models/x:generateContent）不能直接注册成路由模式。
+	router.POST("/*any", RequestId(), func(c *gin.Context) {
 		common.SetContextKey(c, constant.ContextKeyUsingGroup, usingGroup)
 		common.SetContextKey(c, constant.ContextKeyUserGroup, "default")
 		common.SetContextKey(c, constant.ContextKeyTokenId, tokenID)
@@ -484,6 +523,171 @@ func TestDistributeAutoRewritesStoredBodyModel(t *testing.T) {
 	assert.Equal(t, "general", originalModel)
 	assert.JSONEq(t, `{"model":"general","messages":[{"role":"user","content":"hello"}],"temperature":0.2}`, stored,
 		"透传渠道原样转发存储的请求体，里面的 model 必须是解析后的模型而不是 auto")
+}
+
+// 额度档位用完后，指定模型的对话请求改走 auto，令牌的模型池也不再限制候选。
+func TestDistributeRoutesUsedUpQuotaTierThroughAuto(t *testing.T) {
+	db := setupAutoRoutingDistribute(t, []string{"general"}, map[int][]string{1: {"general", "fixed"}})
+	useModelPrices(t, map[string]float64{"general": 1, "fixed": 1})
+	require.NoError(t, db.AutoMigrate(&model.User{}, &model.SubscriptionPlan{}, &model.UserSubscription{}, &model.QuotaData{}))
+	operation_setting.SetQuotaTierEnabled(true)
+	t.Cleanup(func() { operation_setting.SetQuotaTierEnabled(false) })
+	user := model.User{Username: "tier-user", Password: "unused-password-hash", Status: common.UserStatusEnabled, Group: "default"}
+	require.NoError(t, db.Create(&user).Error)
+	plan := model.SubscriptionPlan{Title: "v1", TotalAmount: 100, DurationUnit: model.SubscriptionDurationYear, DurationValue: 1, Enabled: true}
+	require.NoError(t, db.Create(&plan).Error)
+	sub := model.UserSubscription{UserId: user.Id, PlanId: plan.Id, AmountTotal: 100, AmountUsed: 40, StartTime: 1, EndTime: 1 << 40, Status: "active", Source: model.SubscriptionSourceQuotaTier}
+	require.NoError(t, db.Create(&sub).Error)
+	asTierUser := func(c *gin.Context) {
+		c.Set("id", user.Id)
+		common.SetContextKey(c, constant.ContextKeyTokenModelLimitEnabled, true)
+		common.SetContextKey(c, constant.ContextKeyTokenModelLimit, map[string]bool{"fixed": true})
+		common.SetContextKey(c, constant.ContextKeyTokenRoutingMode, common.TokenRoutingModeFixed)
+	}
+	body := `{"model":"fixed","messages":[{"role":"user","content":"hello"}]}`
+
+	stored, originalModel, recorder := serveAutoRoutingRequestIn(t, "/v1/chat/completions", "default", 9611, body, asTierUser)
+	require.Equal(t, http.StatusNoContent, recorder.Code, recorder.Body.String())
+	assert.Equal(t, "fixed", originalModel)
+	assert.Equal(t, body, stored)
+
+	require.NoError(t, db.Model(&sub).Update("amount_used", 130).Error)
+	stored, originalModel, recorder = serveAutoRoutingRequestIn(t, "/v1/chat/completions", "default", 9611, body, asTierUser)
+	require.Equal(t, http.StatusNoContent, recorder.Code, recorder.Body.String())
+	assert.Equal(t, "general", originalModel)
+	assert.JSONEq(t, `{"model":"general","messages":[{"role":"user","content":"hello"}]}`, stored)
+
+	// 锁定模型 key 本来拒绝客户端传的 auto；档位用完时服务端已经强制走 auto，这时不拦。
+	_, originalModel, recorder = serveAutoRoutingRequestIn(t, "/v1/chat/completions", "default", 9611,
+		`{"model":"auto","messages":[{"role":"user","content":"hello"}]}`, asTierUser)
+	require.Equal(t, http.StatusNoContent, recorder.Code, recorder.Body.String())
+	assert.Equal(t, "general", originalModel)
+
+	// A business-scene key does not use the quota, so it keeps its model.
+	stored, originalModel, recorder = serveAutoRoutingRequestIn(t, "/v1/chat/completions", "default", 9612, body, asTierUser, func(c *gin.Context) {
+		common.SetContextKey(c, constant.ContextKeyTokenScene, common.TokenSceneBusiness)
+	})
+	require.Equal(t, http.StatusNoContent, recorder.Code, recorder.Body.String())
+	assert.Equal(t, "fixed", originalModel)
+	assert.Equal(t, body, stored)
+}
+
+// 智能路由 key 的对话请求不管传什么模型都改走 auto，模型池是 auto 的候选范围；
+// embedding 这类 auto 不支持的接口按模型池直接调。
+func TestDistributeSmartKeyRoutesChatThroughAuto(t *testing.T) {
+	setupAutoRoutingDistribute(t, []string{"general", "pool-model"}, map[int][]string{1: {"general", "pool-model", "embed-model"}})
+	useModelPrices(t, map[string]float64{"general": 1, "pool-model": 1, "embed-model": 1})
+	smartKey := func(c *gin.Context) {
+		common.SetContextKey(c, constant.ContextKeyTokenRoutingMode, common.TokenRoutingModeSmart)
+	}
+	smartKeyWithPool := func(c *gin.Context) {
+		smartKey(c)
+		common.SetContextKey(c, constant.ContextKeyTokenModelLimitEnabled, true)
+		common.SetContextKey(c, constant.ContextKeyTokenModelLimit, map[string]bool{"pool-model": true, "embed-model": true})
+	}
+
+	stored, originalModel, recorder := serveAutoRoutingRequestIn(t, "/v1/chat/completions", "default", 9621,
+		`{"model":"embed-model","messages":[{"role":"user","content":"hello"}]}`, smartKey)
+	require.Equal(t, http.StatusNoContent, recorder.Code, recorder.Body.String())
+	assert.Equal(t, "general", originalModel, "the model the client names is replaced by auto's choice")
+	assert.JSONEq(t, `{"model":"general","messages":[{"role":"user","content":"hello"}]}`, stored)
+
+	_, originalModel, recorder = serveAutoRoutingRequestIn(t, "/v1/chat/completions", "default", 9622,
+		`{"model":"general","messages":[{"role":"user","content":"hello"}]}`, smartKeyWithPool)
+	require.Equal(t, http.StatusNoContent, recorder.Code, recorder.Body.String())
+	assert.Equal(t, "pool-model", originalModel, "a model outside the pool may be named, auto still chooses inside the pool")
+
+	embedBody := `{"model":"embed-model","input":"hello"}`
+	stored, originalModel, recorder = serveAutoRoutingRequestIn(t, "/v1/embeddings", "default", 9623, embedBody, smartKeyWithPool)
+	require.Equal(t, http.StatusNoContent, recorder.Code, recorder.Body.String())
+	assert.Equal(t, "embed-model", originalModel)
+	assert.Equal(t, embedBody, stored, "auto does not serve embeddings, the pool model is called as named")
+
+	_, _, recorder = serveAutoRoutingRequestIn(t, "/v1/embeddings", "default", 9624, `{"model":"general","input":"hello"}`, smartKeyWithPool)
+	assert.Equal(t, http.StatusForbidden, recorder.Code, "outside auto the pool is still the key's whitelist")
+}
+
+// 锁定模型 key（含旧令牌的空值，上下文里都是 fixed）拒绝客户端传的 auto；平台关了 auto 时
+// "auto" 只是普通模型名，不按这条规则拒绝。
+func TestDistributeLockedKeyRejectsAuto(t *testing.T) {
+	lockedKey := func(c *gin.Context) {
+		common.SetContextKey(c, constant.ContextKeyTokenRoutingMode, common.TokenRoutingModeFixed)
+	}
+
+	t.Run("auto is refused, a named model is served", func(t *testing.T) {
+		setupAutoRoutingDistribute(t, []string{"general"}, map[int][]string{1: {"general"}})
+		useModelPrices(t, map[string]float64{"general": 1})
+
+		_, _, recorder := serveAutoRoutingRequestIn(t, "/v1/chat/completions", "default", 9631,
+			`{"model":"auto","messages":[{"role":"user","content":"hello"}]}`, lockedKey)
+		assert.Equal(t, http.StatusForbidden, recorder.Code)
+		assert.Contains(t, recorder.Body.String(), "model: auto")
+
+		body := `{"model":"general","messages":[{"role":"user","content":"hello"}]}`
+		stored, originalModel, recorder := serveAutoRoutingRequestIn(t, "/v1/chat/completions", "default", 9632, body, lockedKey)
+		require.Equal(t, http.StatusNoContent, recorder.Code, recorder.Body.String())
+		assert.Equal(t, "general", originalModel)
+		assert.Equal(t, body, stored)
+	})
+
+	t.Run("with auto turned off auto is an ordinary model name", func(t *testing.T) {
+		setupAutoRoutingDistribute(t, []string{"general"}, map[int][]string{1: {"general", "auto"}})
+		useModelPrices(t, map[string]float64{"general": 1, "auto": 1})
+		autorouter_setting.GetAutoRouterSetting().Enabled = false
+
+		body := `{"model":"auto","messages":[{"role":"user","content":"hello"}]}`
+		stored, originalModel, recorder := serveAutoRoutingRequestIn(t, "/v1/chat/completions", "default", 9633, body, lockedKey)
+		require.Equal(t, http.StatusNoContent, recorder.Code, recorder.Body.String())
+		assert.Equal(t, "auto", originalModel)
+		assert.Equal(t, body, stored)
+	})
+}
+
+// Gemini 原生格式（模型名在 URL 里）和 /v1/completions 都是对话，但 auto 改写不了：智能路由 key 在里面
+// 写具体模型就能绕开 auto，所以平台开着 auto 时整种格式都拒绝（Gemini 的 embedContent 也拒，embedding
+// 走 /v1/embeddings）。锁定模型 key 不受影响；平台关了 auto 时智能路由 key 照常按模型池直接调。
+func TestDistributeSmartKeyCannotBypassAutoThroughFormatsAutoCannotRewrite(t *testing.T) {
+	setupAutoRoutingDistribute(t, []string{"general"}, map[int][]string{1: {"general", "private-model"}})
+	useModelPrices(t, map[string]float64{"general": 1, "private-model": 1})
+	keyOf := func(mode common.TokenRoutingMode) func(*gin.Context) {
+		return func(c *gin.Context) {
+			common.SetContextKey(c, constant.ContextKeyTokenRoutingMode, mode)
+		}
+	}
+	geminiBody := `{"contents":[{"role":"user","parts":[{"text":"hello"}]}]}`
+	completionsBody := `{"model":"private-model","prompt":"hello"}`
+
+	for _, tc := range []struct{ path, body, message string }{
+		{"/v1beta/models/private-model:generateContent", geminiBody, "Gemini"},
+		{"/v1beta/models/private-model:streamGenerateContent", geminiBody, "Gemini"},
+		{"/v1beta/models/private-model:embedContent", geminiBody, "Gemini"},
+		{"/v1/models/private-model:generateContent", geminiBody, "Gemini"},
+		{"/v1/completions", completionsBody, "/v1/completions"},
+	} {
+		_, _, recorder := serveAutoRoutingRequestIn(t, tc.path, "default", 9651, tc.body, keyOf(common.TokenRoutingModeSmart))
+		assert.Equal(t, http.StatusForbidden, recorder.Code, tc.path)
+		assert.Contains(t, recorder.Body.String(), tc.message, tc.path)
+	}
+
+	for _, tc := range []struct{ path, body string }{
+		{"/v1beta/models/private-model:generateContent", geminiBody},
+		{"/v1/completions", completionsBody},
+	} {
+		stored, originalModel, recorder := serveAutoRoutingRequestIn(t, tc.path, "default", 9652, tc.body, keyOf(common.TokenRoutingModeFixed))
+		require.Equal(t, http.StatusNoContent, recorder.Code, "%s: %s", tc.path, recorder.Body.String())
+		assert.Equal(t, "private-model", originalModel, "a locked key calls the model it names: %s", tc.path)
+		assert.Equal(t, tc.body, stored, tc.path)
+	}
+
+	autorouter_setting.GetAutoRouterSetting().Enabled = false
+	for _, tc := range []struct{ path, body string }{
+		{"/v1beta/models/private-model:generateContent", geminiBody},
+		{"/v1/completions", completionsBody},
+	} {
+		_, originalModel, recorder := serveAutoRoutingRequestIn(t, tc.path, "default", 9653, tc.body, keyOf(common.TokenRoutingModeSmart))
+		require.Equal(t, http.StatusNoContent, recorder.Code, "%s: %s", tc.path, recorder.Body.String())
+		assert.Equal(t, "private-model", originalModel, "with auto turned off a smart key calls the model it names: %s", tc.path)
+	}
 }
 
 func TestDistributeNonAutoRequestKeepsStoredBody(t *testing.T) {
@@ -711,7 +915,7 @@ func TestDistributeAutoWritesConvergedEffortIntoStoredBody(t *testing.T) {
 	}{
 		{
 			// 请求带 tools，渠道 3 不支持 tools，剩下的渠道最高声明到 high；难度要 xhigh，收敛到 high。
-			name: "chat: a trusted decision overrides the client's effort with the converged one",
+			name: "chat: a leaf task type overrides the client's effort with the converged one",
 			path: "/v1/chat/completions", taskType: "code.build", wantModel: "reasoner",
 			body:     `{"model":"auto","messages":` + chatMessages + `,"reasoning_effort":"low","tools":[` + chatTool + `]}`,
 			wantBody: `{"model":"reasoner","messages":` + chatMessages + `,"reasoning_effort":"high","tools":[` + chatTool + `]}`,
@@ -723,7 +927,7 @@ func TestDistributeAutoWritesConvergedEffortIntoStoredBody(t *testing.T) {
 			wantBody: `{"model":"no-think","messages":` + chatMessages + `}`,
 		},
 		{
-			name: "chat: without a trusted decision the client's effort is kept",
+			name: "chat: without a decision the client's effort is kept",
 			path: "/v1/chat/completions", wantModel: "reasoner",
 			body:     `{"model":"auto","messages":` + chatMessages + `,"reasoning_effort":"low"}`,
 			wantBody: `{"model":"reasoner","messages":` + chatMessages + `,"reasoning_effort":"low"}`,
@@ -803,7 +1007,7 @@ func TestDistributeAutoPicksByQualityAndUserPrice(t *testing.T) {
 	pool := map[int][]string{1: {"opus-x"}, 2: {"sonnet-x"}, 3: {"ghost-x"}}
 	body := `{"model":"auto","messages":[{"role":"user","content":"fix the bug"}]}`
 
-	t.Run("a trusted decision takes the cheaper of the close models and skips the unpriced one", func(t *testing.T) {
+	t.Run("a leaf task type takes the cheaper of the close models and skips the unpriced one", func(t *testing.T) {
 		prepare(t, pool, []string{"opus-x"})
 		t.Setenv("JEV_ENDPOINT", fakeJevFor(t, "code.build"))
 		_, originalModel, recorder := serveAutoRoutingRequest(t, "/v1/chat/completions", 9801, body)
@@ -1066,12 +1270,35 @@ func TestDistributeAutoAsksTheSchedulerPreviewWhenItDecides(t *testing.T) {
 		assert.Equal(t, []int{1, 2}, allowed["pick-x"], "the preview gets the same channel scope as the real schedule")
 		assert.Equal(t, []string{"code.build", "code.build"}, workloads, "preview and schedule carry the same workload")
 
+		assert.Equal(t, &autorouter.PreviewOutcome{Status: service.SchedulerPreviewAnswered}, result.Pick.Preview)
+
 		previewChannel["pick-x"] = 2
 		result, _, recorder = serveAutoRoutingResult(t, 9832, body)
 		require.Equal(t, http.StatusNoContent, recorder.Code, recorder.Body.String())
 		pick := pickOf(t, result)
 		assert.Equal(t, 1.0, pick.CostMultiplier, "the scheduler would pick channel 2, which has no discount")
 		assert.Equal(t, 2, pick.ChannelID)
+	})
+
+	t.Run("a channel new-api cannot price at is estimated natively and says why", func(t *testing.T) {
+		prepare(t)
+		// 预览说 ok 却没给 new-api 认得的渠道（previewChannel 没设，回 channel_id 0）。
+		result, _, recorder := serveAutoRoutingResult(t, 9837, body)
+		require.Equal(t, http.StatusNoContent, recorder.Code, recorder.Body.String())
+		pick := pickOf(t, result)
+		assert.Equal(t, autorouter.CostSourceExpected, pick.CostSource)
+		assert.Equal(t, previewUnusableChannel, pick.Preview)
+	})
+
+	t.Run("a model the scheduler has not loaded says so and is estimated natively", func(t *testing.T) {
+		prepare(t)
+		previewStatus["pick-x"] = "not_cached"
+		result, _, recorder := serveAutoRoutingResult(t, 9836, body)
+		require.Equal(t, http.StatusNoContent, recorder.Code, recorder.Body.String())
+		pick := pickOf(t, result)
+		assert.Equal(t, autorouter.CostSourceExpected, pick.CostSource)
+		assert.Equal(t, service.SchedulerPreviewNotCached, pick.Preview)
+		assert.Equal(t, &autorouter.PreviewOutcome{Status: service.SchedulerPreviewAnswered}, result.Pick.Preview)
 	})
 
 	t.Run("a model the scheduler cannot place is never picked", func(t *testing.T) {
@@ -1096,6 +1323,8 @@ func TestDistributeAutoAsksTheSchedulerPreviewWhenItDecides(t *testing.T) {
 		pick := pickOf(t, result)
 		assert.InDelta(t, 0.625, pick.CostMultiplier, 1e-9)
 		assert.Equal(t, autorouter.CostSourceExpected, pick.CostSource)
+		assert.Empty(t, pick.Preview, "the whole preview went unanswered; the reason is on the pick")
+		assert.Equal(t, &autorouter.PreviewOutcome{Status: service.SchedulerPreviewUnsupported}, result.Pick.Preview)
 	})
 }
 

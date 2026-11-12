@@ -536,6 +536,8 @@ func refreshCapacityPools(now time.Time) {
 
 // refreshCapacityPool 重算一个容量池并发布。拉取失败、范围内的来源失败、范围里一个账号
 // 也没有时只记状态，不动已发布的额度：它在宽限期后过期，调度器回到保底额度。
+// 管理页请求过重置时先丢掉这个池的计算状态：学到的换算比例从头再学，这一轮算出的额度
+// 不受上次发布值的上调限制，直接发布。
 func refreshCapacityPool(pool *model.CapacityPool, usage *ResourcePoolResult, fetchErr error, now time.Time) {
 	poolID := channelcapacity.CapacityPoolID(pool.Id)
 	status := channelcapacity.PollStatus{Status: "ok", AttemptAt: now.Unix()}
@@ -544,6 +546,12 @@ func refreshCapacityPool(pool *model.CapacityPool, usage *ResourcePoolResult, fe
 			common.SysError(common.LogText("failed to publish capacity pool status: %s", err.Error()))
 		}
 	}()
+	if reset, err := channelcapacity.TakeResetRequest(poolID); err != nil {
+		// 没取到就留着请求，下一轮再取。
+		common.SysError(common.LogText("failed to read the reset request of capacity pool %s: %s", poolID, err.Error()))
+	} else if reset {
+		delete(capacityPoolStates, pool.Id)
+	}
 	config, err := pool.ParseConfig()
 	if err != nil {
 		status.Status, status.Error = "config_error", err.Error()
