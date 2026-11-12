@@ -23,6 +23,7 @@ func setupModelSquareControllerTest(t *testing.T) *gorm.DB {
 	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{})
 	require.NoError(t, err)
 	require.NoError(t, db.AutoMigrate(
+		&model.Option{},
 		&model.Model{},
 		&model.Vendor{},
 		&model.Channel{},
@@ -102,7 +103,7 @@ func TestGetModelSquareSupportsPagination(t *testing.T) {
 func TestGetModelSquareDetailExposesCapabilityDerivedFields(t *testing.T) {
 	db := setupModelSquareControllerTest(t)
 	capabilities := `{
-		"context": {"max_output_tokens": 8192},
+		"context": {"max_input_tokens": 131072, "max_output_tokens": 8192},
 		"modalities": {"input": {"text": true, "image": {"supported": true}}, "output": ["text"]},
 		"tools": {"supported": true, "tool_choice": ["auto", "required"]},
 		"structured_output": {"json_schema": true},
@@ -111,7 +112,15 @@ func TestGetModelSquareDetailExposesCapabilityDerivedFields(t *testing.T) {
 		"streaming": {"supported": true}
 	}`
 	seedModelSquareModel(t, db, 1, "capability-model", capabilities)
+	expression := `tier("base", p * 2 + c * 8)`
+	for key, value := range map[string]string{
+		"billing_setting.billing_mode": `{"capability-model":"tiered_expr"}`,
+		"billing_setting.billing_expr": `{"capability-model":"tier(\"base\", p * 2 + c * 8)","unrelated-model":"private-pricing"}`,
+	} {
+		require.NoError(t, db.Create(&model.Option{Key: key, Value: value}).Error)
+	}
 	model.InvalidatePricingCache()
+	model.InvalidateCapabilityCache()
 
 	gin.SetMode(gin.TestMode)
 	recorder := httptest.NewRecorder()
@@ -128,6 +137,17 @@ func TestGetModelSquareDetailExposesCapabilityDerivedFields(t *testing.T) {
 	}
 	require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &response))
 	require.True(t, response.Success)
+	require.NotNil(t, response.Data.BasePricing)
+	assert.Equal(t, "capability-model", response.Data.BasePricing.SourceModel)
+	assert.Equal(t, expression, response.Data.BasePricing.Effective["billing_setting.billing_expr"])
+	assert.NotContains(t, recorder.Body.String(), "unrelated-model")
+	assert.NotContains(t, recorder.Body.String(), "private-pricing")
+	assert.NotContains(t, recorder.Body.String(), `"options"`)
+	require.NotNil(t, response.Data.MaxInputTokens)
+	assert.Equal(t, int64(131072), *response.Data.MaxInputTokens)
+	assert.True(t, response.Data.CapabilityDeclared)
+	require.Len(t, response.Data.Channels, 1)
+	assert.True(t, response.Data.Channels[0].CapabilityDeclared)
 	assert.Contains(t, response.Data.Capabilities, "structured_output")
 	assert.Contains(t, response.Data.Capabilities, "reasoning")
 	assert.Contains(t, response.Data.InputModalities, "image")

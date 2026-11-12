@@ -62,8 +62,18 @@ type modelSquareItem struct {
 	// CatalogKey 是模型广场详情页使用的路由键。它按具体模型名编码，
 	// 这样命中同一条前缀/后缀声明的多个模型也能各自有稳定的详情地址；
 	// 编码后不含 "/"，模型名里带斜杠（如 vendor/model）也能作为单个路径段。
-	CatalogKey string               `json:"catalog_key"`
-	Channels   []modelSquareChannel `json:"channels,omitempty"`
+	CatalogKey         string                  `json:"catalog_key"`
+	Channels           []modelSquareChannel    `json:"channels,omitempty"`
+	BasePricing        *modelSquareBasePricing `json:"basePricing,omitempty"`
+	MaxInputTokens     *int64                  `json:"maxInputTokens,omitempty"`
+	CapabilityDeclared bool                    `json:"capabilityDeclared"`
+}
+
+type modelSquareBasePricing struct {
+	SourceModel    string                     `json:"sourceModel"`
+	Effective      model.PricingValues        `json:"effective"`
+	CacheWriteMode model.CacheWriteMode       `json:"cacheWriteMode,omitempty"`
+	BillingDetails model.LegacyBillingDetails `json:"billingDetails"`
 }
 
 const modelSquareCatalogKeyPrefix = "m_"
@@ -87,13 +97,15 @@ func decodeModelSquareCatalogKey(key string) (string, bool) {
 // modelSquareChannel 是模型广场公开的单个服务渠道信息。
 // 只暴露渠道 ID、费用倍率与生效能力，不暴露渠道名称和密钥。
 type modelSquareChannel struct {
-	ID               int                    `json:"id"`
-	CostMultiplier   float64                `json:"cost_multiplier"`
-	Capabilities     []string               `json:"capabilities,omitempty"`
-	InputModalities  []string               `json:"input_modalities,omitempty"`
-	OutputModalities []string               `json:"output_modalities,omitempty"`
-	MaxOutputTokens  *int64                 `json:"max_output_tokens,omitempty"`
-	Parameters       []capability.Parameter `json:"parameters,omitempty"`
+	ID                 int                    `json:"id"`
+	MaxInputTokens     *int64                 `json:"maxInputTokens,omitempty"`
+	CapabilityDeclared bool                   `json:"capabilityDeclared"`
+	CostMultiplier     float64                `json:"cost_multiplier"`
+	Capabilities       []string               `json:"capabilities,omitempty"`
+	InputModalities    []string               `json:"input_modalities,omitempty"`
+	OutputModalities   []string               `json:"output_modalities,omitempty"`
+	MaxOutputTokens    *int64                 `json:"max_output_tokens,omitempty"`
+	Parameters         []capability.Parameter `json:"parameters,omitempty"`
 }
 
 // modelSquareRoute 是一条启用的"模型 → 渠道"路由，携带计算展示信息所需的渠道字段。
@@ -154,6 +166,8 @@ func modelSquareItemFromModel(
 		item.VendorDescription = vendor.Description
 	}
 	spec := capability.MustParse(meta.Capabilities)
+	item.MaxInputTokens = spec.Context.MaxInputTokens
+	_, item.CapabilityDeclared = model.ResolveModelCapability(modelName)
 	summary := capability.Summarize(spec)
 	item.Capabilities = summary.Capabilities
 	item.InputModalities = summary.InputModalities
@@ -212,6 +226,8 @@ func squareChannelsByModel(routes []modelSquareRoute, names map[string]struct{})
 			channel.CostMultiplier = 1
 		}
 		if spec, ok := model.EffectiveChannelCapability(route.ChannelID, route.Model); ok {
+			channel.MaxInputTokens = spec.Context.MaxInputTokens
+			channel.CapabilityDeclared = true
 			summary := capability.Summarize(spec)
 			channel.Capabilities = summary.Capabilities
 			channel.InputModalities = summary.InputModalities
@@ -362,6 +378,25 @@ func getModelSquareItemByCatalogKey(key string) (*modelSquareItem, error) {
 		return nil, errors.New("model not found")
 	}
 	items[0].EndpointMap = getModelSquareEndpointMap(items[0].SupportedEndpointTypes)
+	snapshot, err := model.GetModelPricingSnapshot([]string{modelName})
+	if err != nil {
+		return nil, err
+	}
+	if len(snapshot.Entries) == 1 {
+		entry := snapshot.Entries[0]
+		values := make(model.PricingValues)
+		for _, key := range []string{"ModelPrice", "ModelRatio", "CompletionRatio", "CacheRatio", "CreateCacheRatio", "ImageRatio", "AudioRatio", "AudioCompletionRatio", "billing_setting.billing_mode", "billing_setting.billing_expr"} {
+			if value, ok := entry.Effective[key]; ok {
+				values[key] = value
+			}
+		}
+		items[0].BasePricing = &modelSquareBasePricing{
+			SourceModel:    modelName,
+			Effective:      values,
+			CacheWriteMode: entry.CacheWriteMode,
+			BillingDetails: entry.BillingDetails,
+		}
+	}
 	return &items[0], nil
 }
 
