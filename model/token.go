@@ -135,6 +135,13 @@ func (token *Token) UpdateRateLimit() error {
 	return DB.Model(token).Select("rpm").Updates(token).Error
 }
 
+func (token *Token) UpdateStatus() error {
+	if cacheErr := invalidateTokenCacheForMutation(token.Key); cacheErr != nil {
+		common.SysLog("failed to invalidate token cache before status update: " + cacheErr.Error())
+	}
+	return DB.Model(token).Select("status").Updates(token).Error
+}
+
 func (token *Token) Clean() {
 	token.Key = ""
 }
