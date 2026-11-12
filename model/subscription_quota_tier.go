@@ -123,6 +123,58 @@ func UserQuotaTierExhausted(userId int) (bool, error) {
 	return len(subs) > 0, nil
 }
 
+// SubscriptionUsageAlert marks a sent usage notice; its own table so billing saves cannot overwrite it.
+type SubscriptionUsageAlert struct {
+	Id                 int   `json:"id"`
+	UserSubscriptionId int   `json:"user_subscription_id" gorm:"uniqueIndex"`
+	AmountTotal        int64 `json:"amount_total" gorm:"type:bigint;not null;default:0"`
+	CreatedAt          int64 `json:"created_at" gorm:"bigint"`
+}
+
+// DueSubscriptionUsageAlerts lists subscriptions past percent of their quota not yet notified at that
+// quota, and drops records of subscriptions back under it so the next crossing notifies again.
+func DueSubscriptionUsageAlerts(percent int64) ([]UserSubscription, error) {
+	now := GetDBTimestamp()
+	var reached []UserSubscription
+	// Usage due for a reset is last period's.
+	if err := billableSubscriptions(DB, now).
+		Where("amount_total > 0 AND amount_used * 100 > amount_total * ?", percent).
+		Where("next_reset_time = 0 OR next_reset_time > ?", now).
+		Order("id asc").
+		Find(&reached).Error; err != nil {
+		return nil, err
+	}
+	var alerts []SubscriptionUsageAlert
+	if err := DB.Find(&alerts).Error; err != nil {
+		return nil, err
+	}
+	alerted := make(map[int]int64, len(alerts))
+	for _, alert := range alerts {
+		alerted[alert.UserSubscriptionId] = alert.AmountTotal
+	}
+	due := make([]UserSubscription, 0)
+	for _, sub := range reached {
+		total, ok := alerted[sub.Id]
+		if ok && total == sub.AmountTotal {
+			delete(alerted, sub.Id)
+			continue
+		}
+		due = append(due, sub)
+	}
+	if len(alerted) == 0 {
+		return due, nil
+	}
+	stale := make([]int, 0, len(alerted))
+	for id := range alerted {
+		stale = append(stale, id)
+	}
+	return due, DB.Where("user_subscription_id IN ?", stale).Delete(&SubscriptionUsageAlert{}).Error
+}
+
+func RecordSubscriptionUsageAlert(sub *UserSubscription) error {
+	return DB.Create(&SubscriptionUsageAlert{UserSubscriptionId: sub.Id, AmountTotal: sub.AmountTotal, CreatedAt: common.GetTimestamp()}).Error
+}
+
 // carryOverPeriodUsageTx counts this period's spend as used on a new subscription; it may pass the quota.
 func carryOverPeriodUsageTx(tx *gorm.DB, sub *UserSubscription, plan *SubscriptionPlan) error {
 	start := time.Unix(sub.StartTime, 0)

@@ -142,7 +142,7 @@ var SsoUserListPlatformId = ""
 var SsoUserListSecret = ""
 
 var QuotaIncreaseNotifyUrl = ""
-var QuotaIncreaseNotifyHeaders = ""
+var QuotaIncreaseNotifyPlatId = ""
 
 var QuotaForNewUser = 0
 var QuotaForInviter = 0
