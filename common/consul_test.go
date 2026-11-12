@@ -636,3 +636,31 @@ func TestLoadConsulConfigWithoutPaths(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "env-log", dsn)
 }
+
+func TestLoadConsulConfigUsesClickHouseNamespaceFromConfig(t *testing.T) {
+	ckPayload := `{"clickhouse":{"logs":{"database":"logs","host":"127.0.0.1","password":"secret","port":9000,"user":"logger"}}}`
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		configPayload := fmt.Sprintf(`{"CK_CONSUL_HTTP_ADDR":%q,"CK_CONSUL_HTTP_TOKEN":"ck-token","CK_CONSUL_KV_PATH":"database/example/clickhouse/maas_logs","CK_CONSUL_CONFIG_KEY":"logs"}`, server.URL)
+		if r.URL.Path == "/v1/kv/app/example/config" {
+			fmt.Fprint(w, consulKeyResponse(configPayload))
+			return
+		}
+		if r.URL.Path == "/v1/kv/database/example/clickhouse/maas_logs" {
+			assert.Equal(t, "ck-token", r.Header.Get("X-Consul-Token"))
+			fmt.Fprint(w, consulKeyResponse(ckPayload))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+	t.Setenv("CONSUL_HTTP_ADDR", server.URL)
+	t.Setenv("CONSUL_HTTP_TOKEN", "base-token")
+	t.Setenv("CONSUL_KV_CONFIG_PATH", "app/example/config")
+	t.Setenv("CONSUL_KV_CONFIG_TOKEN", "config-token")
+	t.Setenv("CONSUL_KV_DB_PATH", "")
+	t.Setenv("LOG_SQL_DSN", "")
+	dsn, err := LoadConsulConfig()
+	require.NoError(t, err)
+	assert.Contains(t, dsn, "/logs")
+}
