@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -237,14 +238,17 @@ func syncExternalPlatform(ctx context.Context, config ExternalPlatformConfig) (i
 		_ = updateExternalSyncState(state, start, end, "failed", err.Error())
 		return len(rows), start, end, err
 	}
-	flow, err := fetchExternalFlow(ctx, config, start, end)
-	if err != nil {
-		_ = updateExternalSyncState(state, start, end, "failed", err.Error())
-		return len(rows), start, end, err
-	}
-	if err := model.ReplaceExternalFlowData(config.Name, start, end, flow); err != nil {
-		_ = updateExternalSyncState(state, start, end, "failed", err.Error())
-		return len(rows), start, end, err
+	// Per-hour windows, so an hour fetched again is replaced, not added.
+	for hour := start; hour <= end; hour += 3600 {
+		flow, err := fetchExternalFlow(ctx, config, hour, hour+3599)
+		if err != nil {
+			_ = updateExternalSyncState(state, start, end, "failed", err.Error())
+			return len(rows), start, end, err
+		}
+		if err := model.ReplaceExternalFlowData(config.Name, hour, hour+3599, flow); err != nil {
+			_ = updateExternalSyncState(state, start, end, "failed", err.Error())
+			return len(rows), start, end, err
+		}
 	}
 	if err := updateExternalSyncState(state, start, end, "succeeded", ""); err != nil {
 		return len(rows), start, end, err
@@ -401,68 +405,84 @@ func updateExternalSyncState(state *model.ExternalUsageSyncState, start, end int
 	return model.DB.Save(state).Error
 }
 
+// /api/data/ returns usernames only when filtered by one.
 func fetchExternalQuotaData(ctx context.Context, config ExternalPlatformConfig, start, end int64) ([]model.ExternalQuotaData, error) {
-	query := url.Values{}
-	query.Set("start_timestamp", strconv.FormatInt(start, 10))
-	query.Set("end_timestamp", strconv.FormatInt(end, 10))
-	endpoint := config.BaseURL + "/api/data/?" + query.Encode()
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-	if err != nil {
-		return nil, err
-	}
-	request.Header.Set("Authorization", "Bearer "+config.AdminToken)
-	request.Header.Set("New-Api-User", strconv.Itoa(config.AdminUserID))
-	client := &http.Client{Timeout: time.Duration(config.TimeoutSeconds) * time.Second}
-	response, err := client.Do(request)
-	if err != nil {
-		return nil, err
-	}
-	defer response.Body.Close()
-	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		body, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
-		return nil, fmt.Errorf("GET /api/data/ returned %s: %s", response.Status, strings.TrimSpace(string(body)))
-	}
-	var payload externalQuotaResponse
-	if err := common.DecodeJson(response.Body, &payload); err != nil {
-		return nil, err
-	}
-	if !payload.Success && payload.Message != "" {
-		return nil, fmt.Errorf("remote API failed: %s", payload.Message)
-	}
-	rows := make([]model.ExternalQuotaData, 0, len(payload.Data))
-	localUserIDs := make(map[string]int)
-	for _, item := range payload.Data {
-		if item.CreatedAt <= 0 {
-			continue
-		}
-		remoteUser := normalizeExternalUsername(item.Username)
-		if !externalUserAllowed(config.AllowedUsers, remoteUser) {
-			continue
-		}
-		localUserID, ok := config.UserMap[remoteUser]
-		if !ok {
-			if cached, found := localUserIDs[remoteUser]; found {
-				localUserID = cached
-			} else {
-				localUserID, err = model.FindLocalUserIDByExternalUsername(remoteUser)
-				if err != nil {
-					return nil, err
-				}
-				localUserIDs[remoteUser] = localUserID
+	usernames := []string{""}
+	if len(config.AllowedUsers) > 0 {
+		usernames = make([]string, 0, len(config.AllowedUsers))
+		for _, allowed := range config.AllowedUsers {
+			if name := normalizeExternalUsername(allowed); name != "" && !slices.Contains(usernames, name) {
+				usernames = append(usernames, name)
 			}
 		}
-		rows = append(rows, model.ExternalQuotaData{
-			Platform: config.Name, RemoteUserID: item.UserID, RemoteUsername: item.Username,
-			LocalUserID: localUserID, ModelName: item.ModelName, CreatedAt: item.CreatedAt,
-			RemoteTokenID: item.TokenID, RemoteChannelID: item.ChannelID, NodeName: item.NodeName,
-			TokenUsed: item.TokenUsed, Count: item.Count, Quota: item.Quota,
-			InputTokens: item.InputTokens, CompletionTokens: item.CompletionTokens,
-			CacheReadTokens: item.CacheReadTokens, CacheWriteTokens: item.CacheWriteTokens,
-			CacheCreationTokens: item.CacheCreationTokens, TrackedCount: item.TrackedCount,
-			UseTimeTotal: item.UseTimeTotal, UseTimeCount: item.UseTimeCount,
-			StreamErrorCount: item.StreamErrorCount, FailedCount: item.FailedCount,
-			LastCalledAt: item.LastCalledAt,
-		})
+	}
+	client := &http.Client{Timeout: time.Duration(config.TimeoutSeconds) * time.Second}
+	rows := make([]model.ExternalQuotaData, 0)
+	localUserIDs := make(map[string]int)
+	for _, username := range usernames {
+		query := url.Values{}
+		query.Set("start_timestamp", strconv.FormatInt(start, 10))
+		query.Set("end_timestamp", strconv.FormatInt(end, 10))
+		if username != "" {
+			query.Set("username", username)
+		}
+		request, err := http.NewRequestWithContext(ctx, http.MethodGet, config.BaseURL+"/api/data/?"+query.Encode(), nil)
+		if err != nil {
+			return nil, err
+		}
+		request.Header.Set("Authorization", "Bearer "+config.AdminToken)
+		request.Header.Set("New-Api-User", strconv.Itoa(config.AdminUserID))
+		response, err := client.Do(request)
+		if err != nil {
+			return nil, err
+		}
+		if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+			body, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
+			response.Body.Close()
+			return nil, fmt.Errorf("GET /api/data/ returned %s: %s", response.Status, strings.TrimSpace(string(body)))
+		}
+		var payload externalQuotaResponse
+		err = common.DecodeJson(response.Body, &payload)
+		response.Body.Close()
+		if err != nil {
+			return nil, err
+		}
+		if !payload.Success && payload.Message != "" {
+			return nil, fmt.Errorf("remote API failed: %s", payload.Message)
+		}
+		for _, item := range payload.Data {
+			if item.CreatedAt <= 0 {
+				continue
+			}
+			remoteUser := normalizeExternalUsername(item.Username)
+			if username != "" && remoteUser != username {
+				continue
+			}
+			localUserID, ok := config.UserMap[remoteUser]
+			if !ok {
+				if cached, found := localUserIDs[remoteUser]; found {
+					localUserID = cached
+				} else {
+					localUserID, err = model.FindLocalUserIDByExternalUsername(remoteUser)
+					if err != nil {
+						return nil, err
+					}
+					localUserIDs[remoteUser] = localUserID
+				}
+			}
+			rows = append(rows, model.ExternalQuotaData{
+				Platform: config.Name, RemoteUserID: item.UserID, RemoteUsername: item.Username,
+				LocalUserID: localUserID, ModelName: item.ModelName, CreatedAt: item.CreatedAt,
+				RemoteTokenID: item.TokenID, RemoteChannelID: item.ChannelID, NodeName: item.NodeName,
+				TokenUsed: item.TokenUsed, Count: item.Count, Quota: item.Quota,
+				InputTokens: item.InputTokens, CompletionTokens: item.CompletionTokens,
+				CacheReadTokens: item.CacheReadTokens, CacheWriteTokens: item.CacheWriteTokens,
+				CacheCreationTokens: item.CacheCreationTokens, TrackedCount: item.TrackedCount,
+				UseTimeTotal: item.UseTimeTotal, UseTimeCount: item.UseTimeCount,
+				StreamErrorCount: item.StreamErrorCount, FailedCount: item.FailedCount,
+				LastCalledAt: item.LastCalledAt,
+			})
+		}
 	}
 	return rows, nil
 }

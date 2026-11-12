@@ -209,11 +209,15 @@ func increaseQuotaData(quotaData *QuotaData) {
 	}
 }
 
+// No failure counts: failure-only rows are skipped, so they would be partial.
 func (row attributedUsageRow) chartQuotaData() *QuotaData {
 	return &QuotaData{
 		UserID: row.UserID, Username: row.Username, ModelName: row.ModelName, CreatedAt: row.Hour,
 		Count: int(row.RequestCount), Quota: int(row.Quota), TokenUsed: int(row.TokenUsed),
-		CacheReadTokens: row.CacheReadTokens, CacheCreationTokens: row.CacheCreationTokens,
+		InputTokens: int(row.InputTokens), CompletionTokens: int(row.CompletionTokens),
+		CacheReadTokens: row.CacheReadTokens, CacheWriteTokens: int(row.CacheWriteTokens),
+		CacheCreationTokens: row.CacheCreationTokens,
+		UseTimeTotal:        row.UseTimeTotal, UseTimeCount: row.UseTimeCount, LastCalledAt: row.LastCalledAt,
 	}
 }
 
@@ -349,8 +353,14 @@ func GetAllQuotaDates(startTime int64, endTime int64, username string, org Usage
 			total.Count += point.Count
 			total.Quota += point.Quota
 			total.TokenUsed += point.TokenUsed
+			total.InputTokens += point.InputTokens
+			total.CompletionTokens += point.CompletionTokens
 			total.CacheReadTokens += point.CacheReadTokens
+			total.CacheWriteTokens += point.CacheWriteTokens
 			total.CacheCreationTokens += point.CacheCreationTokens
+			total.UseTimeTotal += point.UseTimeTotal
+			total.UseTimeCount += point.UseTimeCount
+			total.LastCalledAt = max(total.LastCalledAt, point.LastCalledAt)
 			continue
 		}
 		point.UserID, point.Username = 0, ""
