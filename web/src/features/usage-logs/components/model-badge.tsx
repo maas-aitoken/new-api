@@ -16,7 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { AlertTriangle, Route } from 'lucide-react'
+import { AlertTriangle, Route, Waypoints } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 import { CopyButton } from '@/components/copy-button'
@@ -204,6 +204,25 @@ export function ModelBadge(props: ModelBadgeProps) {
   )
 }
 
+/**
+ * Marks a log whose request asked for the "auto" model. The model shown next to it
+ * is the one auto resolved to, not the one the client named.
+ */
+export function AutoRoutedBadge() {
+  const { t } = useTranslation()
+  return (
+    <StatusBadge
+      icon={Waypoints}
+      label='auto'
+      variant='info'
+      copyable={false}
+      title={t(
+        'This request asked for the auto model; the model shown is the one it was routed to.'
+      )}
+    />
+  )
+}
+
 export function ResponseModelDetails(props: {
   observation: NonNullable<LogOtherData['response_model']>
 }) {
@@ -223,23 +242,41 @@ export function ResponseModelDetails(props: {
           className='h-auto whitespace-normal'
         />
       )}
-      <DetailRow
-        label={t('Request Model')}
-        value={props.observation.requested_model}
-        mono
-      />
-      <DetailRow
-        label={t('Upstream Model')}
-        value={
-          props.observation.upstream_model || props.observation.requested_model
-        }
-        mono
-      />
-      <DetailRow
-        label={t('Response Model')}
-        value={props.observation.returned_model}
-        mono
-      />
+      {[
+        {
+          label: t('Request Model'),
+          value: props.observation.requested_model,
+        },
+        {
+          label: t('Upstream Model'),
+          value:
+            props.observation.upstream_model ||
+            props.observation.requested_model,
+        },
+        {
+          label: t('Response Model'),
+          value: props.observation.returned_model,
+        },
+      ].map((model) => (
+        <DetailRow
+          key={model.label}
+          label={model.label}
+          value={
+            <span className='inline-flex max-w-full items-start gap-1 align-top'>
+              <span className='min-w-0 leading-5 wrap-anywhere'>
+                {model.value}
+              </span>
+              <CopyButton
+                value={model.value}
+                className='size-5'
+                iconClassName='size-3'
+                aria-label={t('Copy {{field}}', { field: model.label })}
+              />
+            </span>
+          }
+          mono
+        />
+      ))}
       {mismatch && (
         <p className='text-muted-foreground text-xs'>
           {t(

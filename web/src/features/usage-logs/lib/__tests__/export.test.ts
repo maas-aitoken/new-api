@@ -37,7 +37,7 @@ const consumeLog: UsageLog = {
   use_time: 3,
   is_stream: true,
   fast_mode: false,
-  provider_slug: '',
+  auto_routed: false,
   iself_email: '',
   channel: 162,
   channel_name: 'azure',
@@ -116,6 +116,28 @@ describe('usage log CSV export', () => {
       'req-1',
       '',
     ])
+  })
+
+  test('cache write cell counts OpenAI 12-hour writes once as part of the total', async () => {
+    const t = await chineseTranslator()
+    const header = getLogCsvHeader(false, t)
+
+    const row = getLogCsvRow(
+      {
+        ...consumeLog,
+        other: JSON.stringify({
+          cache_tokens: 1906,
+          cache_creation_tokens: 1500,
+          cache_creation_ratio: 1.25,
+          cache_creation_tokens_12h: 1000,
+          cache_creation_ratio_12h: 2.5,
+        }),
+      },
+      false,
+      t
+    )
+
+    expect(row[header.indexOf('Cache Write')]).toBe('1500')
   })
 
   test('top-up log row leaves usage cells empty and shows the translated content', async () => {

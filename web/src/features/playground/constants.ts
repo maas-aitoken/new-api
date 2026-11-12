@@ -36,7 +36,6 @@ export const MESSAGE_STATUS = {
 export const API_ENDPOINTS = {
   CHAT_COMPLETIONS: '/pg/chat/completions',
   USER_MODELS: '/api/user/models',
-  USER_PROVIDERS: '/api/user/providers',
   USER_GROUPS: '/api/user/self/groups',
 } as const
 
@@ -55,8 +54,6 @@ export const DEFAULT_CONFIG: PlaygroundConfig = {
   presence_penalty: 0,
   seed: null,
   stream: true,
-  providerOrder: [],
-  allowProviderFallbacks: true,
 }
 
 export const DEFAULT_PARAMETER_ENABLED: ParameterEnabled = {

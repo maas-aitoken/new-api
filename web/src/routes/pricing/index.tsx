@@ -37,10 +37,6 @@ const pricingSearchSchema = z.object({
   contextLength: z.string().optional(),
   parameterCount: z.string().optional(),
   releaseDate: z.string().optional(),
-  free: z.string().optional(),
-  batch: z.string().optional(),
-  region: z.string().optional(),
-  quantization: z.string().optional(),
 })
 
 export const Route = createFileRoute('/pricing/')({

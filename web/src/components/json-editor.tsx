@@ -35,12 +35,15 @@ type JsonEditorProps = {
   emptyMessage?: string
   template?: Record<string, unknown>
   valueType?: 'string' | 'number' | 'any'
+  defaultMode?: 'visual' | 'json'
 }
 
 type EditorRow = {
   id: string
   key: string
   value: string
+  /** 值原本是对象/数组（而非字符串），回到 JSON 时必须按 JSON 还原。 */
+  structured: boolean
 }
 
 function parseJsonRows(json: string): EditorRow[] {
@@ -54,6 +57,7 @@ function parseJsonRows(json: string): EditorRow[] {
       id: `${Date.now()}-${index}`,
       key,
       value: typeof val === 'object' ? JSON.stringify(val) : String(val),
+      structured: typeof val === 'object',
     }))
   } catch {
     return []
@@ -71,6 +75,7 @@ export function JsonEditor({
   emptyMessage,
   template,
   valueType = 'string',
+  defaultMode = 'visual',
 }: JsonEditorProps) {
   const { t } = useTranslation()
   const resolvedEmptyMessage =
@@ -79,7 +84,7 @@ export function JsonEditor({
   const resolvedValuePlaceholder = valuePlaceholder ?? t('Value')
   const resolvedKeyLabel = keyLabel ?? t('Key')
   const resolvedValueLabel = valueLabel ?? t('Value')
-  const [mode, setMode] = useState<'visual' | 'json'>('visual')
+  const [mode, setMode] = useState<'visual' | 'json'>(defaultMode)
   const [rows, setRows] = useState<EditorRow[]>(() => parseJsonRows(value))
   const [jsonValue, setJsonValue] = useState(value)
 
@@ -105,8 +110,14 @@ export function JsonEditor({
       if (row.key.trim()) {
         let parsedValue: unknown = row.value.trim()
 
-        // Try to parse value based on type
-        if (valueType === 'number') {
+        if (row.structured) {
+          // 嵌套对象/数组按 JSON 还原，绝不能退化成字符串。
+          try {
+            parsedValue = JSON.parse(row.value)
+          } catch {
+            parsedValue = row.value.trim()
+          }
+        } else if (valueType === 'number') {
           parsedValue = Number(parsedValue) || 0
         } else if (valueType === 'any') {
           // Try to parse as JSON first
@@ -129,6 +140,7 @@ export function JsonEditor({
       id: `${Date.now()}`,
       key: '',
       value: '',
+      structured: false,
     }
     const updatedRows = [...rows, newRow]
     setRows(updatedRows)

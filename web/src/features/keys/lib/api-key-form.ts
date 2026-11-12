@@ -24,6 +24,18 @@ import { parseQuotaFromDollars, quotaUnitsToDollars } from '@/lib/format'
 import { DEFAULT_GROUP } from '../constants'
 import type { ApiKey, ApiKeyFormData } from '../types'
 
+// The preferences that carry a cost weight of their own, from capability-first to
+// cost-first. The platform sets one weight for each.
+export const AUTO_PREFERENCES = ['capability', 'balanced', 'cost'] as const
+
+// What a key or the platform default can choose: those three, or 'adaptive', which
+// reads each request's own weight from the three. The form adds 'default' for a key
+// that follows the platform setting.
+export const SELECTABLE_AUTO_PREFERENCES = [
+  ...AUTO_PREFERENCES,
+  'adaptive',
+] as const
+
 // ============================================================================
 // Form Schema
 // ============================================================================
@@ -36,11 +48,12 @@ export function getApiKeyFormSchema(t: TFunction, maxAutoGroups = 5) {
     .object({
       name: z.string().min(1, t('Please enter a name')),
       remain_quota_dollars: z.number().optional(),
-      expired_time: z.date().optional(),
+      expired_time: z.date().nullable(),
       unlimited_quota: z.boolean(),
       model_limits: z.array(z.string()),
       allow_ips: z.string().optional(),
       allow_user_quota_query: z.boolean(),
+      auto_preference: z.enum(['default', ...SELECTABLE_AUTO_PREFERENCES]),
       group: z.string().optional(),
       auto_groups_mode: z.enum(['inherit', 'custom']),
       auto_groups: z.array(z.string()),
@@ -107,11 +120,12 @@ export type ApiKeyFormValues = z.infer<ReturnType<typeof getApiKeyFormSchema>>
 export const API_KEY_FORM_DEFAULT_VALUES: ApiKeyFormValues = {
   name: '',
   remain_quota_dollars: 10,
-  expired_time: undefined,
+  expired_time: null,
   unlimited_quota: true,
   model_limits: [],
   allow_ips: '',
   allow_user_quota_query: true,
+  auto_preference: 'default',
   group: DEFAULT_GROUP,
   auto_groups_mode: 'inherit',
   auto_groups: [],
@@ -154,6 +168,8 @@ export function transformFormDataToPayload(
     model_limits: data.model_limits.join(','),
     allow_ips: data.allow_ips || '',
     allow_user_quota_query: data.allow_user_quota_query,
+    auto_preference:
+      data.auto_preference === 'default' ? '' : data.auto_preference,
     group: data.group || '',
     auto_groups:
       data.group === 'auto' && data.auto_groups_mode === 'custom'
@@ -184,15 +200,17 @@ export function transformApiKeyToFormDefaults(
       ? 0
       : quotaUnitsToDollars(apiKey.remain_quota),
     expired_time:
-      apiKey.expired_time > 0
-        ? new Date(apiKey.expired_time * 1000)
-        : undefined,
+      apiKey.expired_time > 0 ? new Date(apiKey.expired_time * 1000) : null,
     unlimited_quota: apiKey.unlimited_quota,
     model_limits: apiKey.model_limits
       ? apiKey.model_limits.split(',').filter(Boolean)
       : [],
     allow_ips: apiKey.allow_ips || '',
     allow_user_quota_query: !!apiKey.allow_user_quota_query,
+    auto_preference:
+      SELECTABLE_AUTO_PREFERENCES.find(
+        (preference) => preference === apiKey.auto_preference
+      ) ?? 'default',
     group: apiKey.group || DEFAULT_GROUP,
     auto_groups_mode: autoGroupsMode,
     auto_groups: autoGroups,

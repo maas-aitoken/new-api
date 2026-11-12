@@ -41,25 +41,23 @@ export const vendorsQueryKeys = {
   detail: (id: number) => [...vendorsQueryKeys.all, 'detail', id] as const,
 }
 
-export const providersQueryKeys = {
-  all: ['providers'] as const,
-  lists: () => [...providersQueryKeys.all, 'list'] as const,
+export const capabilityTargetsQueryKeys = {
+  all: ['capability-targets'] as const,
   list: (filters?: Record<string, unknown>) =>
-    [...providersQueryKeys.lists(), filters] as const,
-  detail: (id: number) => [...providersQueryKeys.all, 'detail', id] as const,
+    [...capabilityTargetsQueryKeys.all, 'list', filters] as const,
 }
 
-export const modelProviderPriceQueryKeys = {
-  all: ['model-provider-prices'] as const,
-  lists: () => [...modelProviderPriceQueryKeys.all, 'list'] as const,
-  list: (modelId: number) =>
-    [...modelProviderPriceQueryKeys.lists(), modelId] as const,
-}
-
-export const providerModelQueryKeys = {
-  all: ['provider-models'] as const,
-  list: (providerSlug: string, filters?: Record<string, unknown>) =>
-    [...providerModelQueryKeys.all, providerSlug, filters] as const,
+export const channelModelCapabilityQueryKeys = {
+  all: ['channel-model-capabilities'] as const,
+  detail: (channelId: number, model: string) =>
+    [...channelModelCapabilityQueryKeys.all, channelId, model] as const,
+  capacity: (model: string, channelIds: number[]) =>
+    [
+      ...channelModelCapabilityQueryKeys.all,
+      'capacity',
+      model,
+      channelIds,
+    ] as const,
 }
 
 /**

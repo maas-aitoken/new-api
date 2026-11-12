@@ -27,9 +27,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
-	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/codes"
-	"go.opentelemetry.io/otel/trace"
 )
 
 // ApplyUpstreamBodyMetadata restores metadata that net/http cannot infer from
@@ -222,10 +219,12 @@ func processHeaderOverride(info *common.RelayInfo, c *gin.Context) (map[string]s
 	}
 
 	headerOverrideSource := common.GetEffectiveHeaderOverride(info)
+	// Background polling has no client request from which to copy headers.
+	hasClientRequest := !info.IsChannelTest && c != nil && c.Request != nil
 
 	passAll := false
 	var passthroughRegex []*regexp.Regexp
-	if !info.IsChannelTest {
+	if hasClientRequest {
 		for k := range headerOverrideSource {
 			key := strings.TrimSpace(strings.ToLower(k))
 			if key == "" {
@@ -258,9 +257,6 @@ func processHeaderOverride(info *common.RelayInfo, c *gin.Context) (map[string]s
 	}
 
 	if passAll || len(passthroughRegex) > 0 {
-		if c == nil || c.Request == nil {
-			return nil, types.NewError(fmt.Errorf("missing request context for header passthrough"), types.ErrorCodeChannelHeaderOverrideInvalid)
-		}
 		for name := range c.Request.Header {
 			if shouldSkipPassthroughHeader(name) {
 				continue
@@ -298,7 +294,7 @@ func processHeaderOverride(info *common.RelayInfo, c *gin.Context) (map[string]s
 		if !ok {
 			return nil, types.NewError(nil, types.ErrorCodeChannelHeaderOverrideInvalid)
 		}
-		if info.IsChannelTest && strings.HasPrefix(strings.TrimSpace(str), clientHeaderPlaceholderPrefix) {
+		if !hasClientRequest && strings.HasPrefix(strings.TrimSpace(str), clientHeaderPlaceholderPrefix) {
 			continue
 		}
 
@@ -317,6 +313,17 @@ func processHeaderOverride(info *common.RelayInfo, c *gin.Context) (map[string]s
 
 func ResolveHeaderOverride(info *common.RelayInfo, c *gin.Context) (map[string]string, error) {
 	return processHeaderOverride(info, c)
+}
+
+// ApplyHeaderOverride applies channel overrides after the adaptor's headers.
+// Without a client request, only static values and {api_key} are resolved.
+func ApplyHeaderOverride(info *common.RelayInfo, c *gin.Context, req *http.Request) error {
+	headers, err := processHeaderOverride(info, c)
+	if err != nil {
+		return err
+	}
+	applyHeaderOverrideToRequest(req, headers)
+	return nil
 }
 
 func applyHeaderOverrideToRequest(req *http.Request, headerOverride map[string]string) {
@@ -350,11 +357,9 @@ func DoApiRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBody
 	}
 	// 在 SetupRequestHeader 之后应用 Header Override，确保用户设置优先级最高
 	// 这样可以覆盖默认的 Authorization header 设置
-	headerOverride, err := processHeaderOverride(info, c)
-	if err != nil {
+	if err = ApplyHeaderOverride(info, c, req); err != nil {
 		return nil, err
 	}
-	applyHeaderOverrideToRequest(req, headerOverride)
 	resp, err := doRequest(c, req, info)
 	if err != nil {
 		return nil, fmt.Errorf("do request failed: %w", err)
@@ -382,11 +387,9 @@ func DoFormRequest(a Adaptor, c *gin.Context, info *common.RelayInfo, requestBod
 	}
 	// 在 SetupRequestHeader 之后应用 Header Override，确保用户设置优先级最高
 	// 这样可以覆盖默认的 Authorization header 设置
-	headerOverride, err := processHeaderOverride(info, c)
-	if err != nil {
+	if err = ApplyHeaderOverride(info, c, req); err != nil {
 		return nil, err
 	}
-	applyHeaderOverrideToRequest(req, headerOverride)
 	resp, err := doRequest(c, req, info)
 	if err != nil {
 		return nil, fmt.Errorf("do request failed: %w", err)
@@ -501,29 +504,21 @@ func doRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http
 		}
 	}
 
-	providerCtx := c.Request.Context()
-	var providerSpan trace.Span
-	otelRuntime := observability.FromContext(providerCtx)
+	attemptCtx := c.Request.Context()
+	otelRuntime := observability.FromContext(attemptCtx)
 	if otelRuntime != nil {
-		providerCtx, providerSpan = otelRuntime.StartProviderRequest(providerCtx, info, req)
-		req = req.WithContext(providerCtx)
-		otelRuntime.Inject(providerCtx, req)
+		req = req.WithContext(attemptCtx)
+		otelRuntime.Inject(attemptCtx, req)
 	}
 	upstreamStart := time.Now()
 	common2.SetContextKey(c, appconstant.ContextKeyUpstreamRequestOrigin, req.URL.Scheme+"://"+req.URL.Host)
 	resp, err := relayClient.Do(req)
 	attemptlog.NoteUpstream(c, upstreamStart, resp)
 	if err != nil {
-		if otelRuntime != nil {
-			otelRuntime.FinishSpan(providerSpan, err)
-		}
 		logger.LogError(c, common2.LogText("do request failed: %s", err.Error()))
 		return nil, types.NewError(err, types.ErrorCodeDoRequestFailed, types.ErrOptionWithHideErrMsg("upstream error: do request failed"))
 	}
 	if resp == nil {
-		if otelRuntime != nil {
-			otelRuntime.FinishSpan(providerSpan, errors.New("resp is nil"))
-		}
 		return nil, errors.New("resp is nil")
 	}
 	if common2.DebugEnabled {
@@ -538,19 +533,12 @@ func doRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http
 
 	if upID := resp.Header.Get(common2.RequestIdKey); upID != "" {
 		c.Set(common2.UpstreamRequestIdKey, upID)
-		if otelRuntime != nil {
-			providerSpan.SetAttributes(attribute.String("new_api.upstream_request_id", upID))
-		}
 	}
 	if otelRuntime != nil {
-		providerSpan.SetAttributes(attribute.Int("http.response.status_code", resp.StatusCode))
-		if resp.StatusCode >= http.StatusBadRequest {
-			providerSpan.SetStatus(codes.Error, resp.Status)
+		otelRuntime.RecordUpstreamResponse(attemptCtx, req, resp)
+		if !info.IsStream {
+			resp.Body = otelRuntime.WrapResponseBody(attemptCtx, resp.Body)
 		}
-		otelRuntime.FinishSpan(providerSpan, nil)
-	}
-	if otelRuntime != nil && !info.IsStream {
-		resp.Body = otelRuntime.WrapResponseBody(c.Request.Context(), resp.Body)
 	}
 
 	_ = req.Body.Close()
@@ -580,6 +568,9 @@ func DoTaskApiRequest(a TaskAdaptor, c *gin.Context, info *common.RelayInfo, req
 	err = a.BuildRequestHeader(c, req, info)
 	if err != nil {
 		return nil, fmt.Errorf("setup request header failed: %w", err)
+	}
+	if err = ApplyHeaderOverride(info, c, req); err != nil {
+		return nil, err
 	}
 	resp, err := doRequest(c, req, info)
 	if err != nil {

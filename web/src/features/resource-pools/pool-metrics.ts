@@ -68,6 +68,26 @@ export function windowUsagePercent(account: ResourcePoolAccount): number {
   );
 }
 
+/** Whether the account reports a 5h window (antigravity / Gemini pools do). */
+export function hasFiveHourWindow(account: ResourcePoolAccount): boolean {
+  return account.usage_percent_5h !== undefined && account.usage_percent_5h !== null;
+}
+
+/**
+ * 5h window share of one account, 0–100. A window whose reset already passed
+ * has rolled over upstream, so it counts as unused until the next refresh.
+ */
+export function fiveHourUsagePercent(
+  account: ResourcePoolAccount,
+  now: number,
+): number {
+  if (account.reset_5h_at) {
+    const resetAt = new Date(account.reset_5h_at).getTime();
+    if (!Number.isNaN(resetAt) && resetAt <= now) return 0;
+  }
+  return clampPercent(account.usage_percent_5h ?? 0);
+}
+
 /** Quota share of one tokenmanagement (Claude) account, 0–100. */
 export function quotaUsagePercent(account: ResourcePoolAccount): number {
   if (account.usage_percentage) return clampPercent(account.usage_percentage);
@@ -180,6 +200,33 @@ export function summarizeWindow(
     high: percents.filter((pct) => pct >= HIGH_USAGE_PERCENT).length,
     nextReset: earliestFutureReset(
       live.map((account) => account.reset_7d_at),
+      now,
+    ),
+  };
+}
+
+/**
+ * Aggregates the 5h window of the live accounts that report one; undefined
+ * when no account in the set has a 5h window.
+ */
+export function summarizeFiveHour(
+  accounts: ResourcePoolAccount[],
+  now: number,
+): WindowSummary | undefined {
+  if (!accounts.some(hasFiveHourWindow)) return undefined;
+  const live = accounts.filter(
+    (account) => hasFiveHourWindow(account) && isWindowLive(account, now),
+  );
+  const percents = live.map((account) => fiveHourUsagePercent(account, now));
+  return {
+    live: live.length,
+    average: percents.length
+      ? percents.reduce((sum, pct) => sum + pct, 0) / percents.length
+      : 0,
+    peak: percents.length ? Math.max(...percents) : 0,
+    high: percents.filter((pct) => pct >= HIGH_USAGE_PERCENT).length,
+    nextReset: earliestFutureReset(
+      live.map((account) => account.reset_5h_at),
       now,
     ),
   };
@@ -365,6 +412,8 @@ export type PoolSummary = {
   bands: number[];
   top: PoolAccountUsage[];
   nextReset?: string;
+  /** 5h window figures; undefined when the pool reports no 5h window. */
+  fiveHour?: WindowSummary;
   sourcesOk: number;
   sourcesFailed: number;
   sourcesTotal: number;
@@ -422,6 +471,7 @@ export function summarizePool(
     bands,
     top: [...usages].sort((a, b) => b.percent - a.percent).slice(0, 3),
     nextReset: earliestFutureReset(resets, now),
+    fiveHour: windowed ? summarizeFiveHour(accounts, now) : undefined,
     sourcesOk: statuses.filter((status) => status.status === "success").length,
     sourcesFailed: statuses.filter((status) => status.status === "failed")
       .length,

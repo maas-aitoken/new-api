@@ -43,6 +43,17 @@ func EmailBindStart(c *gin.Context) {
 		writeSecurityOperationError(c, err)
 		return
 	}
+	// Refuse SSO accounts before the proof is consumed, so a doomed request
+	// does not burn the user's verification. The model rechecks in the flow.
+	user, err := model.GetUserById(identity.UserID, false)
+	if err != nil {
+		writeSecurityOperationError(c, err)
+		return
+	}
+	if user.HoidcId != "" {
+		writeSecurityOperationError(c, model.ErrSsoEmailManaged)
+		return
+	}
 	authorization := middleware.RequireSecurityProof(c, service.VerificationOperation{Scope: service.VerificationScopeAccountBind, Context: context})
 	if authorization == nil {
 		return
@@ -111,4 +122,71 @@ func EmailBind(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"success": true, "message": "", "data": gin.H{"notification_warning": notificationFailed}})
+}
+
+type emailVerifyRequest struct {
+	FlowToken string `json:"flow_token"`
+	Code      string `json:"code"`
+}
+
+// EmailVerifyStart mails a security verification code bound to the requested
+// operation to the account's bound email address.
+func EmailVerifyStart(c *gin.Context) {
+	identity, ok := middleware.GetStepUpIdentity(c)
+	if !ok {
+		writeSecurityOperationError(c, service.ErrAuthTokenInvalid)
+		return
+	}
+	var operation service.VerificationOperation
+	if err := common.DecodeJson(c.Request.Body, &operation); err != nil {
+		writeSecurityOperationError(c, service.ErrVerificationContextInvalid)
+		return
+	}
+	data, err := service.StartEmailVerification(identity, operation, service.AccountMailLanguage(c, identity.UserID))
+	if err != nil {
+		writeSecurityOperationError(c, err)
+		return
+	}
+	common.ApiSuccess(c, data)
+}
+
+func EmailVerifyResend(c *gin.Context) {
+	identity, ok := middleware.GetStepUpIdentity(c)
+	if !ok {
+		writeSecurityOperationError(c, service.ErrAuthTokenInvalid)
+		return
+	}
+	var request emailVerifyRequest
+	if err := common.DecodeJson(c.Request.Body, &request); err != nil || request.FlowToken == "" {
+		writeSecurityOperationError(c, model.ErrAuthFlowInvalid)
+		return
+	}
+	data, err := service.ResendEmailVerification(identity, request.FlowToken, service.AccountMailLanguage(c, identity.UserID))
+	if err != nil {
+		writeSecurityOperationError(c, err)
+		return
+	}
+	common.ApiSuccess(c, data)
+}
+
+// EmailVerifyFinish exchanges a correct code for a security proof. The audit
+// record names the method and scope, never the code or the address.
+func EmailVerifyFinish(c *gin.Context) {
+	identity, ok := middleware.GetStepUpIdentity(c)
+	if !ok {
+		writeSecurityOperationError(c, service.ErrAuthTokenInvalid)
+		return
+	}
+	var request emailVerifyRequest
+	if err := common.DecodeJson(c.Request.Body, &request); err != nil || request.FlowToken == "" {
+		writeSecurityOperationError(c, model.ErrAuthFlowInvalid)
+		return
+	}
+	proof, err := service.FinishEmailVerification(identity, request.FlowToken, request.Code)
+	if err != nil {
+		writeSecurityOperationError(c, err)
+		return
+	}
+	recordUserSecurityAudit(c, identity.UserID, "user.security_verify", map[string]any{"method": proof.Method, "scope": proof.Scope})
+	common.ApiSuccess(c, proof)
 }

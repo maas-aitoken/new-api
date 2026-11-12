@@ -220,6 +220,8 @@ export function buildApiParams(config: {
     ...(isAdmin && searchParams.iselfEmail
       ? { iself_email: String(searchParams.iselfEmail) }
       : {}),
+    ...(searchParams.autoRouted === 'only' ? { auto_routed: true } : {}),
+    ...(searchParams.autoRouted === 'exclude' ? { auto_routed: false } : {}),
     ...buildTimeRangeParams(searchParams, false),
   }
 

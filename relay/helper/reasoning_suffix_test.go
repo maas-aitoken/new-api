@@ -5,8 +5,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/pkg/autorouter"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	kitreasoning "github.com/QuantumNous/new-api/relaykit/relayconvert/reasoning"
@@ -16,7 +18,6 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/tidwall/gjson"
 )
 
 func mustApplyReasoningModelSuffix(t *testing.T, info *relaycommon.RelayInfo, outbound ...dto.Request) {
@@ -591,7 +592,7 @@ func TestApplyReasoningModelSuffixThinkingMinusOnePassthrough(t *testing.T) {
 	require.NotNil(t, info.ReasoningConversion.BudgetTokens)
 	assert.Equal(t, -1, *info.ReasoningConversion.BudgetTokens)
 	require.NotEmpty(t, request.Reasoning)
-	assert.Equal(t, float64(-1), gjson.GetBytes(request.Reasoning, "max_tokens").Num)
+	assert.Equal(t, float64(-1), ojson.GetBytes(request.Reasoning, "max_tokens").Num)
 }
 
 func TestApplyReasoningModelSuffixPreservesGpt51CodexMax(t *testing.T) {
@@ -606,4 +607,55 @@ func TestApplyReasoningModelSuffixPreservesGpt51CodexMax(t *testing.T) {
 	assert.Equal(t, "gpt-5.1-codex-max", info.UpstreamModelName)
 	assert.Nil(t, info.ReasoningConversion)
 	assert.Equal(t, "gpt-5.1-codex-max", hostreasoning.BaseModelName("gpt-5.1-codex-max"))
+}
+
+// auto 把档位写进了请求体、模型名上没有推理后缀时，这份意图要和后缀给出的意图走同一条渲染链。
+func TestApplyReasoningModelSuffixRendersEffortWrittenByAuto(t *testing.T) {
+	// "autorouter_result" 是 service 包存放 auto 结论的 gin 键，不对外导出；
+	// 改名的话这里取不到结果，下面的断言会失败。
+	withAutoResult := func(action autorouter.EffortAction, effort string) *gin.Context {
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		c.Set("autorouter_result", &autorouter.Result{EffortAction: action, AppliedEffort: effort})
+		return c
+	}
+	newInfo := func(modelName string) *relaycommon.RelayInfo {
+		return &relaycommon.RelayInfo{
+			OriginModelName: modelName,
+			Request:         &dto.GeneralOpenAIRequest{Model: modelName, ReasoningEffort: "high"},
+			ChannelMeta:     &relaycommon.ChannelMeta{UpstreamModelName: modelName},
+		}
+	}
+
+	t.Run("set renders as if the model name carried the effort", func(t *testing.T) {
+		info := newInfo("reasoner")
+		require.NoError(t, ApplyReasoningModelSuffix(withAutoResult(autorouter.EffortSet, "high"), info, info.Request))
+		require.NotNil(t, info.ReasoningConversion)
+		assert.Equal(t, "enabled", info.ReasoningConversion.Mode)
+		assert.Equal(t, "high", info.ReasoningConversion.Effort)
+		assert.Equal(t, "reasoner", info.UpstreamModelName)
+		assert.Empty(t, info.ConversionDiagnostics(), "请求体里的推理字段就是 auto 写的，不该报被覆盖")
+	})
+
+	t.Run("none disables thinking", func(t *testing.T) {
+		info := newInfo("reasoner")
+		require.NoError(t, ApplyReasoningModelSuffix(withAutoResult(autorouter.EffortSet, "none"), info, info.Request))
+		require.NotNil(t, info.ReasoningConversion)
+		assert.Equal(t, "disabled", info.ReasoningConversion.Mode)
+		assert.Equal(t, "none", info.ReasoningConversion.Effort)
+	})
+
+	t.Run("keep and strip leave the request to the normal path", func(t *testing.T) {
+		for _, action := range []autorouter.EffortAction{autorouter.EffortKeep, autorouter.EffortStrip, ""} {
+			info := newInfo("reasoner")
+			require.NoError(t, ApplyReasoningModelSuffix(withAutoResult(action, ""), info, info.Request))
+			assert.Nil(t, info.ReasoningConversion, "action=%q", action)
+		}
+	})
+
+	t.Run("an explicit suffix on the model name wins", func(t *testing.T) {
+		info := newInfo("gpt-5-low")
+		require.NoError(t, ApplyReasoningModelSuffix(withAutoResult(autorouter.EffortSet, "high"), info, info.Request))
+		require.NotNil(t, info.ReasoningConversion)
+		assert.Equal(t, "low", info.ReasoningConversion.Effort)
+	})
 }

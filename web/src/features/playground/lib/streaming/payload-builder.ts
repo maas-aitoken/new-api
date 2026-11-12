@@ -44,13 +44,6 @@ export function buildChatCompletionPayload(
     stream: config.stream,
   }
 
-  if (config.providerOrder.length > 0) {
-    payload.provider = {
-      order: config.providerOrder,
-      allow_fallbacks: config.allowProviderFallbacks,
-    }
-  }
-
   if (parameterEnabled.temperature) {
     payload.temperature = config.temperature
   }

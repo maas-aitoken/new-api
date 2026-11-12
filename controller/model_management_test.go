@@ -64,7 +64,7 @@ func modelManagementDB(t *testing.T, kind, dsn string) *gorm.DB {
 	require.NoError(t, model.InitDB())
 	database = model.DB
 	model.LOG_DB = database
-	require.NoError(t, database.AutoMigrate(&model.Model{}, &model.Vendor{}, &model.Channel{}, &model.Ability{}, &model.Option{}, &model.User{}, &model.AuditLog{}))
+	require.NoError(t, database.AutoMigrate(&model.Model{}, &model.Vendor{}, &model.Channel{}, &model.Ability{}, &model.ChannelModelCapability{}, &model.Option{}, &model.User{}, &model.AuditLog{}))
 	for _, value := range restoreRatios {
 		require.NoError(t, value.restore("{}"))
 	}
@@ -276,7 +276,8 @@ func TestModelPricingConversionDatabaseMatrix(t *testing.T) {
 				}{
 					{"unrecognized-model", nil, model.CacheWriteNone},
 					{"gpt-5.6-terra", nil, model.CacheWriteNone},
-					{"gpt-5.6-terra", common.GetPointer(1.25), model.CacheWriteStandard},
+					{"gpt-5.6-terra", common.GetPointer(1.25), model.CacheWriteOpenAITTL},
+					{"custom-GPT-alias", common.GetPointer(0.0), model.CacheWriteOpenAITTL},
 					{"vendor/claude-sonnet-4-6-high", nil, model.CacheWriteClaudeTTL},
 					{"custom-CLAUDE-alias", common.GetPointer(0.0), model.CacheWriteClaudeTTL},
 					{"deepseek-reasoner", common.GetPointer(0.0), model.CacheWriteStandard},
@@ -306,13 +307,19 @@ func TestModelPricingConversionDatabaseMatrix(t *testing.T) {
 						vars := billingexpr.UsedVars(response.Data.Expression)
 						assert.Equal(t, tc.mode != model.CacheWriteNone, vars["cc"])
 						assert.Equal(t, tc.mode == model.CacheWriteClaudeTTL, vars["cc1h"])
+						assert.Equal(t, tc.mode == model.CacheWriteOpenAITTL, vars["cc12h"])
 						if tc.configured != nil && *tc.configured == 0 {
-							cost, _, err := billingexpr.RunExpr(response.Data.Expression, billingexpr.TokenParams{CC: 100, CC1h: 100})
+							cost, _, err := billingexpr.RunExpr(response.Data.Expression, billingexpr.TokenParams{CC: 100, CC1h: 100, CC12h: 100})
 							require.NoError(t, err)
 							assert.Zero(t, cost, "explicit zero cache prices must stay free")
 						}
 					})
 				}
+				// GPT names price the 12h write at twice the configured write price.
+				openai, err := model.PreviewModelPricingConversion("gpt-5.6-terra", model.PricingValues{"ModelRatio": 5.0, "CompletionRatio": 5.0, "CacheRatio": 0.1, "CreateCacheRatio": 1.25})
+				require.NoError(t, err)
+				assert.Equal(t, model.CacheWriteOpenAITTL, openai.CacheWriteMode)
+				assert.Equal(t, `tier("base", p * 10 + c * 50 + cr * 1 + cc * 12.5 + cc12h * 25)`, openai.Expression)
 				// The billing name remains authoritative for cache terms.
 				require.NoError(t, (&model.Channel{Name: "Cache alias", Type: 1, Models: "opaque-cache-alias", ModelMapping: common.GetPointer(`{"opaque-cache-alias":"claude-sonnet-4-6"}`)}).Insert())
 				alias, err := model.PreviewModelPricingConversion("opaque-cache-alias", model.PricingValues{"ModelRatio": 2.0})
@@ -549,19 +556,14 @@ export function parseTaskResult() { return {}; }
 					"square-disabled":        model.ModelSquareUnavailable,
 					"square-partial-":        model.ModelSquarePartial,
 					"square-partial-hidden":  model.ModelSquareHidden,
-					"square-partial-on":      model.ModelSquareVisible,
-					"square-partial-off":     model.ModelSquareUnavailable,
-					"square-hidden-":         model.ModelSquarePartial,
-					"square-hidden-child":    model.ModelSquareHidden,
+					"square-hidden-":         model.ModelSquareHidden,
 					"square-hidden-override": model.ModelSquareVisible,
 					"square-off-":            model.ModelSquareHidden,
-					"square-off-child":       model.ModelSquareHidden,
 					"square-empty":           model.ModelSquareUnavailable,
 					"square-empty-hidden":    model.ModelSquareHidden,
-					"square-prefix-ending":   model.ModelSquareHidden,
-					"square-contains-ending": model.ModelSquareVisible,
-					"square-contains":        model.ModelSquareVisible,
 					"square-prefix-":         model.ModelSquareHidden,
+					"square-contains":        model.ModelSquareHidden,
+					"-ending":                model.ModelSquareVisible,
 				}
 				for name, state := range expected {
 					row, exists := byName[name]
@@ -571,8 +573,15 @@ export function parseTaskResult() { return {}; }
 						assert.Equal(t, state == model.ModelSquareVisible, catalog[name], name)
 					}
 				}
+				// 被规则命中的具体模型只在规则行的 matched_models 里，不再单独成行。
+				assert.Equal(t, []string{"square-partial-off", "square-partial-on"}, byName["square-partial-"].MatchedModels)
+				assert.Equal(t, []string{"square-hidden-child"}, byName["square-hidden-"].MatchedModels)
+				assert.Equal(t, []string{"square-off-child"}, byName["square-off-"].MatchedModels)
 				assert.Zero(t, byName["square-bare"].Id)
-				assert.Zero(t, byName["square-hidden-child"].Id)
+				assert.Zero(t, byName["square-disabled"].Id)
+				for _, grouped := range []string{"square-partial-on", "square-hidden-child", "square-off-child", "square-prefix-ending", "square-contains-ending"} {
+					assert.NotContains(t, byName, grouped)
+				}
 				t.Run("filter_square_state_before_pagination", func(t *testing.T) {
 					type filteredResponse struct {
 						Success bool
@@ -615,11 +624,11 @@ export function parseTaskResult() { return {}; }
 						query   string
 						names   []string
 					}{
-						{"list", GetAllModelsMeta, "?include_channel_models=true&square_state=visible", []string{"square-visible", "square-bare", "square-partial-on", "square-hidden-override", "square-contains-ending", "square-contains"}},
-						{"metadata_only", SearchModelsMeta, "?keyword=square-&square_state=visible", []string{"square-visible", "square-hidden-override", "square-contains"}},
+						{"list", GetAllModelsMeta, "?include_channel_models=true&square_state=visible", []string{"square-visible", "square-bare", "square-hidden-override", "-ending"}},
+						{"metadata_only", SearchModelsMeta, "?keyword=square-&square_state=visible", []string{"square-visible", "square-hidden-override"}},
 						{"keyword", SearchModelsMeta, "?include_channel_models=true&keyword=square-partial&square_state=hidden", []string{"square-partial-hidden"}},
-						{"policy", SearchModelsMeta, "?include_channel_models=true&keyword=square-&square_state=partial&status=disabled", []string{"square-hidden-"}},
-						{"vendor_and_sync", SearchModelsMeta, "?include_channel_models=true&keyword=square-&square_state=partial&vendor=0&sync_official=no", []string{"square-hidden-", "square-partial-"}},
+						{"policy", SearchModelsMeta, "?include_channel_models=true&keyword=square-&square_state=partial&status=disabled", []string{}},
+						{"vendor_and_sync", SearchModelsMeta, "?include_channel_models=true&keyword=square-&square_state=partial&vendor=0&sync_official=no", []string{"square-partial-"}},
 						{"no_matches", SearchModelsMeta, "?include_channel_models=true&keyword=square-bare&square_state=hidden", []string{}},
 					} {
 						t.Run(test.name, func(t *testing.T) {
@@ -647,7 +656,7 @@ export function parseTaskResult() { return {}; }
 					var oversizedPage filteredResponse
 					modelManagementRequest(t, SearchModelsMeta, "GET", "/api/models/search?square_state=visible&keyword=square-&p="+strconv.Itoa(int(^uint(0)>>1)), nil, &oversizedPage)
 					require.True(t, oversizedPage.Success)
-					assert.Equal(t, 3, oversizedPage.Data.Total)
+					assert.Equal(t, 2, oversizedPage.Data.Total)
 					assert.Empty(t, oversizedPage.Data.Items)
 				})
 				var detail struct {
@@ -689,15 +698,16 @@ export function parseTaskResult() { return {}; }
 				var response listingResponse
 				modelManagementRequest(t, SearchModelsMeta, "GET", "/api/models/search?include_channel_models=true&keyword=listing-", nil, &response)
 				require.True(t, response.Success)
-				require.Equal(t, 6, response.Data.Total)
+				require.Equal(t, 5, response.Data.Total)
 				names := make([]string, 0)
 				byName := make(map[string]model.Model)
 				for _, item := range response.Data.Items {
 					names = append(names, item.ModelName)
 					byName[item.ModelName] = item
 				}
-				assert.Equal(t, []string{"listing-rule-", "listing-catalog", "listing-exact", "listing-disabled", "listing-new", "listing-rule-child"}, names)
+				assert.Equal(t, []string{"listing-rule-", "listing-catalog", "listing-exact", "listing-disabled", "listing-new"}, names)
 				assert.True(t, byName[exact.ModelName].HasMetadata)
+				assert.Equal(t, []string{"listing-rule-child"}, byName["listing-rule-"].MatchedModels)
 				assert.False(t, byName["listing-new"].HasMetadata)
 				assert.Zero(t, byName["listing-new"].Id)
 				assert.Equal(t, 2, byName["listing-new"].ConfiguredChannelCount)
@@ -709,11 +719,11 @@ export function parseTaskResult() { return {}; }
 					total int
 					names []string
 				}{
-					{"&p=2&page_size=2", 6, []string{"listing-exact", "listing-disabled"}},
-					{"&p=9&page_size=2", 6, []string{}},
+					{"&p=2&page_size=2", 5, []string{"listing-exact", "listing-disabled"}},
+					{"&p=9&page_size=2", 5, []string{}},
 					{"&status=enabled", 3, []string{"listing-rule-", "listing-catalog", "listing-exact"}},
 					{"&sync_official=no", 2, []string{"listing-rule-", "listing-catalog"}},
-					{"&vendor=0", 6, []string{"listing-rule-", "listing-catalog", "listing-exact", "listing-disabled", "listing-new", "listing-rule-child"}},
+					{"&vendor=0", 5, []string{"listing-rule-", "listing-catalog", "listing-exact", "listing-disabled", "listing-new"}},
 					{"&vendor=999", 0, []string{}},
 				} {
 					var page listingResponse
@@ -906,8 +916,8 @@ export function parseTaskResult() { return {}; }
 				assert.EqualValues(t, 1, count)
 			})
 			t.Run("metadata_keeps_pricing_and_channel_identity", func(t *testing.T) {
-				active := model.Channel{Name: "Active route", Type: 1, Status: common.ChannelStatusEnabled}
-				disabled := model.Channel{Name: "Disabled route", Type: 1, Status: common.ChannelStatusManuallyDisabled}
+				active := model.Channel{Name: "Active route", Type: 1, Models: "matrix-hidden-unpriced", Status: common.ChannelStatusEnabled}
+				disabled := model.Channel{Name: "Disabled route", Type: 1, Models: "matrix-hidden-unpriced", Status: common.ChannelStatusManuallyDisabled}
 				require.NoError(t, db.Create(&active).Error)
 				require.NoError(t, db.Create(&disabled).Error)
 				require.NoError(t, db.Create(&[]model.Ability{
@@ -920,8 +930,10 @@ export function parseTaskResult() { return {}; }
 				rule := &model.Model{ModelName: "matrix-hidden-", NameRule: model.NameRulePrefix}
 				enrichModels([]*model.Model{exact, rule})
 				assert.Equal(t, []string{"available"}, exact.EnableGroups)
-				assert.Equal(t, []model.BoundChannel{{Name: "Active route", Type: 1}}, exact.BoundChannels)
-				assert.Equal(t, []string{"matrix-hidden-unpriced"}, rule.MatchedModels)
+				assert.Equal(t, []model.BoundChannel{{ID: active.Id, Name: "Active route", Type: 1}}, exact.BoundChannels)
+				// 精确行优先，规则不再“拥有”该模型，matched_models 只列规则兜底的具体模型。
+				assert.Empty(t, rule.MatchedModels)
+				assert.Zero(t, rule.MatchedCount)
 				assert.Empty(t, exact.Endpoints, "inferred endpoints must not become stored configuration")
 				priceBefore, err := model.GetModelPricingSnapshot([]string{"matrix-hidden-unpriced"})
 				require.NoError(t, err)
@@ -1525,6 +1537,12 @@ func TestSharedModelPluginPricingDatabaseMatrix(t *testing.T) {
 				_, err := jsplugin.DefaultRegistry.Register(source, jsplugin.Options{})
 				require.NoError(t, err)
 				t.Cleanup(func() { jsplugin.DefaultRegistry.Unregister(spec.key) })
+				if spec.key == "matrix-alpha" {
+					single, err := model.GetModelPricingSnapshot([]string{name})
+					require.NoError(t, err)
+					require.Len(t, single.Entries[0].PluginVariants, 1, "a sole provider must expose its separate pricing editor")
+					assert.Equal(t, "matrix-alpha", single.Entries[0].PluginVariants[0].PluginKey)
+				}
 			}
 
 			// Representative existing options have no plugin-expression row.
@@ -1560,6 +1578,21 @@ func TestSharedModelPluginPricingDatabaseMatrix(t *testing.T) {
 			assert.Equal(t, base, loaded.Entries[0].PluginVariants[0].Effective)
 			assert.True(t, loaded.Entries[0].PluginVariants[1].Compatible)
 			assert.Equal(t, variant, loaded.Entries[0].PluginVariants[1].Configured)
+			// Ordinary relay pricing and the existing plugin expressions are
+			// saved together without changing either plugin's billing contract.
+			ordinary := model.ModelPricingChange{ModelName: name, ExpectedVersion: loaded.Entries[0].Version, Pricing: model.PricingValues{
+				"billing_setting.billing_mode": "tiered_expr", "billing_setting.billing_expr": `tier("image", fixed(0.04)) * image_count`,
+				billing_setting.PluginBillingExprOption: map[string]any{"matrix-alpha": base, "matrix-beta": variant},
+			}}
+			require.NoError(t, model.UpdateModelPricing([]model.ModelPricingChange{ordinary}))
+			separate, err := model.GetModelPricingSnapshot([]string{name})
+			require.NoError(t, err)
+			assert.Equal(t, ordinary.Pricing, separate.Entries[0].Configured)
+			assert.Equal(t, base, separate.Entries[0].PluginVariants[0].Effective)
+			assert.Equal(t, variant, separate.Entries[0].PluginVariants[1].Effective)
+			// Keep exercising the pre-existing plugin-default configuration below.
+			change.ExpectedVersion = separate.Entries[0].Version
+			require.NoError(t, model.UpdateModelPricing([]model.ModelPricingChange{change}))
 			var flat map[string]string
 			require.NoError(t, common.UnmarshalJsonStr(loaded.Options[billing_setting.PluginBillingExprOption], &flat))
 			assert.Equal(t, map[string]string{"matrix-beta::" + name: variant}, flat)

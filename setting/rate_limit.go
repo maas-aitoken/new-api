@@ -17,6 +17,7 @@ const maxRateLimitDurationSeconds = 24 * 60 * 60
 // It is the largest count that cannot overflow int64(count)*duration for a
 // window of at most 24 hours.
 const maxModelRequestRateLimitCount int64 = math.MaxInt64 / maxRateLimitDurationSeconds
+const maxTokenRequestRateLimitCount = 10_000_000
 
 var ModelRequestRateLimitEnabled = false
 var ModelRequestRateLimitDurationMinutes = 1
@@ -24,6 +25,9 @@ var ModelRequestRateLimitCount = 0
 var ModelRequestRateLimitSuccessCount = 1000
 var ModelRequestRateLimitGroup = map[string][2]int{}
 var ModelRequestRateLimitMutex sync.RWMutex
+
+var TokenRequestRateLimitEnabled = false
+var TokenRequestRateLimitCount = 0
 
 func ModelRequestRateLimitGroup2JSONString() string {
 	ModelRequestRateLimitMutex.RLock()
@@ -74,5 +78,15 @@ func CheckModelRequestRateLimitGroup(jsonStr string) error {
 		}
 	}
 
+	return nil
+}
+
+func CheckTokenRequestRateLimitCount(count int) error {
+	if count < 0 {
+		return fmt.Errorf("token rate limit must not be negative, got %d", count)
+	}
+	if count > maxTokenRequestRateLimitCount {
+		return fmt.Errorf("token rate limit %d exceeds max %d", count, maxTokenRequestRateLimitCount)
+	}
 	return nil
 }

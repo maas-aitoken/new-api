@@ -3,6 +3,7 @@ package helper
 import (
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
@@ -10,6 +11,7 @@ import (
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/pkg/billingexpr"
+	"github.com/QuantumNous/new-api/pkg/jsplugin"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/relayconvert/reasoning"
@@ -31,9 +33,6 @@ func modelPriceNotConfiguredError(c *gin.Context, modelName string, userId int) 
 	}
 	return errors.New(i18n.T(c, key, map[string]any{"Model": modelName}))
 }
-
-// https://docs.claude.com/en/docs/build-with-claude/prompt-caching#1-hour-cache-duration
-const claudeCacheCreation1hMultiplier = 6 / 3.75
 
 // HandleGroupRatio checks for "auto_group" in the context and updates the group ratio and relayInfo.UsingGroup if present
 func HandleGroupRatio(ctx *gin.Context, relayInfo *relaycommon.RelayInfo) hosttypes.GroupRatioInfo {
@@ -88,6 +87,7 @@ func ModelPriceHelper(c *gin.Context, info *relaycommon.RelayInfo, promptTokens 
 	var cacheCreationRatio float64
 	var cacheCreationRatio5m float64
 	var cacheCreationRatio1h float64
+	var cacheCreationRatio12h float64
 	var audioRatio float64
 	var audioCompletionRatio float64
 	var freeModel bool
@@ -114,7 +114,8 @@ func ModelPriceHelper(c *gin.Context, info *relaycommon.RelayInfo, promptTokens 
 		cacheCreationRatio, _ = ratio_setting.GetCreateCacheRatio(billingModelName)
 		cacheCreationRatio5m = cacheCreationRatio
 		// 固定1h和5min缓存写入价格的比例
-		cacheCreationRatio1h = cacheCreationRatio * claudeCacheCreation1hMultiplier
+		cacheCreationRatio1h = cacheCreationRatio * hosttypes.ClaudeCacheCreation1hMultiplier
+		cacheCreationRatio12h = cacheCreationRatio * hosttypes.OpenAICacheCreation12hMultiplier
 		imageRatio, _ = ratio_setting.GetImageRatio(billingModelName)
 		audioRatio = ratio_setting.GetAudioRatio(billingModelName)
 		audioCompletionRatio = ratio_setting.GetAudioCompletionRatio(billingModelName)
@@ -156,20 +157,21 @@ func ModelPriceHelper(c *gin.Context, info *relaycommon.RelayInfo, promptTokens 
 	}
 
 	priceData := hosttypes.PriceData{
-		FreeModel:            freeModel,
-		ModelPrice:           modelPrice,
-		ModelRatio:           modelRatio,
-		CompletionRatio:      completionRatio,
-		GroupRatioInfo:       groupRatioInfo,
-		UsePrice:             usePrice,
-		CacheRatio:           cacheRatio,
-		ImageRatio:           imageRatio,
-		AudioRatio:           audioRatio,
-		AudioCompletionRatio: audioCompletionRatio,
-		CacheCreationRatio:   cacheCreationRatio,
-		CacheCreation5mRatio: cacheCreationRatio5m,
-		CacheCreation1hRatio: cacheCreationRatio1h,
-		QuotaToPreConsume:    preConsumedQuota,
+		FreeModel:             freeModel,
+		ModelPrice:            modelPrice,
+		ModelRatio:            modelRatio,
+		CompletionRatio:       completionRatio,
+		GroupRatioInfo:        groupRatioInfo,
+		UsePrice:              usePrice,
+		CacheRatio:            cacheRatio,
+		ImageRatio:            imageRatio,
+		AudioRatio:            audioRatio,
+		AudioCompletionRatio:  audioCompletionRatio,
+		CacheCreationRatio:    cacheCreationRatio,
+		CacheCreation5mRatio:  cacheCreationRatio5m,
+		CacheCreation1hRatio:  cacheCreationRatio1h,
+		CacheCreation12hRatio: cacheCreationRatio12h,
+		QuotaToPreConsume:     preConsumedQuota,
 	}
 	if usePrice {
 		for name, ratio := range meta.BillingRatios {
@@ -346,7 +348,33 @@ func modelPriceHelperTiered(c *gin.Context, info *relaycommon.RelayInfo, billing
 		return hosttypes.PriceData{}, fmt.Errorf("model %s is configured as tiered_expr but has no billing expression", billingModelName)
 	}
 	exprHash := billingexpr.ExprHashString(exprStr)
-	if info.RelayFormat == types.RelayFormatOpenAIRealtime && billingexpr.UsesFixedPricingByHash(exprStr, exprHash) {
+	usedVars := billingexpr.UsedVarsByHash(exprStr, exprHash)
+	if usedVars["u"] {
+		return hosttypes.PriceData{}, errors.New(i18n.T(c, i18n.MsgRelayTaskUsagePriceUnsupported, map[string]any{"Model": billingModelName}))
+	}
+	fixedPricing := billingexpr.UsesFixedPricingByHash(exprStr, exprHash)
+	value, _ := c.Get(jsplugin.ContextKeyRelayEndpoint)
+	if endpoint, ok := value.(jsplugin.PinnedEndpoint); ok && !fixedPricing {
+		for _, candidate := range endpoint.Candidates {
+			pluginKey := candidate.Plugin.Meta.Key
+			if _, overridden := billing_setting.GetPluginBillingExpr(pluginKey, endpoint.Model); overridden {
+				continue
+			}
+			if _, overridden := billing_setting.GetPluginBillingExpr(pluginKey, endpoint.MappedModel); endpoint.MappedModel != "" && overridden {
+				continue
+			}
+			taskBillingModel := endpoint.Model
+			if billing_setting.GetBillingMode(taskBillingModel) != billing_setting.BillingModeTieredExpr {
+				taskBillingModel = endpoint.MappedModel
+			}
+			// Task expressions return USD; ordinary expressions return USD *
+			// 1M. Even a constant without u() cannot safely serve both contracts.
+			if taskBillingModel == billingModelName {
+				return hosttypes.PriceData{}, errors.New(i18n.T(c, i18n.MsgRelaySharedTaskPriceNeedsOverride, map[string]any{"Model": billingModelName, "Plugin": pluginKey}))
+			}
+		}
+	}
+	if info.RelayFormat == types.RelayFormatOpenAIRealtime && fixedPricing {
 		return hosttypes.PriceData{}, fmt.Errorf("fixed pricing is not supported for Realtime requests")
 	}
 
@@ -359,7 +387,7 @@ func modelPriceHelperTiered(c *gin.Context, info *relaycommon.RelayInfo, billing
 	if err != nil {
 		return hosttypes.PriceData{}, err
 	}
-	if billingexpr.UsedVarsByHash(exprStr, exprHash)["image_count"] {
+	if usedVars["image_count"] {
 		requestInput, err = ResolveImageBillingRequestInput(c, info, requestInput)
 		if err != nil {
 			return hosttypes.PriceData{}, err
@@ -426,4 +454,100 @@ func modelPriceHelperTiered(c *gin.Context, info *relaycommon.RelayInfo, billing
 
 	info.PriceData = priceData
 	return priceData, nil
+}
+
+// RoutingPriceKind 说明一个模型的用户价格能不能按 token 比较。
+type RoutingPriceKind int
+
+const (
+	// RoutingUnpriced 没有配置价格（用户也没有接受未定价模型），计费时会直接失败。
+	RoutingUnpriced RoutingPriceKind = iota
+	// RoutingPerRequest 按次计价，没法和按 token 计价的模型比较。
+	RoutingPerRequest
+	// RoutingPerToken 按 token 计价，PricePerMillion 可以比较。
+	RoutingPerToken
+)
+
+// RoutingQuote 是一个候选模型对当前请求的用户价格；零值表示没有价格。
+type RoutingQuote struct {
+	Kind RoutingPriceKind
+	// PricePerMillion 是混合用户价（美元/百万 token）：输入输出按 3:1 混合（与离线排名
+	// 用的混合价同一个比例），已乘计费分组倍率。
+	PricePerMillion float64
+}
+
+// RoutingPricer 在选路阶段估算候选模型的用户价格。
+//
+// 选路发生在 RelayInfo 和预扣费之前，所以它只读价格配置，不写 PriceData、不碰额度，
+// 取价顺序与 ModelPriceHelper 一致：计费名解析 → 计费表达式 → 按次价格 → 倍率。
+// 价格保持浮点美元，不换算成额度。
+type RoutingPricer struct {
+	input            billingexpr.RequestInput
+	estimateInput    func(originModel string) int64
+	acceptUnsetRatio bool
+}
+
+// NewRoutingPricer 按候选模型的估算输入 token 数选择表达式里的上下文长度档位。
+// 同一段文本在不同家族的 tokenizer 下长度不同，所以每个候选单独估算；
+// 估算为 0（请求体不可用、超限等）时按最小档估价。estimateInput 不能为 nil。
+func NewRoutingPricer(c *gin.Context, estimateInput func(originModel string) int64, acceptUnsetRatio bool) *RoutingPricer {
+	// 读不到请求体时表达式里的 param() 取不到值，按没有该参数估价，不让选路因此失败。
+	input, _ := ResolveIncomingBillingExprRequestInput(c, nil)
+	input.Headers = relaycommon.CloneRequestHeaders(c)
+	return &RoutingPricer{
+		input:            input,
+		estimateInput:    estimateInput,
+		acceptUnsetRatio: acceptUnsetRatio,
+	}
+}
+
+// Quote 返回候选模型 originModel 在计费分组倍率 groupRatio 下的用户价格。
+func (p *RoutingPricer) Quote(originModel string, groupRatio float64) RoutingQuote {
+	name := resolveBillingModelName(originModel)
+	if name == "" {
+		return RoutingQuote{}
+	}
+
+	var inputPrice, outputPrice float64 // 美元/百万 token
+	switch {
+	case billing_setting.GetBillingMode(name) == billing_setting.BillingModeTieredExpr:
+		expr, ok := billing_setting.GetBillingExpr(name)
+		if !ok || strings.TrimSpace(expr) == "" {
+			return RoutingQuote{}
+		}
+		hash := billingexpr.ExprHashString(expr)
+		promptTokens := float64(min(max(p.estimateInput(originModel), 1), math.MaxInt32))
+		// 表达式的系数就是美元/百万 token。跑两次再相减，得到当前上下文长度档位下的输入价和输出价，
+		// 不假设表达式对 token 数是线性的。
+		inputCost, trace, err := billingexpr.RunExprByHashWithRequest(expr, hash,
+			billingexpr.TokenParams{P: promptTokens, C: 0, Len: promptTokens}, p.input)
+		if err != nil {
+			return RoutingQuote{}
+		}
+		if trace.BillingUnit == billingexpr.BillingUnitRequest {
+			return RoutingQuote{Kind: RoutingPerRequest}
+		}
+		bothCost, _, err := billingexpr.RunExprByHashWithRequest(expr, hash,
+			billingexpr.TokenParams{P: promptTokens, C: promptTokens, Len: promptTokens}, p.input)
+		if err != nil {
+			return RoutingQuote{}
+		}
+		inputPrice, outputPrice = inputCost/promptTokens, (bothCost-inputCost)/promptTokens
+	default:
+		if _, fixed := ratio_setting.GetModelPrice(name, false); fixed {
+			return RoutingQuote{Kind: RoutingPerRequest}
+		}
+		ratio, configured, _ := ratio_setting.GetModelRatio(name)
+		if (!configured && !p.acceptUnsetRatio) || common.QuotaPerUnit <= 0 {
+			return RoutingQuote{}
+		}
+		inputPrice = ratio * 1_000_000 / common.QuotaPerUnit
+		outputPrice = inputPrice * ratio_setting.GetCompletionRatio(name)
+	}
+
+	price := (3*inputPrice + outputPrice) / 4 * groupRatio
+	if inputPrice < 0 || outputPrice < 0 || groupRatio < 0 || math.IsNaN(price) || math.IsInf(price, 0) {
+		return RoutingQuote{}
+	}
+	return RoutingQuote{Kind: RoutingPerToken, PricePerMillion: price}
 }

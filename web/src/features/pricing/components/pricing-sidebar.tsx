@@ -37,10 +37,10 @@ import {
   getEndpointTypeLabels,
   getQuotaTypeLabels,
 } from '../constants'
-import { hasTaskUsageSchema } from '../lib/dynamic-price'
 import {
   ADVANCED_RANGE_OPTIONS,
   PARAMETER_RANGE_OPTIONS,
+  getModelQuotaType,
   parseTags,
   type PricingAdvancedFilters,
 } from '../lib/filters'
@@ -85,10 +85,6 @@ export interface PricingSidebarProps {
     hasContextLength: boolean
     hasParameterCount: boolean
     hasReleaseDate: boolean
-    hasFree: boolean
-    hasBatch: boolean
-    regions: string[]
-    quantizations: string[]
   }
   onAdvancedFilterChange: (
     key: keyof PricingAdvancedFilters,
@@ -201,13 +197,8 @@ export const PricingSidebar = memo(function PricingSidebar(
       for (const endpoint of new Set(model.supported_endpoint_types ?? [])) {
         endpoints.set(endpoint, (endpoints.get(endpoint) ?? 0) + 1)
       }
-      if (hasTaskUsageSchema(model)) {
-        quotas.task++
-      } else if (model.quota_type === 0) {
-        quotas.token++
-      } else if (model.quota_type === 1) {
-        quotas.request++
-      }
+      const quotaType = getModelQuotaType(model)
+      if (quotaType) quotas[quotaType]++
     }
     return { vendors, tags, endpoints, quotas }
   }, [props.models])
@@ -334,58 +325,6 @@ export const PricingSidebar = memo(function PricingSidebar(
             ],
             onChange: (value: string) =>
               props.onAdvancedFilterChange('releaseDate', value),
-          },
-        ]
-      : []),
-    ...(props.advancedOptions.hasFree
-      ? [
-          {
-            title: t('Free routing mode'),
-            value: props.advancedFilters.free,
-            options: [{ value: 'supported', label: t('Supported') }],
-            onChange: (value: string) =>
-              props.onAdvancedFilterChange('free', value),
-          },
-        ]
-      : []),
-    ...(props.advancedOptions.hasBatch
-      ? [
-          {
-            title: t('Batch capability'),
-            value: props.advancedFilters.batch,
-            options: [{ value: 'supported', label: t('Supported') }],
-            onChange: (value: string) =>
-              props.onAdvancedFilterChange('batch', value),
-          },
-        ]
-      : []),
-    ...(props.advancedOptions.regions.length > 0
-      ? [
-          {
-            title: t('Region'),
-            value: props.advancedFilters.region,
-            options: props.advancedOptions.regions.map((region) => ({
-              value: region,
-              label: region,
-            })),
-            onChange: (value: string) =>
-              props.onAdvancedFilterChange('region', value),
-          },
-        ]
-      : []),
-    ...(props.advancedOptions.quantizations.length > 0
-      ? [
-          {
-            title: t('Quantization'),
-            value: props.advancedFilters.quantization,
-            options: props.advancedOptions.quantizations.map(
-              (quantization) => ({
-                value: quantization,
-                label: quantization,
-              })
-            ),
-            onChange: (value: string) =>
-              props.onAdvancedFilterChange('quantization', value),
           },
         ]
       : []),

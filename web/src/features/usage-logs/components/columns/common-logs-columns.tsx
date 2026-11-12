@@ -75,7 +75,7 @@ import {
 import type { LogOtherData } from '../../types'
 import { DetailsDialog } from '../dialogs/details-dialog'
 import { LogCostDisplay } from '../log-cost-display'
-import { ModelBadge } from '../model-badge'
+import { AutoRoutedBadge, ModelBadge } from '../model-badge'
 import { TimingMetricsCell, StreamTpsCell } from '../timing-metrics-cell'
 import { useUsageLogsContext } from '../usage-logs-provider'
 
@@ -228,9 +228,12 @@ function buildTypeDetailSegments(
 
       const cacheEntries = tieredSummary.priceEntries
         .filter((entry) =>
-          ['cacheReadPrice', 'cacheCreatePrice', 'cacheCreate1hPrice'].includes(
-            entry.field
-          )
+          [
+            'cacheReadPrice',
+            'cacheCreatePrice',
+            'cacheCreate1hPrice',
+            'cacheCreate12hPrice',
+          ].includes(entry.field)
         )
         .map((entry) => {
           return formatPriceCompact(entry.price)
@@ -251,6 +254,7 @@ function buildTypeDetailSegments(
               'cacheReadPrice',
               'cacheCreatePrice',
               'cacheCreate1hPrice',
+              'cacheCreate12hPrice',
             ].includes(entry.field)
         )
         .map((entry) =>
@@ -300,6 +304,10 @@ function buildTypeDetailSegments(
           other.cache_creation_ratio_1h != null &&
           other.cache_creation_ratio_1h !== 0
             ? formatPriceCompact(inputPriceUSD * other.cache_creation_ratio_1h)
+            : null,
+          other.cache_creation_ratio_12h != null &&
+          other.cache_creation_ratio_12h !== 0
+            ? formatPriceCompact(inputPriceUSD * other.cache_creation_ratio_12h)
             : null,
         ].filter(Boolean) as string[]
 
@@ -725,12 +733,13 @@ export function useCommonLogsColumns(
           const modelInfo = formatModelName(log)
 
           return (
-            <div className='flex w-fit flex-col gap-0.5'>
+            <div className='flex w-fit flex-wrap items-center gap-1'>
               <ModelBadge
                 modelName={modelInfo.name}
                 actualModel={modelInfo.actualModel}
                 responseModel={modelInfo.responseModel}
               />
+              {log.auto_routed ? <AutoRoutedBadge /> : null}
             </div>
           )
         },

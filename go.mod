@@ -1,10 +1,10 @@
 module github.com/QuantumNous/new-api
 
-// +heroku goVersion go1.18
-go 1.26
+// +heroku goVersion go1.26.10
+go 1.26.10
 
 require (
-	github.com/Calcium-Ion/go-epay v0.0.5
+	github.com/Calcium-Ion/go-epay v0.0.6
 	github.com/abema/go-mp4 v1.4.1
 	github.com/andybalholm/brotli v1.2.0
 	github.com/anknown/ahocorasick v0.0.0-20190904063843-d75dbd5169c0
@@ -32,9 +32,10 @@ require (
 	github.com/jfreymuth/oggvorbis v1.0.5
 	github.com/jinzhu/copier v0.4.0
 	github.com/joho/godotenv v1.5.1
-	github.com/klauspost/compress v1.18.3
+	github.com/klauspost/compress v1.18.7
 	github.com/mewkiz/flac v1.0.13
 	github.com/nicksnyder/go-i18n/v2 v2.6.1
+	github.com/parquet-go/parquet-go v0.32.0
 	github.com/pkg/errors v0.9.1
 	github.com/pquerna/otp v1.5.0
 	github.com/samber/hot v0.11.0
@@ -80,14 +81,17 @@ require (
 	github.com/dlclark/regexp2/v2 v2.5.1 // indirect
 	github.com/go-faster/city v1.0.1 // indirect
 	github.com/go-faster/errors v0.7.1 // indirect
-	github.com/go-jose/go-jose/v4 v4.1.4 // indirect
+	github.com/go-jose/go-jose/v4 v4.1.6 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.25.1 // indirect
 	github.com/hashicorp/go-version v1.8.0 // indirect
+	github.com/parquet-go/bitpack v1.0.0 // indirect
+	github.com/parquet-go/jsonlite v1.0.0 // indirect
 	github.com/paulmach/orb v0.12.0 // indirect
 	github.com/pierrec/lz4/v4 v4.1.25 // indirect
 	github.com/segmentio/asm v1.2.1 // indirect
+	github.com/twpayne/go-geom v1.6.1 // indirect
 	github.com/yuin/gopher-lua v1.1.1 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.34.0 // indirect
@@ -179,6 +183,7 @@ require (
 require (
 	github.com/Calcium-Ion/moejs v0.1.0-alpha.7
 	github.com/ClickHouse/clickhouse-go/v2 v2.46.0
+	github.com/MoeForge/moego v0.1.0-alpha.1
 	github.com/QuantumNous/new-api/relaykit v0.0.0
 	github.com/QuantumNous/new-api/tokenkit v0.0.0
 	go.opentelemetry.io/proto/otlp v1.5.0

@@ -25,7 +25,6 @@ import type {
   ChatCompletionResponse,
   ModelOption,
   GroupOption,
-  PlaygroundProviderOption,
 } from './types'
 
 /**
@@ -86,18 +85,4 @@ export async function getUserGroups(): Promise<GroupOption[]> {
     ratio: info.ratio,
     desc: info.desc,
   }))
-}
-
-export async function getUserModelProviders(
-  group: string,
-  model: string
-): Promise<PlaygroundProviderOption[]> {
-  const res = await api.get(API_ENDPOINTS.USER_PROVIDERS, {
-    params: { group, model },
-  })
-  const { data } = res
-  if (!data.success || !Array.isArray(data.data)) {
-    throw new Error('Provider list request failed')
-  }
-  return data.data as PlaygroundProviderOption[]
 }

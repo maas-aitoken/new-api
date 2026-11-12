@@ -67,12 +67,16 @@ import {
   type ResourcePoolProvider,
   type ResourcePoolSource,
 } from "./api";
+import { CapacityPoolsTab } from "./components/capacity-pools-tab";
 import { ResourcePoolOverview, type PoolDetailTab } from "./overview";
 import {
   HIGH_USAGE_PERCENT,
   POOL_PROVIDERS,
   WINDOWED_PROVIDERS,
   WINDOW_STATUS_OPTIONS,
+  fiveHourUsagePercent,
+  hasFiveHourWindow,
+  summarizeFiveHour,
   isWindowExpired,
   isWindowLive,
   levelTone,
@@ -285,6 +289,9 @@ export function ResourcePools() {
   // re-renders often enough for day-level windows.
   const now = Date.now();
   const poolWindow = summarizeWindow(accounts, now);
+  const poolFiveHour = isWindowedPool
+    ? summarizeFiveHour(accounts, now)
+    : undefined;
   const expiredCount = accounts.filter((account) =>
     isWindowExpired(account, now),
   ).length;
@@ -375,6 +382,7 @@ export function ResourcePools() {
               <TabsTrigger value="channels">{t("Channel stats")}</TabsTrigger>
               <TabsTrigger value="accounts">{t("Account details")}</TabsTrigger>
               <TabsTrigger value="sources">{t("Interface config")}</TabsTrigger>
+              <TabsTrigger value="capacity">{t("Capacity pools")}</TabsTrigger>
             </TabsList>
 
             {view !== "overview" && (
@@ -429,6 +437,16 @@ export function ResourcePools() {
                 now={now}
                 locale={locale}
                 onOpen={openPool}
+              />
+            </TabsContent>
+
+            <TabsContent value="capacity">
+              <CapacityPoolsTab
+                provider={provider}
+                sources={sourcesQuery.data ?? []}
+                accounts={accounts}
+                locale={locale}
+                now={now}
               />
             </TabsContent>
 
@@ -567,7 +585,12 @@ export function ResourcePools() {
             </TabsContent>
 
             <TabsContent value="channels" className="space-y-3">
-              <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+              <div
+                className={cn(
+                  "grid gap-3 sm:grid-cols-2",
+                  poolFiveHour ? "xl:grid-cols-5" : "xl:grid-cols-4",
+                )}
+              >
                 <Metric
                   label={t("Interface count")}
                   value={`${successCount}/${statuses.length}`}
@@ -609,6 +632,27 @@ export function ResourcePools() {
                         locale,
                       )}
                     />
+                    {poolFiveHour && (
+                      <Metric
+                        label={t("Average usage (5h)")}
+                        value={
+                          poolFiveHour.live
+                            ? `${poolFiveHour.average.toFixed(1)}%`
+                            : "-"
+                        }
+                        tone={levelTone(
+                          poolFiveHour.live ? poolFiveHour.average : null,
+                        )}
+                        hint={t("Next 5h reset {{time}}", {
+                          time:
+                            formatResetDistance(
+                              poolFiveHour.nextReset,
+                              now,
+                              locale,
+                            ) || "-",
+                        })}
+                      />
+                    )}
                   </>
                 ) : (
                   <>
@@ -677,12 +721,22 @@ export function ResourcePools() {
                             {t("Peak usage (7d)")}
                           </TableHead>
                           <TableHead>{t("Next reset")}</TableHead>
+                          {poolFiveHour && (
+                            <TableHead className="w-56">
+                              {t("Average usage (5h)")}
+                            </TableHead>
+                          )}
                         </TableRow>
                       </TableHeader>
                       <TableBody>
-                        {usageLoading && <LoadingRows columns={6} />}
+                        {usageLoading && (
+                          <LoadingRows columns={poolFiveHour ? 7 : 6} />
+                        )}
                         {sourceRows.map((row) => {
                           const rowWindow = summarizeWindow(row.accounts, now);
+                          const rowFiveHour = poolFiveHour
+                            ? summarizeFiveHour(row.accounts, now)
+                            : undefined;
                           return (
                             <TableRow key={row.sourceId}>
                               <TableCell>
@@ -714,13 +768,28 @@ export function ResourcePools() {
                                   locale={locale}
                                 />
                               </TableCell>
+                              {poolFiveHour && (
+                                <TableCell>
+                                  {rowFiveHour ? (
+                                    <UsageBar
+                                      percent={rowFiveHour.average}
+                                      digits={1}
+                                      muted={!rowFiveHour.live}
+                                    />
+                                  ) : (
+                                    <span className="text-muted-foreground text-xs">
+                                      -
+                                    </span>
+                                  )}
+                                </TableCell>
+                              )}
                             </TableRow>
                           );
                         })}
                         {!usageLoading && !sourceRows.length && (
                           <TableRow>
                             <TableCell
-                              colSpan={6}
+                              colSpan={poolFiveHour ? 7 : 6}
                               className="text-muted-foreground h-24 text-center"
                             >
                               {t("No matching resource pool accounts")}
@@ -954,6 +1023,14 @@ export function ResourcePools() {
                               {t("Usage (7d)")}
                             </TableHead>
                             <TableHead>{t("Next reset")}</TableHead>
+                            {poolFiveHour && (
+                              <>
+                                <TableHead className="w-48">
+                                  {t("Usage (5h)")}
+                                </TableHead>
+                                <TableHead>{t("Next reset (5h)")}</TableHead>
+                              </>
+                            )}
                             <TableHead className="text-right">
                               {t("Requests (7d)")}
                             </TableHead>
@@ -964,7 +1041,9 @@ export function ResourcePools() {
                           </TableRow>
                         </TableHeader>
                         <TableBody>
-                          {usageLoading && <LoadingRows columns={7} />}
+                          {usageLoading && (
+                            <LoadingRows columns={poolFiveHour ? 9 : 7} />
+                          )}
                           {visibleAccounts.map((account) => {
                             const live = isWindowLive(account, now);
                             const plan =
@@ -1014,6 +1093,37 @@ export function ResourcePools() {
                                     locale={locale}
                                   />
                                 </TableCell>
+                                {poolFiveHour &&
+                                  (hasFiveHourWindow(account) ? (
+                                    <>
+                                      <TableCell>
+                                        <UsageBar
+                                          percent={fiveHourUsagePercent(
+                                            account,
+                                            now,
+                                          )}
+                                          digits={0}
+                                          muted={!live}
+                                        />
+                                      </TableCell>
+                                      <TableCell>
+                                        <ResetAt
+                                          iso={account.reset_5h_at}
+                                          now={now}
+                                          locale={locale}
+                                        />
+                                      </TableCell>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <TableCell className="text-muted-foreground text-xs">
+                                        -
+                                      </TableCell>
+                                      <TableCell className="text-muted-foreground text-xs">
+                                        -
+                                      </TableCell>
+                                    </>
+                                  ))}
                                 <TableCell className="text-right">
                                   {formatNumber(
                                     account.requests_7d ?? 0,
@@ -1035,7 +1145,7 @@ export function ResourcePools() {
                           {!usageLoading && !visibleAccounts.length && (
                             <TableRow>
                               <TableCell
-                                colSpan={7}
+                                colSpan={poolFiveHour ? 9 : 7}
                                 className="text-muted-foreground h-24 text-center"
                               >
                                 {t(

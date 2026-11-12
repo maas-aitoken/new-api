@@ -34,6 +34,8 @@ import type {
   UpstreamRatiosResponse,
   ChannelModelEventsResponse,
   ChannelModelEventQuery,
+  CapabilityGateEventsResponse,
+  CapabilityGateEventQuery,
 } from './types'
 
 export async function getSystemOptions() {
@@ -46,6 +48,16 @@ export async function getChannelModelEvents(
 ): Promise<ChannelModelEventsResponse> {
   const res = await api.get<ChannelModelEventsResponse>(
     '/api/channel/model-events',
+    { params }
+  )
+  return res.data
+}
+
+export async function getCapabilityGateEvents(
+  params: CapabilityGateEventQuery
+): Promise<CapabilityGateEventsResponse> {
+  const res = await api.get<CapabilityGateEventsResponse>(
+    '/api/capability-gate/events',
     { params }
   )
   return res.data

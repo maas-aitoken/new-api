@@ -20,6 +20,7 @@ import { IoNetDeploymentSettingsSection } from '../integrations/ionet-deployment
 import type { ModelSettings } from '../types'
 import { createSectionRegistry } from '../utils/section-registry'
 import { ClaudeSettingsCard } from './claude-settings-card'
+import { CapabilityGateSection } from './capability-gate-section'
 import { ChannelModelCircuitBreakerSection } from './channel-model-circuit-breaker-section'
 import { GeminiSettingsCard } from './gemini-settings-card'
 import { GlobalSettingsCard } from './global-settings-card'
@@ -98,6 +99,26 @@ const MODELS_SECTIONS = [
           'monitor_setting.channel_model_wecom_bot_url': settings['monitor_setting.channel_model_wecom_bot_url'],
           'monitor_setting.channel_model_wecom_bot_webhook_key_configured': settings['monitor_setting.channel_model_wecom_bot_webhook_key_configured'],
           'monitor_setting.channel_model_wecom_bot_contact': settings['monitor_setting.channel_model_wecom_bot_contact'],
+        }}
+      />
+    ),
+  },
+  {
+    id: 'capability-gate',
+    titleKey: 'Capability Gate',
+    build: (settings: ModelSettings) => (
+      <CapabilityGateSection
+        defaultValues={{
+          mode: settings['capability_gate_setting.mode'] ?? 'shadow',
+          max_body_bytes:
+            settings['capability_gate_setting.max_body_bytes'] ?? 8388608,
+          event_retention_days:
+            settings['capability_gate_setting.event_retention_days'] ?? 30,
+          record_only_dimensions:
+            settings['capability_gate_setting.record_only_dimensions'] ??
+            'params,tools.parallel',
+          record_passed:
+            settings['capability_gate_setting.record_passed'] ?? true,
         }}
       />
     ),

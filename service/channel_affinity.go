@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
@@ -18,15 +19,15 @@ import (
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/gin-gonic/gin"
 	"github.com/samber/hot"
-	"github.com/tidwall/gjson"
 )
 
 const (
-	ginKeyChannelAffinityCacheKey   = "channel_affinity_cache_key"
-	ginKeyChannelAffinityTTLSeconds = "channel_affinity_ttl_seconds"
-	ginKeyChannelAffinityMeta       = "channel_affinity_meta"
-	ginKeyChannelAffinityLogInfo    = "channel_affinity_log_info"
-	ginKeyChannelAffinitySkipRetry  = "channel_affinity_skip_retry_on_failure"
+	ginKeyChannelAffinityCacheKey    = "channel_affinity_cache_key"
+	ginKeyChannelAffinityTTLSeconds  = "channel_affinity_ttl_seconds"
+	ginKeyChannelAffinityMeta        = "channel_affinity_meta"
+	ginKeyChannelAffinityLogInfo     = "channel_affinity_log_info"
+	ginKeyChannelAffinitySkipRetry   = "channel_affinity_skip_retry_on_failure"
+	ginKeyChannelAffinityRetryOffset = "channel_affinity_retry_offset"
 
 	channelAffinityCacheNamespace           = "new-api:channel_affinity:v1"
 	channelAffinityUsageCacheStatsNamespace = "new-api:channel_affinity_usage_cache_stats:v1"
@@ -321,12 +322,12 @@ func extractChannelAffinityValue(c *gin.Context, src operation_setting.ChannelAf
 		if err != nil || len(body) == 0 {
 			return ""
 		}
-		res := gjson.GetBytes(body, src.Path)
+		res := ojson.GetBytes(body, src.Path)
 		if !res.Exists() {
 			return ""
 		}
 		switch res.Type {
-		case gjson.String, gjson.Number, gjson.True, gjson.False:
+		case ojson.String, ojson.Number, ojson.True, ojson.False:
 			return strings.TrimSpace(res.String())
 		default:
 			return strings.TrimSpace(res.Raw)
@@ -547,12 +548,17 @@ func ApplyChannelAffinityOverrideTemplate(c *gin.Context, paramOverride map[stri
 	return mergedParam, true
 }
 
-func GetPreferredChannelByAffinity(c *gin.Context, modelName string, usingGroup string) (int, bool) {
-	setting := operation_setting.GetChannelAffinitySetting()
-	state := RequestPolicy(c)
-	if setting == nil || !setting.Enabled {
-		return 0, false
-	}
+// channelAffinityMatch 是一次请求命中的第一条会话亲和规则，以及这条规则下的亲和值和缓存键。
+type channelAffinityMatch struct {
+	rule           operation_setting.ChannelAffinityRule
+	affinityValue  string
+	usedSource     operation_setting.ChannelAffinityKeySource
+	cacheKeySuffix string
+	path           string
+}
+
+// matchChannelAffinityRule 找出请求对这个模型命中的第一条亲和规则，只读请求，不改任何状态。
+func matchChannelAffinityRule(c *gin.Context, setting *operation_setting.ChannelAffinitySetting, modelName string, usingGroup string) (channelAffinityMatch, bool) {
 	path := ""
 	if c != nil && c.Request != nil && c.Request.URL != nil {
 		path = c.Request.URL.Path
@@ -587,47 +593,88 @@ func GetPreferredChannelByAffinity(c *gin.Context, modelName string, usingGroup 
 		if rule.ValueRegex != "" && !matchAnyRegexCached([]string{rule.ValueRegex}, affinityValue) {
 			continue
 		}
+		return channelAffinityMatch{
+			rule:           rule,
+			affinityValue:  affinityValue,
+			usedSource:     usedSource,
+			cacheKeySuffix: buildChannelAffinityCacheKeySuffix(rule, modelName, usingGroup, affinityValue),
+			path:           path,
+		}, true
+	}
+	return channelAffinityMatch{}, false
+}
 
-		ttlSeconds := rule.TTLSeconds
-		if ttlSeconds <= 0 {
-			ttlSeconds = setting.DefaultTTLSeconds
-		}
-		cacheKeySuffix := buildChannelAffinityCacheKeySuffix(rule, modelName, usingGroup, affinityValue)
-		cacheKeyFull := channelAffinityCacheNamespace + ":" + cacheKeySuffix
-		state.SessionMode, state.SessionModeSource = EffectiveSessionMode(setting, rule)
-		state.RuleName = rule.Name
-		setChannelAffinityContext(c, channelAffinityMeta{
-			CacheKey:       cacheKeyFull,
-			TTLSeconds:     ttlSeconds,
-			RuleName:       rule.Name,
-			SkipRetry:      state.SessionMode == "strict",
-			ParamTemplate:  cloneStringAnyMap(rule.ParamOverrideTemplate),
-			KeySourceType:  strings.TrimSpace(usedSource.Type),
-			KeySourceKey:   strings.TrimSpace(usedSource.Key),
-			KeySourcePath:  strings.TrimSpace(usedSource.Path),
-			KeyHint:        affinityValue,
-			KeyFingerprint: affinityFingerprint(affinityValue),
-			UsingGroup:     usingGroup,
-			ModelName:      modelName,
-			RequestPath:    path,
-		})
-
-		state.AddEvent(PolicyEvent{Decision: PolicyDecision{Action: "match", Reason: "session_rule_matched", Source: "session_rule"}})
-		if state.SessionMode == "off" {
-			return 0, false
-		}
-		cache := getChannelAffinityCache()
-		channelID, found, err := cache.Get(cacheKeySuffix)
-		if err != nil {
-			common.SysError(common.LogText("channel affinity cache get failed: key=%s, err=%v", cacheKeyFull, err))
-			return 0, false
-		}
-		if found {
-			return channelID, true
-		}
+func GetPreferredChannelByAffinity(c *gin.Context, modelName string, usingGroup string) (int, bool) {
+	setting := operation_setting.GetChannelAffinitySetting()
+	state := RequestPolicy(c)
+	if setting == nil || !setting.Enabled {
 		return 0, false
 	}
+	match, matched := matchChannelAffinityRule(c, setting, modelName, usingGroup)
+	if !matched {
+		return 0, false
+	}
+	rule := match.rule
+	ttlSeconds := rule.TTLSeconds
+	if ttlSeconds <= 0 {
+		ttlSeconds = setting.DefaultTTLSeconds
+	}
+	cacheKeyFull := channelAffinityCacheNamespace + ":" + match.cacheKeySuffix
+	state.SessionMode, state.SessionModeSource = EffectiveSessionMode(setting, rule)
+	state.RuleName = rule.Name
+	setChannelAffinityContext(c, channelAffinityMeta{
+		CacheKey:       cacheKeyFull,
+		TTLSeconds:     ttlSeconds,
+		RuleName:       rule.Name,
+		SkipRetry:      state.SessionMode == "strict",
+		ParamTemplate:  cloneStringAnyMap(rule.ParamOverrideTemplate),
+		KeySourceType:  strings.TrimSpace(match.usedSource.Type),
+		KeySourceKey:   strings.TrimSpace(match.usedSource.Key),
+		KeySourcePath:  strings.TrimSpace(match.usedSource.Path),
+		KeyHint:        match.affinityValue,
+		KeyFingerprint: affinityFingerprint(match.affinityValue),
+		UsingGroup:     usingGroup,
+		ModelName:      modelName,
+		RequestPath:    match.path,
+	})
+
+	state.AddEvent(PolicyEvent{Decision: PolicyDecision{Action: "match", Reason: "session_rule_matched", Source: "session_rule"}})
+	if state.SessionMode == "off" {
+		return 0, false
+	}
+	cache := getChannelAffinityCache()
+	channelID, found, err := cache.Get(match.cacheKeySuffix)
+	if err != nil {
+		common.SysError(common.LogText("channel affinity cache get failed: key=%s, err=%v", cacheKeyFull, err))
+		return 0, false
+	}
+	if found {
+		return channelID, true
+	}
 	return 0, false
+}
+
+// PeekPreferredChannelByAffinity 查这次请求对这个模型会被会话亲和绑到哪个渠道，规则和缓存键
+// 与 GetPreferredChannelByAffinity 相同，但只读：不写请求策略、不写亲和上下文、不记事件。
+// auto 估算候选模型首次会落到哪个渠道时用它，一个请求会对好几个候选模型各查一次，
+// 不能每次都改上下文（最后一个候选会盖掉真正选中的那个）。
+func PeekPreferredChannelByAffinity(c *gin.Context, modelName string, usingGroup string) (int, bool) {
+	setting := operation_setting.GetChannelAffinitySetting()
+	if setting == nil || !setting.Enabled {
+		return 0, false
+	}
+	match, matched := matchChannelAffinityRule(c, setting, modelName, usingGroup)
+	if !matched {
+		return 0, false
+	}
+	if mode, _ := EffectiveSessionMode(setting, match.rule); mode == "off" {
+		return 0, false
+	}
+	channelID, found, err := getChannelAffinityCache().Get(match.cacheKeySuffix)
+	if err != nil || !found {
+		return 0, false
+	}
+	return channelID, true
 }
 
 func ShouldSkipRetryAfterChannelAffinityFailure(c *gin.Context) bool {
@@ -689,6 +736,8 @@ func MarkChannelAffinityUsed(c *gin.Context, selectedGroup string, channelID int
 		return
 	}
 	c.Set(ginKeyChannelAffinitySkipRetry, meta.SkipRetry)
+	// Affinity consumes an attempt, but does not visit a normal priority tier.
+	c.Set(ginKeyChannelAffinityRetryOffset, 1)
 	info := map[string]any{
 		"reason":         meta.RuleName,
 		"rule_name":      meta.RuleName,

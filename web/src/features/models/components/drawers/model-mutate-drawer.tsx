@@ -26,6 +26,7 @@ import { toast } from 'sonner'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import {
   SideDrawerSection,
+  SideDrawerSectionHeader,
   sideDrawerContentClassName,
   sideDrawerFooterClassName,
   sideDrawerFormClassName,
@@ -75,6 +76,7 @@ import { getNameRuleOptions, ENDPOINT_TEMPLATES } from '../../constants'
 import { modelsQueryKeys, vendorsQueryKeys } from '../../lib'
 import {
   modelFormSchema,
+  MODEL_FORM_DEFAULT_VALUES,
   transformModelToFormDefaults,
   transformFormDataToModelPayload,
   type ModelFormValues,
@@ -115,12 +117,7 @@ export function ModelMutateDrawer(props: {
   const loadedKey = useRef('')
   const form = useForm({
     resolver: zodResolver(modelFormSchema),
-    defaultValues: transformModelToFormDefaults({
-      model_name: '',
-      status: 1,
-      sync_official: 1,
-      name_rule: 0,
-    } as Model),
+    defaultValues: MODEL_FORM_DEFAULT_VALUES,
   })
   const vendorsQuery = useQuery({
     queryKey: vendorsQueryKeys.list(),
@@ -163,6 +160,7 @@ export function ModelMutateDrawer(props: {
 
   useEffect(() => {
     if (!props.open) {
+      form.reset(MODEL_FORM_DEFAULT_VALUES)
       setCreatedModel(null)
       loadedKey.current = ''
       return
@@ -172,16 +170,12 @@ export function ModelMutateDrawer(props: {
       : `channel:${currentRow?.model_name ?? ''}`
     if (loadedKey.current === key || (isEditing && !modelQuery.data)) return
     form.reset(
-      transformModelToFormDefaults(
-        (isEditing
-          ? modelQuery.data
-          : {
-              model_name: currentRow?.model_name ?? '',
-              status: 1,
-              sync_official: 1,
-              name_rule: 0,
-            }) as Model
-      )
+      isEditing && modelQuery.data
+        ? transformModelToFormDefaults(modelQuery.data)
+        : {
+            ...MODEL_FORM_DEFAULT_VALUES,
+            model_name: currentRow?.model_name ?? '',
+          }
     )
     loadedKey.current = key
   }, [props.open, currentRow, isEditing, modelQuery.data, form])
@@ -231,6 +225,9 @@ export function ModelMutateDrawer(props: {
     },
   })
   const isSubmitting = save.isPending
+  let saveLabel = t('Save metadata')
+  if (section === 'capabilities') saveLabel = t('Save capabilities')
+  if (isSubmitting) saveLabel = t('Saving...')
   const handleFillEndpointTemplate = (key: string) => {
     const template = ENDPOINT_TEMPLATES[key]
     if (template) {
@@ -273,12 +270,18 @@ export function ModelMutateDrawer(props: {
             }}
             className='shrink-0 px-4'
           >
-            <TabsList className='grid w-full grid-cols-3 group-data-horizontal/tabs:h-auto'>
+            <TabsList className='grid w-full grid-cols-4 group-data-horizontal/tabs:h-auto'>
               <TabsTrigger
                 value='metadata'
                 className='h-auto min-w-0 whitespace-normal'
               >
                 {t('Model metadata')}
+              </TabsTrigger>
+              <TabsTrigger
+                value='capabilities'
+                className='h-auto min-w-0 whitespace-normal'
+              >
+                {t('Capabilities')}
               </TabsTrigger>
               <TabsTrigger
                 value='pricing'
@@ -296,7 +299,7 @@ export function ModelMutateDrawer(props: {
               </TabsTrigger>
             </TabsList>
           </Tabs>
-          {props.open && section === 'metadata' && (
+          {props.open && (section === 'metadata' || section === 'capabilities') && (
             <>
               {modelQuery.isError ? (
                 <ErrorState
@@ -314,6 +317,42 @@ export function ModelMutateDrawer(props: {
                     )}
                     className={sideDrawerFormClassName()}
                   >
+                    {section === 'capabilities' ? (
+                      <SideDrawerSection>
+                        <SideDrawerSectionHeader
+                          title={t('Hard capability declaration')}
+                          description={t(
+                            'Declares what this model can accept. Channels can only narrow this declaration; use model name rules to share a family-level baseline.'
+                          )}
+                        />
+                        <FormField
+                          control={form.control}
+                          name='capabilities'
+                          render={({ field }) => (
+                            <FormItem>
+                              <FormLabel>{t('Capability JSON')}</FormLabel>
+                              <FormControl>
+                                <JsonEditor
+                                  value={field.value || ''}
+                                  onChange={field.onChange}
+                                  defaultMode='json'
+                                  emptyMessage={t(
+                                    'No capability declaration. The gate treats this model as unknown.'
+                                  )}
+                                />
+                              </FormControl>
+                              <FormDescription>
+                                {t(
+                                  'Supported dimensions: context, modalities, tools, structured_output, reasoning, params, messages, streaming. Unknown fields are rejected on save.'
+                                )}
+                              </FormDescription>
+                              <FormMessage />
+                            </FormItem>
+                          )}
+                        />
+                      </SideDrawerSection>
+                    ) : (
+                      <>
                     {/* Basic Information */}
                     <SideDrawerSection>
                       <h3 className='text-sm font-semibold'>
@@ -450,7 +489,7 @@ export function ModelMutateDrawer(props: {
                                 }))}
                                 onValueChange={(value) =>
                                   field.onChange(
-                                    value ? Number.parseInt(value) : undefined
+                                    value ? Number.parseInt(value) : 0
                                   )
                                 }
                                 value={field.value ? String(field.value) : null}
@@ -641,6 +680,8 @@ export function ModelMutateDrawer(props: {
                         )}
                       />
                     </SideDrawerSection>
+                      </>
+                    )}
                   </form>
                 </Form>
               )}
@@ -671,7 +712,7 @@ export function ModelMutateDrawer(props: {
                     (isEditing && modelQuery.isPending)
                   }
                 >
-                  {isSubmitting ? t('Saving...') : t('Save metadata')}
+                  {saveLabel}
                 </Button>
               </SheetFooter>
             </>

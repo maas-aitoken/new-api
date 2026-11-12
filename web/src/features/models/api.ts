@@ -36,10 +36,9 @@ import type {
   MetadataSyncRequest,
   DeploymentSettingsResponse,
   ListDeploymentsResponse,
-  GetProvidersResponse,
-  Provider,
-  ModelProviderPrice,
-  ProviderModelRelation,
+  CapabilityTargetsPage,
+  ChannelModelCapabilityDetail,
+  ChannelModelCapacityResult,
 } from './types'
 
 // ============================================================================
@@ -82,10 +81,7 @@ export async function getAllModels(
   if (failedPage) {
     throw new Error(failedPage.message || 'Failed to load models')
   }
-  return [
-    ...firstItems,
-    ...pages.flatMap((page) => page.data?.items ?? []),
-  ]
+  return [...firstItems, ...pages.flatMap((page) => page.data?.items ?? [])]
 }
 
 /**
@@ -228,145 +224,101 @@ export async function deleteVendor(
   return res.data
 }
 
-export async function getProviders(params?: {
-  p?: number
-  page_size?: number
-  keyword?: string
-}): Promise<GetProvidersResponse> {
-  const res = await api.get('/api/providers/', { params })
-  return res.data
-}
+// ============================================================================
+// Capability settings
+// ============================================================================
 
-export async function getAllProviders(): Promise<Provider[]> {
-  const pageSize = 100
-  const firstPage = await getProviders({ p: 1, page_size: pageSize })
-  if (!firstPage.success) {
-    throw new Error(firstPage.message || 'Failed to load providers')
-  }
-
-  const firstItems = firstPage.data?.items ?? []
-  const total = firstPage.data?.total ?? firstItems.length
-  const pageCount = Math.ceil(total / pageSize)
-  if (pageCount <= 1) return firstItems
-
-  const pages = await Promise.all(
-    Array.from({ length: pageCount - 1 }, (_, index) =>
-      getProviders({ p: index + 2, page_size: pageSize })
-    )
-  )
-  const failedPage = pages.find((page) => !page.success)
-  if (failedPage) {
-    throw new Error(failedPage.message || 'Failed to load providers')
-  }
-  return [
-    ...firstItems,
-    ...pages.flatMap((page) => page.data?.items ?? []),
-  ]
-}
-
-export async function createProvider(
-  data: Partial<Provider>
-): Promise<{ success: boolean; message?: string; data?: Provider }> {
-  const res = await api.post('/api/providers/', data)
-  return res.data
-}
-
-export async function updateProvider(
-  data: Partial<Provider> & { id: number }
-): Promise<{ success: boolean; message?: string; data?: Provider }> {
-  const res = await api.put('/api/providers/', data)
-  return res.data
-}
-
-export async function deleteProvider(
-  id: number
-): Promise<{ success: boolean; message?: string }> {
-  const res = await api.delete(`/api/providers/${id}`)
-  return res.data
-}
-
-export async function getModelProviderPrices(
-  modelId: number
-): Promise<{ success: boolean; data?: ModelProviderPrice[]; message?: string }> {
-  const res = await api.get('/api/model-provider-prices/', {
-    params: { model_id: modelId },
-  })
-  return res.data
-}
-
-export async function getProviderModels(
-  providerSlug: string,
-  params?: { p?: number; page_size?: number }
+export async function getCapabilityTargets(
+  params: {
+    keyword?: string
+    channel_id?: number
+    p?: number
+    page_size?: number
+  } = {}
 ): Promise<{
   success: boolean
-  data?: {
-    items: ProviderModelRelation[]
-    total: number
-    page: number
-    page_size: number
-  }
+  data?: CapabilityTargetsPage
   message?: string
 }> {
-  const res = await api.get(
-    `/api/model-provider-prices/providers/${encodeURIComponent(providerSlug)}/models`,
-    { params }
-  )
+  const res = await api.get('/api/models/capability-targets', { params })
   return res.data
 }
 
-export async function getAllProviderModels(
-  providerSlug: string
-): Promise<ProviderModelRelation[]> {
-  const pageSize = 100
-  const firstPage = await getProviderModels(providerSlug, {
-    p: 1,
-    page_size: pageSize,
+export async function getChannelModelCapability(params: {
+  channel_id: number
+  model: string
+}): Promise<{
+  success: boolean
+  data?: ChannelModelCapabilityDetail
+  message?: string
+}> {
+  const res = await api.get('/api/channel-model-capabilities/', { params })
+  return res.data
+}
+
+export async function saveChannelModelCapability(data: {
+  channel_id: number
+  model: string
+  capabilities: string
+}): Promise<{ success: boolean; message?: string }> {
+  const res = await api.put('/api/channel-model-capabilities/', data, {
+    skipBusinessError: true,
+    skipErrorHandler: true,
   })
-  if (!firstPage.success) {
-    throw new Error(firstPage.message || 'Failed to load provider models')
-  }
+  return res.data
+}
 
-  const firstItems = firstPage.data?.items ?? []
-  const total = firstPage.data?.total ?? firstItems.length
-  const pageCount = Math.ceil(total / pageSize)
-  if (pageCount <= 1) return firstItems
-
-  const pages = await Promise.all(
-    Array.from({ length: pageCount - 1 }, (_, index) =>
-      getProviderModels(providerSlug, {
-        p: index + 2,
-        page_size: pageSize,
-      })
-    )
+export async function saveChannelModelCostMultiplier(data: {
+  channel_id: number
+  model: string
+  multiplier: number
+}): Promise<{ success: boolean; message?: string }> {
+  const res = await api.put(
+    '/api/channel-model-capabilities/cost-multiplier',
+    data,
+    {
+      skipBusinessError: true,
+      skipErrorHandler: true,
+    }
   )
-  const failedPage = pages.find((page) => !page.success)
-  if (failedPage) {
-    throw new Error(failedPage.message || 'Failed to load provider models')
-  }
-  return [
-    ...firstItems,
-    ...pages.flatMap((page) => page.data?.items ?? []),
-  ]
-}
-
-export async function createModelProviderPrice(
-  data: Partial<ModelProviderPrice>
-): Promise<{ success: boolean; data?: ModelProviderPrice; message?: string }> {
-  const res = await api.post('/api/model-provider-prices/', data)
   return res.data
 }
 
-export async function updateModelProviderPrice(
-  data: Partial<ModelProviderPrice> & { id: number }
-): Promise<{ success: boolean; data?: ModelProviderPrice; message?: string }> {
-  const res = await api.put('/api/model-provider-prices/', data)
+export async function saveChannelModelLimit(data: {
+  channel_id: number
+  model: string
+  rpm: number
+  tpm: number
+  max_concurrency: number
+}): Promise<{ success: boolean; message?: string }> {
+  const res = await api.put('/api/channel-model-capabilities/limit', data, {
+    skipBusinessError: true,
+    skipErrorHandler: true,
+  })
   return res.data
 }
 
-export async function deleteModelProviderPrice(
-  id: number
-): Promise<{ success: boolean; message?: string }> {
-  const res = await api.delete(`/api/model-provider-prices/${id}`)
+export async function getChannelModelCapacity(params: {
+  model: string
+  channel_ids: number[]
+}): Promise<{
+  success: boolean
+  data?: ChannelModelCapacityResult
+  message?: string
+}> {
+  const res = await api.get('/api/channel-model-capabilities/capacity', {
+    params: { model: params.model, channel_ids: params.channel_ids.join(',') },
+  })
+  return res.data
+}
+
+export async function deleteChannelModelCapability(params: {
+  channel_id: number
+  model: string
+}): Promise<{ success: boolean; message?: string }> {
+  const res = await api.delete('/api/channel-model-capabilities/', {
+    params,
+  })
   return res.data
 }
 

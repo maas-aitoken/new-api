@@ -404,6 +404,8 @@ export function SubscriptionPlansCard({
                   const usedAmount = Number(subscription?.amount_used || 0)
                   const remainAmount =
                     totalAmount > 0 ? Math.max(0, totalAmount - usedAmount) : 0
+                  const isOverQuota =
+                    totalAmount > 0 && usedAmount > totalAmount
                   const planTitle =
                     planTitleMap.get(subscription?.plan_id) || ''
                   const remainDays = getRemainingDays(sub)
@@ -487,8 +489,14 @@ export function SubscriptionPlansCard({
                             <TooltipTrigger
                               render={<span className='cursor-help' />}
                             >
-                              {formatQuota(usedAmount)}/
-                              {formatQuota(totalAmount)} · {t('Remaining')}{' '}
+                              <span
+                                className={cn(
+                                  isOverQuota && 'text-destructive'
+                                )}
+                              >
+                                {formatQuota(usedAmount)}
+                              </span>
+                              /{formatQuota(totalAmount)} · {t('Remaining')}{' '}
                               {formatQuota(remainAmount)}
                             </TooltipTrigger>
                             <TooltipContent>
@@ -500,13 +508,25 @@ export function SubscriptionPlansCard({
                           t('Unlimited')
                         )}
                         {totalAmount > 0 && (
-                          <span className='ml-2'>
+                          <span
+                            className={cn(
+                              'ml-2',
+                              isOverQuota && 'text-destructive'
+                            )}
+                          >
                             {t('Used')} {usagePercent}%
                           </span>
                         )}
                       </div>
                       {totalAmount > 0 && isActive && (
-                        <Progress value={usagePercent} className='mt-2 h-1.5' />
+                        <Progress
+                          value={Math.min(100, usagePercent)}
+                          className={cn(
+                            'mt-2 h-1.5',
+                            isOverQuota &&
+                              '[&_[data-slot=progress-indicator]]:bg-destructive'
+                          )}
+                        />
                       )}
                     </div>
                   )

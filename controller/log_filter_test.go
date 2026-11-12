@@ -84,6 +84,34 @@ func TestParseLogSpecialFilters(t *testing.T) {
 	}
 }
 
+// auto_routed only narrows a search, so a value that is not a boolean must keep every log
+// rather than fail the request or silently pick a side.
+func TestLogFilterFromQueryReadsAutoRouted(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	yes, no := true, false
+
+	for _, test := range []struct {
+		query string
+		want  *bool
+	}{
+		{"auto_routed=true", &yes},
+		{"auto_routed=false", &no},
+		{"", nil},
+		{"auto_routed=", nil},
+		{"auto_routed=maybe", nil},
+	} {
+		t.Run(test.query, func(t *testing.T) {
+			ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+			request, err := http.NewRequest(http.MethodGet, "/api/log?"+test.query, nil)
+			require.NoError(t, err)
+			ctx.Request = request
+
+			assert.Equal(t, test.want, logFilterFromQuery(ctx, true).AutoRouted)
+			assert.Equal(t, test.want, logFilterFromQuery(ctx, false).AutoRouted, "users filter their own logs the same way")
+		})
+	}
+}
+
 func TestValidateLogSpecialFilterTimeRange(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

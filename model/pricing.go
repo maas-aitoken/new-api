@@ -9,6 +9,7 @@ import (
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/pkg/jsplugin"
 	"github.com/QuantumNous/new-api/relaykit/dto"
+	"github.com/QuantumNous/new-api/service/capability"
 	"github.com/QuantumNous/new-api/setting/billing_setting"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	"github.com/QuantumNous/new-api/types"
@@ -31,10 +32,14 @@ type Pricing struct {
 	Icon                   string                               `json:"icon,omitempty"`
 	Tags                   string                               `json:"tags,omitempty"`
 	VendorID               int                                  `json:"vendor_id,omitempty"`
-	ContextLength          int64                   `json:"context_length,omitempty"`
-    	ParameterCount         string                  `json:"parameter_count,omitempty"`
-    	ReleaseDate            string                  `json:"release_date,omitempty"`
-    	Providers              []ProviderSummary       `json:"providers,omitempty"`
+	ContextLength          int64                                `json:"context_length,omitempty"`
+	ParameterCount         string                               `json:"parameter_count,omitempty"`
+	ReleaseDate            string                               `json:"release_date,omitempty"`
+	Capabilities           []string                             `json:"capabilities,omitempty"`
+	InputModalities        []string                             `json:"input_modalities,omitempty"`
+	OutputModalities       []string                             `json:"output_modalities,omitempty"`
+	MaxOutputTokens        *int64                               `json:"max_output_tokens,omitempty"`
+	Parameters             []capability.Parameter               `json:"parameters,omitempty"`
 	QuotaType              int                                  `json:"quota_type"`
 	ModelRatio             float64                              `json:"model_ratio"`
 	ModelPrice             float64                              `json:"model_price"`
@@ -200,7 +205,6 @@ func updatePricing() {
 		common.SysLog(common.LogText("GetAllEnableAbilityWithChannels error: %v", err))
 		return
 	}
-	providerSummaries := BuildProviderSummaries(enableAbilities)
 	// 预加载模型元数据与供应商一次，避免循环查询
 	var allMeta []Model
 	_ = DB.Find(&allMeta).Error
@@ -350,8 +354,14 @@ func updatePricing() {
 			pricing.ContextLength = meta.ContextLength
 			pricing.ParameterCount = meta.ParameterCount
 			pricing.ReleaseDate = meta.ReleaseDate
+			spec := capability.MustParse(meta.Capabilities)
+			summary := capability.Summarize(spec)
+			pricing.Capabilities = summary.Capabilities
+			pricing.InputModalities = summary.InputModalities
+			pricing.OutputModalities = summary.OutputModalities
+			pricing.MaxOutputTokens = summary.MaxOutputTokens
+			pricing.Parameters = capability.Parameters(spec)
 		}
-		pricing.Providers = providerSummaries[model]
 		modelPrice, findPrice := ratio_setting.GetModelPrice(model, false)
 		if findPrice {
 			pricing.ModelPrice = modelPrice

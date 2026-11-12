@@ -275,14 +275,24 @@ function renderTableBodyContent<TData>(
     return renderEmptyState(props, colSpan)
   }
 
-  return rows.map((row) =>
-    props.renderRow
+  return rows.map((row) => {
+    const rowNode = props.renderRow
       ? props.renderRow(row, {
           getCellClassName: (columnId, className) =>
             cn(getColumnClassName(columnId, 'cell'), className),
         })
       : renderDefaultRow(props, row, getColumnClassName)
-  )
+    const detailNode = props.renderRowDetail?.(row)
+    if (!detailNode) {
+      return rowNode
+    }
+    return (
+      <React.Fragment key={row.id}>
+        {rowNode}
+        {detailNode}
+      </React.Fragment>
+    )
+  })
 }
 
 function renderEmptyState<TData>(

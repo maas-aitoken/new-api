@@ -22,7 +22,6 @@ import { PrefillGroupManagement } from './dialogs/prefill-group-management'
 import { PriceSyncDialog } from './dialogs/price-sync-dialog'
 import { SyncWizardDialog } from './dialogs/sync-wizard-dialog'
 import { VendorMutateDialog } from './dialogs/vendor-mutate-dialog'
-import { ProviderMutateDialog } from './dialogs/provider-mutate-dialog'
 import { ModelMutateDrawer } from './drawers/model-mutate-drawer'
 import { useModels } from './models-provider'
 
@@ -32,7 +31,6 @@ export function ModelsDialogs() {
     setOpen,
     currentRow,
     currentVendor,
-    currentProvider,
     descriptionData,
     setDescriptionData,
   } = useModels()
@@ -61,12 +59,6 @@ export function ModelsDialogs() {
         open={open === 'create-vendor' || open === 'update-vendor'}
         onOpenChange={(v) => !v && setOpen(null)}
         currentVendor={open === 'update-vendor' ? currentVendor : null}
-      />
-
-      <ProviderMutateDialog
-        open={open === 'create-provider' || open === 'update-provider'}
-        onOpenChange={(v) => !v && setOpen(null)}
-        currentProvider={open === 'update-provider' ? currentProvider : null}
       />
 
       {/* Missing Models Dialog */}

@@ -45,50 +45,6 @@ export type BillingUsageExample = {
   facts: Record<string, string | number>
 }
 
-export type PricingProvider = {
-  slug: string
-  name: string
-  icon?: string
-  website_url?: string
-  status_page_url?: string
-  available: boolean
-  pricing?: {
-    input_price: number
-    output_price: number
-    cache_read_price?: number | null
-    cache_write_price?: number | null
-    input_list_price?: number | null
-    output_list_price?: number | null
-    cache_read_list_price?: number | null
-    cache_write_list_price?: number | null
-    discount_rate?: number | null
-    source: string
-  }
-  metadata?: PricingProviderMetadata
-}
-
-export type PricingProviderMetadata = {
-  model_name?: string
-  context_length?: number
-  max_output_tokens?: number
-  region?: string
-  precision?: string
-  quantization?: string
-  supported_parameters?: string[]
-  stream_cancellation?: boolean | null
-  free?: boolean | null
-  batch?: boolean | null
-  source_url?: string
-  effective_at?: number
-}
-
-export type ModelSquareProviderDetail = {
-  model: PricingModel
-  provider: PricingProvider
-  groups: string[]
-  endpoints: string[]
-}
-
 export type ModelSquareData = {
   success: boolean
   message?: string
@@ -153,11 +109,36 @@ export type PricingModel = {
   max_output_tokens?: number
   knowledge_cutoff?: string
   release_date?: string
-  providers?: PricingProvider[]
   parameter_count?: string
   input_modalities?: Modality[]
   output_modalities?: Modality[]
   capabilities?: ModelCapability[]
+  parameters?: ModelParameter[]
+  /** Route key for the detail page: always the concrete model name. */
+  catalog_key?: string
+  /** Enabled channels serving this model, published by the model square. */
+  channels?: SquareChannel[]
+}
+
+/** One enabled channel serving a catalog model, as exposed by the model square. */
+export type SquareChannel = {
+  id: number
+  /** Cost factor recorded in relay attempt logs; 1 when not configured. */
+  cost_multiplier: number
+  capabilities?: ModelCapability[]
+  input_modalities?: Modality[]
+  output_modalities?: Modality[]
+  max_output_tokens?: number
+  parameters?: ModelParameter[]
+}
+
+/** A request parameter declared by the model-level capability spec. */
+export type ModelParameter = {
+  name: string
+  type: 'number' | 'integer' | 'boolean' | 'string' | 'array' | 'object' | 'enum'
+  range?: string
+  max_items?: number
+  enum_values?: string[]
 }
 
 /** Input/output modalities supported by a model. */

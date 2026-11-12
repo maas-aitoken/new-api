@@ -32,7 +32,6 @@ import type {
   GroupOption,
   ParameterEnabled,
   PlaygroundConfig,
-  PlaygroundProviderOption,
 } from '../../types'
 import { PlaygroundInputControls } from './playground-input-controls'
 import { PlaygroundInputTools } from './playground-input-tools'
@@ -45,13 +44,7 @@ interface PlaygroundInputProps {
   isGenerating?: boolean
   models: ModelOption[]
   modelValue: string
-  providers: PlaygroundProviderOption[]
-  providerOrder: string[]
-  allowProviderFallbacks: boolean
-  isProviderLoading?: boolean
   onModelChange: (value: string) => void
-  onProviderOrderChange: (order: string[]) => void
-  onAllowProviderFallbacksChange: (value: boolean) => void
   isModelLoading?: boolean
   groups: GroupOption[]
   groupValue: string
@@ -77,13 +70,7 @@ export function PlaygroundInput({
   isGenerating,
   models,
   modelValue,
-  providers,
-  providerOrder,
-  allowProviderFallbacks,
-  isProviderLoading = false,
   onModelChange,
-  onProviderOrderChange,
-  onAllowProviderFallbacksChange,
   isModelLoading = false,
   groups,
   groupValue,
@@ -133,14 +120,8 @@ export function PlaygroundInput({
             isModelLoading={isModelLoading}
             models={models}
             modelValue={modelValue}
-            providers={providers}
-            providerOrder={providerOrder}
-            allowProviderFallbacks={allowProviderFallbacks}
-            isProviderLoading={isProviderLoading}
             onGroupChange={onGroupChange}
             onModelChange={onModelChange}
-            onProviderOrderChange={onProviderOrderChange}
-            onAllowProviderFallbacksChange={onAllowProviderFallbacksChange}
             onStop={onStop}
             text={text}
             tools={

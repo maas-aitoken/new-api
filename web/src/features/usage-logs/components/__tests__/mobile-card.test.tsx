@@ -269,6 +269,19 @@ it('retains the user avatar and model badge in the mobile summary', () => {
   expect(modelButton.querySelector('[data-slot="status-badge"]')).not.toBeNull()
 })
 
+it('marks a request that asked for the auto model next to the model it resolved to', () => {
+  renderLogs({ logs: [{ ...log, auto_routed: true }] })
+
+  expect(screen.getByText('auto')).toBeVisible()
+  expect(screen.getByRole('button', { name: `Model: ${longName}` })).toBeVisible()
+})
+
+it('does not mark a request that named its model directly', () => {
+  renderLogs()
+
+  expect(screen.queryByText('auto')).not.toBeInTheDocument()
+})
+
 it('omits unused token and throughput placeholders for async jobs', () => {
   renderLogs({
     logs: [

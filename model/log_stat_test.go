@@ -41,7 +41,7 @@ func TestSumUsedQuotaKeepsAggregateQueriesIndependent(t *testing.T) {
 	}
 	require.NoError(t, db.Create(&logs).Error)
 
-	stat, err := SumUsedQuota(0, now-1, now+1, "gpt", "alice", "token", 3, "default", false, false)
+	stat, err := SumUsedQuota(0, now-1, now+1, "gpt", "alice", "token", 3, "default", false, false, nil)
 	require.NoError(t, err)
 	assert.Equal(t, 300, stat.Quota)
 	assert.Equal(t, 2, stat.Rpm)

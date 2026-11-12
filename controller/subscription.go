@@ -6,8 +6,10 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
+	"github.com/bytedance/gopkg/util/gopool"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
@@ -29,7 +31,7 @@ type SubscriptionBalancePayRequest struct {
 // ---- User APIs ----
 
 func GetSubscriptionPlans(c *gin.Context) {
-	if !operation_setting.IsPaymentComplianceConfirmed() {
+	if !operation_setting.IsPaymentComplianceConfirmed() || operation_setting.IsQuotaTierEnabled() {
 		common.ApiSuccess(c, []SubscriptionPlanDTO{})
 		return
 	}
@@ -54,6 +56,11 @@ func GetSubscriptionSelf(c *gin.Context) {
 	settingMap, _ := model.GetUserSetting(userId, false)
 	pref := common.NormalizeBillingPreference(settingMap.BillingPreference)
 
+	// Assign the tier before the quota card shows it.
+	if _, err := model.EnsureUserQuotaTier(userId); err != nil {
+		common.SysError(common.LogText("failed to assign the quota tier of user %d: %s", userId, err.Error()))
+	}
+
 	// Get all subscriptions (including expired)
 	allSubscriptions, err := model.GetAllUserSubscriptions(userId)
 	if err != nil {
@@ -65,11 +72,27 @@ func GetSubscriptionSelf(c *gin.Context) {
 	if err != nil {
 		activeSubscriptions = []model.SubscriptionSummary{}
 	}
+	// Tier subscriptions do not bill while tiers are off, so they are hidden too.
+	visible := make([]model.SubscriptionSummary, 0, len(allSubscriptions))
+	for _, summary := range allSubscriptions {
+		if !operation_setting.IsQuotaTierEnabled() && model.IsQuotaTierSource(summary.Subscription.Source) {
+			continue
+		}
+		visible = append(visible, summary)
+	}
+	allSubscriptions = visible
+
+	// "used" on the console quota card when there is no subscription.
+	monthUsed, err := model.GetUserMonthQuotaUsed(userId)
+	if err != nil {
+		common.SysError(common.LogText("failed to sum monthly quota: %s", err.Error()))
+	}
 
 	common.ApiSuccess(c, gin.H{
 		"billing_preference": pref,
 		"subscriptions":      activeSubscriptions, // all active subscriptions
 		"all_subscriptions":  allSubscriptions,    // all subscriptions including expired
+		"month_used":         monthUsed,
 	})
 }
 
@@ -97,7 +120,7 @@ func UpdateSubscriptionPreference(c *gin.Context) {
 }
 
 func SubscriptionRequestBalancePay(c *gin.Context) {
-	if !requirePaymentCompliance(c) {
+	if !requirePaymentCompliance(c) || !requireSubscriptionSelfPurchase(c) {
 		return
 	}
 
@@ -113,6 +136,34 @@ func SubscriptionRequestBalancePay(c *gin.Context) {
 		return
 	}
 	common.ApiSuccess(c, nil)
+}
+
+func RequestSubscriptionQuotaIncrease(c *gin.Context) {
+	if !operation_setting.IsQuotaTierEnabled() {
+		common.ApiErrorT(c, "Quota tiers are not enabled")
+		return
+	}
+	userId := c.GetInt("id")
+	plan, previousTotal, err := model.IncreaseUserSubscriptionQuota(userId)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	// The increase stands even when the cloud platform cannot be reached.
+	gopool.Go(func() {
+		user, err := model.GetUserById(userId, false)
+		if err == nil {
+			err = service.NotifyQuotaIncrease(user, previousTotal, plan.TotalAmount)
+		}
+		if err != nil {
+			common.SysError(common.LogText("failed to send quota increase notice of user %d: %s", userId, err.Error()))
+		}
+	})
+	common.ApiSuccess(c, gin.H{
+		"plan_id":      plan.Id,
+		"plan_title":   plan.Title,
+		"total_amount": plan.TotalAmount,
+	})
 }
 
 // ---- Admin APIs ----
@@ -203,7 +254,7 @@ func AdminCreateSubscriptionPlan(c *gin.Context) {
 		common.ApiErrorT(c, "Custom reset cycle must be greater than 0 seconds")
 		return
 	}
-	err := model.DB.Create(&req.Plan).Error
+	err := model.CreateSubscriptionPlan(&req.Plan)
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -449,6 +500,61 @@ func AdminCreateUserSubscription(c *gin.Context) {
 		return
 	}
 	subscriptionChangeSuccess(c, msg)
+}
+
+// AdminChangeUserSubscriptionPlan switches a user's current subscription to another plan.
+func AdminChangeUserSubscriptionPlan(c *gin.Context) {
+	if !requirePaymentCompliance(c) {
+		return
+	}
+	userId, _ := strconv.Atoi(c.Param("id"))
+	if userId <= 0 {
+		common.ApiErrorT(c, "Invalid user ID")
+		return
+	}
+	var req AdminCreateUserSubscriptionRequest
+	if err := c.ShouldBindJSON(&req); err != nil || req.PlanId <= 0 {
+		common.ApiErrorT(c, "Invalid parameters")
+		return
+	}
+	msg, err := model.AdminChangeUserSubscriptionPlan(userId, req.PlanId)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	subscriptionChangeSuccess(c, msg)
+}
+
+const maxCurrentSubscriptionUsers = 200
+
+// AdminListCurrentSubscriptions takes user_ids=1,2,3 (one page of the user list).
+func AdminListCurrentSubscriptions(c *gin.Context) {
+	userIds := make([]int, 0)
+	seen := make(map[int]bool)
+	for part := range strings.SplitSeq(c.Query("user_ids"), ",") {
+		if strings.TrimSpace(part) == "" {
+			continue
+		}
+		id, err := strconv.Atoi(strings.TrimSpace(part))
+		if err != nil || id <= 0 {
+			common.ApiErrorT(c, "Invalid parameters")
+			return
+		}
+		if !seen[id] {
+			seen[id] = true
+			userIds = append(userIds, id)
+		}
+	}
+	if len(userIds) > maxCurrentSubscriptionUsers {
+		common.ApiErrorT(c, "Invalid parameters")
+		return
+	}
+	subs, err := model.GetUsersCurrentSubscriptions(userIds)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, subs)
 }
 
 func AdminResetUserSubscriptionsByPlan(c *gin.Context) {

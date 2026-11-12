@@ -2,6 +2,7 @@ package model
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -208,46 +209,193 @@ func increaseQuotaData(quotaData *QuotaData) {
 	}
 }
 
-func GetQuotaDataByUsername(username string, startTime int64, endTime int64) (quotaData []*QuotaData, err error) {
-	var quotaDatas []*QuotaData
-	// 从quota_data表中查询数据
-	err = DB.Table("quota_data").
-		Select("user_id, username, model_name, created_at, sum(count) as count, sum(quota) as quota, sum(token_used) as token_used, sum(cache_read_tokens) as cache_read_tokens, sum(cache_creation_tokens) as cache_creation_tokens").
-		Where("username = ? and created_at >= ? and created_at <= ? and count > 0", username, startTime, endTime).
-		Group("user_id, username, model_name, created_at").
-		Find(&quotaDatas).Error
-	return quotaDatas, err
-}
-
-func GetQuotaDataByUserId(userId int, startTime int64, endTime int64) (quotaData []*QuotaData, err error) {
-	var quotaDatas []*QuotaData
-	// 从quota_data表中查询数据
-	err = DB.Table("quota_data").
-		Select("user_id, username, model_name, created_at, sum(count) as count, sum(quota) as quota, sum(token_used) as token_used, sum(cache_read_tokens) as cache_read_tokens, sum(cache_creation_tokens) as cache_creation_tokens").
-		Where("user_id = ? and created_at >= ? and created_at <= ? and count > 0", userId, startTime, endTime).
-		Group("user_id, username, model_name, created_at").
-		Find(&quotaDatas).Error
-	return quotaDatas, err
-}
-
-func GetQuotaDataGroupByUser(startTime int64, endTime int64) (quotaData []*QuotaData, err error) {
-	var quotaDatas []*QuotaData
-	err = DB.Table("quota_data").
-		Select("username, created_at, sum(count) as count, sum(quota) as quota, sum(token_used) as token_used, sum(cache_read_tokens) as cache_read_tokens, sum(cache_creation_tokens) as cache_creation_tokens").
-		Where("created_at >= ? and created_at <= ? and count > 0", startTime, endTime).
-		Group("username, created_at").
-		Find(&quotaDatas).Error
-	return quotaDatas, err
-}
-
-func GetAllQuotaDates(startTime int64, endTime int64, username string) (quotaData []*QuotaData, err error) {
-	if username != "" {
-		return GetQuotaDataByUsername(username, startTime, endTime)
+// No failure counts: failure-only rows are skipped, so they would be partial.
+func (row attributedUsageRow) chartQuotaData() *QuotaData {
+	return &QuotaData{
+		UserID: row.UserID, Username: row.Username, ModelName: row.ModelName, CreatedAt: row.Hour,
+		Count: int(row.RequestCount), Quota: int(row.Quota), TokenUsed: int(row.TokenUsed),
+		InputTokens: int(row.InputTokens), CompletionTokens: int(row.CompletionTokens),
+		CacheReadTokens: row.CacheReadTokens, CacheWriteTokens: int(row.CacheWriteTokens),
+		CacheCreationTokens: row.CacheCreationTokens,
+		UseTimeTotal:        row.UseTimeTotal, UseTimeCount: row.UseTimeCount, LastCalledAt: row.LastCalledAt,
 	}
-	var quotaDatas []*QuotaData
-	// 从quota_data表中查询数据
-	// only select model_name, sum(count) as count, sum(quota) as quota, model_name, created_at from quota_data group by model_name, created_at;
-	//err = DB.Table("quota_data").Where("created_at >= ? and created_at <= ?", startTime, endTime).Find(&quotaDatas).Error
-	err = DB.Table("quota_data").Select("model_name, sum(count) as count, sum(quota) as quota, sum(token_used) as token_used, sum(cache_read_tokens) as cache_read_tokens, sum(cache_creation_tokens) as cache_creation_tokens, created_at").Where("created_at >= ? and created_at <= ? and count > 0", startTime, endTime).Group("model_name, created_at").Find(&quotaDatas).Error
-	return quotaDatas, err
+}
+
+func GetQuotaDataByUserId(userId int, startTime int64, endTime int64) ([]*QuotaData, error) {
+	rows, err := loadAttributedUsage(attributedUsageQuery{
+		Start: startTime, End: endTime, Scope: usageScope{UserID: userId}, ByModel: true, ByHour: true,
+	})
+	if err != nil {
+		return nil, err
+	}
+	quotaDatas := make([]*QuotaData, 0, len(rows))
+	for _, row := range rows {
+		if row.RequestCount > 0 {
+			quotaDatas = append(quotaDatas, row.chartQuotaData())
+		}
+	}
+	return quotaDatas, nil
+}
+
+// Columns are qualified because organization filters join users.
+const quotaChartSumsSelect = "SUM(quota_data.count) AS count, SUM(quota_data.quota) AS quota, " +
+	"SUM(quota_data.token_used) AS token_used, SUM(quota_data.cache_read_tokens) AS cache_read_tokens, " +
+	"SUM(quota_data.cache_creation_tokens) AS cache_creation_tokens"
+
+type UserQuotaTrendRow struct {
+	Username            string  `json:"username,omitempty"`
+	BusinessUnit        *string `json:"business_unit,omitempty"`
+	Department          *string `json:"department,omitempty"`
+	Team                *string `json:"team,omitempty"`
+	CreatedAt           int64   `json:"created_at"`
+	Count               int64   `json:"count"`
+	Quota               int64   `json:"quota"`
+	TokenUsed           int64   `json:"token_used"`
+	CacheReadTokens     int64   `json:"cache_read_tokens"`
+	CacheCreationTokens int64   `json:"cache_creation_tokens"`
+}
+
+// GetUserQuotaTrend returns hourly consumption per username or per organization path.
+func GetUserQuotaTrend(startTime, endTime int64, dimension string, org UsageOrgFilter) ([]UserQuotaTrendRow, error) {
+	depth := usageOrgDepth(dimension)
+	if depth == 0 && dimension != UsageAnalyticsGroupUser {
+		return nil, fmt.Errorf("unsupported dimension: %s", dimension)
+	}
+	rows, err := loadAttributedUsage(attributedUsageQuery{
+		Start: startTime, End: endTime, Scope: usageScope{Org: org}, ByHour: true,
+	})
+	if err != nil {
+		return nil, err
+	}
+	type trendKey struct {
+		username, businessUnit, department, team string
+		hour                                     int64
+	}
+	trend := make([]UserQuotaTrendRow, 0)
+	index := make(map[trendKey]int)
+	for _, row := range rows {
+		if row.RequestCount == 0 {
+			continue
+		}
+		key := trendKey{hour: row.Hour}
+		if depth == 0 {
+			key.username = row.Username
+		}
+		if depth >= 1 {
+			key.businessUnit = row.BusinessUnit
+		}
+		if depth >= 2 {
+			key.department = row.Department
+		}
+		if depth >= 3 {
+			key.team = row.Team
+		}
+		i, ok := index[key]
+		if !ok {
+			point := UserQuotaTrendRow{Username: key.username, CreatedAt: row.Hour}
+			if depth >= 1 {
+				point.BusinessUnit = &row.BusinessUnit
+			}
+			if depth >= 2 {
+				point.Department = &row.Department
+			}
+			if depth >= 3 {
+				point.Team = &row.Team
+			}
+			trend = append(trend, point)
+			i = len(trend) - 1
+			index[key] = i
+		}
+		trend[i].Count += row.RequestCount
+		trend[i].Quota += row.Quota
+		trend[i].TokenUsed += row.TokenUsed
+		trend[i].CacheReadTokens += row.CacheReadTokens
+		trend[i].CacheCreationTokens += row.CacheCreationTokens
+	}
+	return trend, nil
+}
+
+func GetAllQuotaDates(startTime int64, endTime int64, username string, org UsageOrgFilter) ([]*QuotaData, error) {
+	scope := usageScope{Username: strings.TrimSpace(username), Org: org}
+	if scope.IsZero() {
+		// iSelf moves do not change the totals over all accounts.
+		var quotaDatas []*QuotaData
+		err := DB.Table("quota_data").
+			Select("quota_data.model_name AS model_name, quota_data.created_at AS created_at, "+quotaChartSumsSelect).
+			Where("quota_data.created_at >= ? AND quota_data.created_at <= ? AND quota_data.count > 0", startTime, endTime).
+			Group("quota_data.model_name, quota_data.created_at").
+			Find(&quotaDatas).Error
+		return quotaDatas, err
+	}
+	rows, err := loadAttributedUsage(attributedUsageQuery{
+		Start: startTime, End: endTime, Scope: scope, ByModel: true, ByHour: true,
+	})
+	if err != nil {
+		return nil, err
+	}
+	type chartKey struct {
+		model string
+		hour  int64
+	}
+	quotaDatas := make([]*QuotaData, 0)
+	index := make(map[chartKey]*QuotaData)
+	for _, row := range rows {
+		if row.RequestCount == 0 {
+			continue
+		}
+		point := row.chartQuotaData()
+		if scope.Username != "" {
+			quotaDatas = append(quotaDatas, point)
+			continue
+		}
+		key := chartKey{row.ModelName, row.Hour}
+		if total, ok := index[key]; ok {
+			total.Count += point.Count
+			total.Quota += point.Quota
+			total.TokenUsed += point.TokenUsed
+			total.InputTokens += point.InputTokens
+			total.CompletionTokens += point.CompletionTokens
+			total.CacheReadTokens += point.CacheReadTokens
+			total.CacheWriteTokens += point.CacheWriteTokens
+			total.CacheCreationTokens += point.CacheCreationTokens
+			total.UseTimeTotal += point.UseTimeTotal
+			total.UseTimeCount += point.UseTimeCount
+			total.LastCalledAt = max(total.LastCalledAt, point.LastCalledAt)
+			continue
+		}
+		point.UserID, point.Username = 0, ""
+		index[key] = point
+		quotaDatas = append(quotaDatas, point)
+	}
+	return quotaDatas, nil
+}
+
+// TokenPeriodUsage 是一个令牌在一段时间里的调用次数和消耗额度。
+type TokenPeriodUsage struct {
+	TokenID int   `gorm:"column:token_id"`
+	Calls   int64 `gorm:"column:calls"`
+	Quota   int64 `gorm:"column:quota"`
+}
+
+// GetTokensUsageSince 从看板的小时汇总表 quota_data 汇总这些令牌从 since 起的调用次数和额度，
+// 键是令牌 ID。count 只记成功的调用（最终失败的那行 count 为 0），所以次数不含失败。
+// 汇总表按 DataExportInterval 落库、只在 DataExportEnabled 开着时写，最近几分钟的调用可能还没进来。
+func GetTokensUsageSince(tokenIds []int, since int64) (map[int]TokenPeriodUsage, error) {
+	usage := make(map[int]TokenPeriodUsage, len(tokenIds))
+	if len(tokenIds) == 0 {
+		return usage, nil
+	}
+	var rows []TokenPeriodUsage
+	err := DB.Table("quota_data").
+		Select("token_id, sum(count) as calls, sum(quota) as quota").
+		Where("token_id IN ? AND created_at >= ?", tokenIds, since).
+		Group("token_id").
+		Find(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+	for _, row := range rows {
+		usage[row.TokenID] = row
+	}
+	return usage, nil
 }

@@ -11,11 +11,14 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/i18n"
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/relay"
 	"github.com/QuantumNous/new-api/relay/helper"
 	"github.com/QuantumNous/new-api/relaykit/types"
+	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting/autorouter_setting"
 	"github.com/gin-gonic/gin"
 )
 
@@ -38,7 +41,7 @@ var responsesWSRequestEngine = sync.OnceValue(func() *gin.Engine {
 		c.Set(common.RequestIdKey, state.requestID)
 		common.SetContextKey(c, constant.ContextKeyRequestStartTime, time.Now())
 		c.Next()
-	}, middleware.BodyStorageCleanup(), middleware.TokenAuth(), middleware.ModelRequestRateLimit(), func(c *gin.Context) {
+	}, middleware.BodyStorageCleanup(), middleware.TokenAuth(), middleware.TokenRateLimit(), middleware.ModelRequestRateLimit(), func(c *gin.Context) {
 		state := c.Request.Context().Value(responsesWSRequestContextKey{}).(*responsesWSRequestState)
 		state.apiError = state.handle(c)
 		if state.apiError != nil {
@@ -113,6 +116,17 @@ func newResponsesWSRequestRunner(c *gin.Context) relay.ResponsesWSRequestRunner 
 
 func ResponsesWebSocket(c *gin.Context) {
 	requestID := c.GetString(common.RequestIdKey)
+	// 这条路径自己选渠道、不经过 Distribute，按客户端写的模型直接调，智能路由 key 在这里写个具体模型
+	// 就绕开了 auto。平台开着 auto 时在握手阶段就拒绝，客户端拿到的是普通 HTTP 错误，可以改走
+	// HTTP 的 /v1/responses；指定渠道的令牌不受影响，与 Distribute 一致。
+	routingMode, _ := common.GetContextKeyType[common.TokenRoutingMode](c, constant.ContextKeyTokenRoutingMode)
+	_, pinned, _ := service.GetChannelConstraints(c).ResolvedPin()
+	if routingMode == common.TokenRoutingModeSmart && !pinned && autorouter_setting.GetAutoRouterSetting().Enabled {
+		apiError := types.NewErrorWithStatusCode(errors.New(i18n.T(c, i18n.MsgRelaySmartKeyResponsesWSUnsupported)),
+			types.ErrorCodeAccessDenied, http.StatusForbidden, types.ErrOptionWithSkipRetry())
+		c.JSON(apiError.StatusCode, gin.H{"error": apiError.ToOpenAIError()})
+		return
+	}
 	runner := newResponsesWSRequestRunner(c)
 	ws, err := upgrader.Upgrade(c.Writer, c.Request, nil)
 	if err != nil {

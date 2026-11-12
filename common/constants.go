@@ -2,6 +2,8 @@ package common
 
 import (
 	"crypto/tls"
+	"strings"
+
 	//"os"
 	//"strconv"
 	"sync"
@@ -139,6 +141,9 @@ var SsoUserListApiUrl = ""
 var SsoUserListPlatformId = ""
 var SsoUserListSecret = ""
 
+var QuotaIncreaseNotifyUrl = ""
+var QuotaIncreaseNotifyPlatId = ""
+
 var QuotaForNewUser = 0
 var QuotaForInviter = 0
 var QuotaForInvitee = 0
@@ -184,6 +189,9 @@ var BatchUpdateInterval int
 var RelayTimeout int // unit is second
 
 var RelayIdleConnTimeout int // unit is second
+
+var RelayHTTP2PingIdleTimeout int // seconds without incoming frames before probing; 0 disables probes
+var RelayHTTP2PingTimeout int     // seconds to wait for a PING acknowledgement
 
 // RelayResponseHeaderTimeout limits how long the relay transport waits for the
 // upstream response headers after the request has been fully written.
@@ -289,4 +297,76 @@ const (
 	TopUpStatusSuccess = "success"
 	TopUpStatusFailed  = "failed"
 	TopUpStatusExpired = "expired"
+)
+
+// 决定令牌的可见范围
+type TokenViewScope int
+
+const (
+	TokenScopeOwned TokenViewScope = iota
+	TokenScopePersonal
+	TokenScopeBusiness
+)
+
+type TokenScene string
+
+const (
+	TokenSceneOffice   TokenScene = "office"   // 办公：消耗个人配额
+	TokenSceneBusiness TokenScene = "business" // 业务：不扣费，但是记录费用
+)
+
+func NormalizeTokenScene(scene string) TokenScene {
+	if strings.TrimSpace(scene) == string(TokenSceneBusiness) {
+		return TokenSceneBusiness
+	}
+	return TokenSceneOffice
+}
+
+// TokenRoutingMode 是令牌的模型配置方式。只有 smart 会把对话请求的模型改成 auto；
+// fixed 和空值都按客户端传的模型调用，并拒绝 auto。空值是这一列出现之前建的旧令牌，
+// 以及不传这个字段的旧控制台、脚本建的令牌，保持原来"能调的模型都能调"的行为。
+type TokenRoutingMode string
+
+const (
+	TokenRoutingModeSmart TokenRoutingMode = "smart" // 智能路由
+	TokenRoutingModeFixed TokenRoutingMode = "fixed" // 锁定模型
+)
+
+// NormalizeTokenRoutingMode 只认 smart 和 fixed，其它值（含空串）一律存成空值，即锁定模型。
+func NormalizeTokenRoutingMode(mode string) TokenRoutingMode {
+	switch TokenRoutingMode(strings.TrimSpace(mode)) {
+	case TokenRoutingModeSmart:
+		return TokenRoutingModeSmart
+	case TokenRoutingModeFixed:
+		return TokenRoutingModeFixed
+	default:
+		return ""
+	}
+}
+
+type RoutingPreferenceMode string
+
+const (
+	RoutingPreferenceModeBalanced   RoutingPreferenceMode = "balanced"   // 均衡（平台默认）
+	RoutingPreferenceModePrice      RoutingPreferenceMode = "price"      // 价格最低优先
+	RoutingPreferenceModeThroughput RoutingPreferenceMode = "throughput" // 吞吐量最高优先
+	RoutingPreferenceModeLatency    RoutingPreferenceMode = "latency"    // 延迟最低优先
+	RoutingPreferenceModeQuality    RoutingPreferenceMode = "quality"    // 质量（工具调用）优先
+)
+
+// 非法值一律 balanced
+func NormalizeRoutingPreferenceMode(mode string) RoutingPreferenceMode {
+	switch RoutingPreferenceMode(strings.TrimSpace(mode)) {
+	case RoutingPreferenceModePrice, RoutingPreferenceModeThroughput,
+		RoutingPreferenceModeLatency, RoutingPreferenceModeQuality:
+		return RoutingPreferenceMode(strings.TrimSpace(mode))
+	default:
+		return RoutingPreferenceModeBalanced
+	}
+}
+
+const (
+	TokenRoleOwner  = "owner"
+	TokenRoleMember = "member"
+	TokenRoleLeader = "leader"
 )

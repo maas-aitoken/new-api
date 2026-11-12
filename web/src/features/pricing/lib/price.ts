@@ -19,12 +19,7 @@ For commercial licensing, please contact support@quantumnous.com
 import { formatBillingCurrencyFromUSD } from '@/lib/currency'
 
 import { QUOTA_TYPE_VALUES, TOKEN_UNIT_DIVISORS } from '../constants'
-import type {
-  PricingModel,
-  PricingProvider,
-  TokenUnit,
-  PriceType,
-} from '../types'
+import type { PricingModel, TokenUnit, PriceType } from '../types'
 import { getConfiguredGroupRatio, getDisplayGroupRatio } from './model-helpers'
 
 // ----------------------------------------------------------------------------
@@ -57,102 +52,6 @@ export function stripTrailingZeros(formatted: string): string {
   }
 
   return `${symbol}${result}${suffix}`
-}
-
-export function getPrimaryProvider(
-  model: PricingModel
-): PricingProvider | undefined {
-  const providers = model.providers ?? []
-  const standardProviders = sortProvidersForStandard(providers)
-  if (standardProviders.length === 0) return providers[0]
-  return standardProviders[0]
-}
-
-/**
- * Sorts available providers using the model detail page's Standard routing
- * policy so list cards and detail summaries share the same Top 1 provider.
- */
-export function sortProvidersForStandard(
-  providers: PricingProvider[]
-): PricingProvider[] {
-  const availableProviders = providers.filter((provider) => provider.available)
-  return [...availableProviders].sort((left, right) => {
-    const priceComparison = compareProvidersForStandardPrice(left, right)
-    if (priceComparison !== 0) return priceComparison
-    return left.name.localeCompare(right.name)
-  })
-}
-
-export function compareProvidersForStandardPrice(
-  left: PricingProvider,
-  right: PricingProvider
-): number {
-  const leftHasPrice = left.pricing ? 0 : 1
-  const rightHasPrice = right.pricing ? 0 : 1
-  if (leftHasPrice !== rightHasPrice) return leftHasPrice - rightHasPrice
-
-  const leftTotal =
-    (left.pricing?.input_price ?? Number.POSITIVE_INFINITY) +
-    (left.pricing?.output_price ?? Number.POSITIVE_INFINITY)
-  const rightTotal =
-    (right.pricing?.input_price ?? Number.POSITIVE_INFINITY) +
-    (right.pricing?.output_price ?? Number.POSITIVE_INFINITY)
-  return leftTotal - rightTotal
-}
-
-function getProviderPrice(
-  provider: PricingProvider | undefined,
-  type: PriceType
-): number | null {
-  if (!provider?.pricing) return null
-  if (type === 'input') return provider.pricing.input_price
-  if (type === 'output') return provider.pricing.output_price
-  if (type === 'cache') return provider.pricing.cache_read_price ?? null
-  if (type === 'create_cache') {
-    return provider.pricing.cache_write_price ?? null
-  }
-  return null
-}
-
-/**
- * Formats the first available provider's configured price for model-square
- * summaries. It falls back to the existing model-level price when the
- * provider has no dedicated price.
- */
-export function formatPrimaryProviderPrice(
-  model: PricingModel,
-  type: PriceType,
-  tokenUnit: TokenUnit,
-  showWithRecharge = false,
-  priceRate = 1,
-  usdExchangeRate = 1,
-  selectedGroup?: string,
-  showCurrencySymbol = true
-): string {
-  const providerPrice = getProviderPrice(getPrimaryProvider(model), type)
-  if (providerPrice == null) {
-    return formatPrice(
-      model,
-      type,
-      tokenUnit,
-      showWithRecharge,
-      priceRate,
-      usdExchangeRate,
-      selectedGroup,
-      showCurrencySymbol
-    )
-  }
-
-  const unitDivisor = TOKEN_UNIT_DIVISORS[tokenUnit]
-  const displayPrice = showWithRecharge
-    ? (providerPrice * priceRate) / usdExchangeRate / unitDivisor
-    : providerPrice / unitDivisor
-  return formatBillingCurrencyFromUSD(displayPrice, {
-    showSymbol: showCurrencySymbol,
-    digitsLarge: 4,
-    digitsSmall: 6,
-    abbreviate: false,
-  })
 }
 
 /**

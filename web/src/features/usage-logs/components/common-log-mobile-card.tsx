@@ -38,7 +38,11 @@ import {
   isDisplayableLogType,
   isTimingLogType,
 } from '../lib/utils'
-import { ModelBadge, ResponseModelDetails } from './model-badge'
+import {
+  AutoRoutedBadge,
+  ModelBadge,
+  ResponseModelDetails,
+} from './model-badge'
 import { StreamTpsCell, TimingMetricsCell } from './timing-metrics-cell'
 import { useUsageLogsContext } from './usage-logs-provider'
 
@@ -145,7 +149,7 @@ export function CommonLogMobileCard<TData>(props: {
     <div className='min-w-0 space-y-2.5 text-sm leading-5'>
       <div className='flex min-w-0 flex-wrap items-start gap-x-3 gap-y-2'>
         {fields.model.visible && (
-          <div className='min-w-0 flex-[1_1_10rem]'>
+          <div className='flex min-w-0 flex-[1_1_10rem] flex-wrap items-center gap-1'>
             <ModelBadge
               modelName={model.name}
               actualModel={model.actualModel}
@@ -153,6 +157,7 @@ export function CommonLogMobileCard<TData>(props: {
               wrapText
               onInspect={() => setSelectedField('model')}
             />
+            {log.auto_routed ? <AutoRoutedBadge /> : null}
           </div>
         )}
         {fields.cost.visible && costCell && (

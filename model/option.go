@@ -13,6 +13,7 @@ import (
 	"github.com/QuantumNous/new-api/observability"
 	"github.com/QuantumNous/new-api/pkg/jsplugin"
 	"github.com/QuantumNous/new-api/setting"
+	"github.com/QuantumNous/new-api/setting/autorouter_setting"
 	"github.com/QuantumNous/new-api/setting/config"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/QuantumNous/new-api/setting/performance_setting"
@@ -156,6 +157,7 @@ func InitOptionMap() {
 	common.OptionMap["ModelRequestRateLimitDurationMinutes"] = strconv.Itoa(setting.ModelRequestRateLimitDurationMinutes)
 	common.OptionMap["ModelRequestRateLimitSuccessCount"] = strconv.Itoa(setting.ModelRequestRateLimitSuccessCount)
 	common.OptionMap["ModelRequestRateLimitGroup"] = setting.ModelRequestRateLimitGroup2JSONString()
+	common.OptionMap["TokenRequestRateLimitCount"] = strconv.Itoa(setting.TokenRequestRateLimitCount)
 	common.OptionMap["ModelRatio"] = ratio_setting.ModelRatio2JSONString()
 	common.OptionMap["ModelPrice"] = ratio_setting.ModelPrice2JSONString()
 	common.OptionMap["CacheRatio"] = ratio_setting.CacheRatio2JSONString()
@@ -184,6 +186,7 @@ func InitOptionMap() {
 	common.OptionMap["DemoSiteEnabled"] = strconv.FormatBool(operation_setting.DemoSiteEnabled)
 	common.OptionMap["SelfUseModeEnabled"] = strconv.FormatBool(operation_setting.SelfUseModeEnabled)
 	common.OptionMap["ModelRequestRateLimitEnabled"] = strconv.FormatBool(setting.ModelRequestRateLimitEnabled)
+	common.OptionMap["TokenRequestRateLimitEnabled"] = strconv.FormatBool(setting.TokenRequestRateLimitEnabled)
 	common.OptionMap["CheckSensitiveOnPromptEnabled"] = strconv.FormatBool(setting.CheckSensitiveOnPromptEnabled)
 	common.OptionMap["StopOnSensitiveEnabled"] = strconv.FormatBool(setting.StopOnSensitiveEnabled)
 	common.OptionMap["SensitiveWords"] = setting.SensitiveWordsToString()
@@ -298,7 +301,13 @@ func validateOptionValue(key string, value string) error {
 	if key == legacyAccessTokenRetireAtKey {
 		return errLegacyRetireAtReadOnly
 	}
+	if key == costMultiplierKeyMigratedKey {
+		return errCostMultiplierKeyMigratedReadOnly
+	}
 	if err := operation_setting.ValidateQuotaOption(key, value); err != nil {
+		return err
+	}
+	if err := operation_setting.ValidateEpaySignOption(key, value); err != nil {
 		return err
 	}
 	if key == "EmailProvider" || key == "ResendApiKey" || key == "ResendFrom" {
@@ -337,7 +346,7 @@ func validateOptionValue(key string, value string) error {
 	if key == "OtelCaptureMode" && !observability.IsValidContentCaptureMode(value) {
 		return fmt.Errorf("invalid OTel capture mode: %s (expected full, error, or off)", value)
 	}
-	return nil
+	return autorouter_setting.ValidateOption(key, value)
 }
 
 func normalizeOptionValue(key string, value string) string {
@@ -457,7 +466,7 @@ func UpdateOptionsBulk(values map[string]string) error {
 }
 
 func updateOptionMap(key string, value string) (err error) {
-	if key == retiredThemeOptionKey || key == legacyAccessTokenRetireAtKey {
+	if key == retiredThemeOptionKey || key == legacyAccessTokenRetireAtKey || key == costMultiplierKeyMigratedKey {
 		common.OptionMapRWMutex.Lock()
 		delete(common.OptionMap, key)
 		common.OptionMapRWMutex.Unlock()
@@ -562,6 +571,8 @@ func updateOptionMap(key string, value string) (err error) {
 			setting.CheckSensitiveOnPromptEnabled = boolValue
 		case "ModelRequestRateLimitEnabled":
 			setting.ModelRequestRateLimitEnabled = boolValue
+		case "TokenRequestRateLimitEnabled":
+			setting.TokenRequestRateLimitEnabled = boolValue
 		case "StopOnSensitiveEnabled":
 			setting.StopOnSensitiveEnabled = boolValue
 		case "SMTPSSLEnabled":
@@ -741,6 +752,8 @@ func updateOptionMap(key string, value string) (err error) {
 		setting.ModelRequestRateLimitSuccessCount, _ = strconv.Atoi(value)
 	case "ModelRequestRateLimitGroup":
 		err = setting.UpdateModelRequestRateLimitGroupByJSONString(value)
+	case "TokenRequestRateLimitCount":
+		setting.TokenRequestRateLimitCount, _ = strconv.Atoi(value)
 	case "RetryTimes":
 		common.RetryTimes, _ = strconv.Atoi(value)
 	case "DataExportInterval":

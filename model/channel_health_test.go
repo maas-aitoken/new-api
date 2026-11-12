@@ -2,6 +2,7 @@ package model
 
 import (
 	"testing"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 
@@ -91,6 +92,82 @@ func TestGetChannelHealthBucketsRejectsOversizedIdList(t *testing.T) {
 	buckets, err := GetChannelHealthBuckets(nil, 1_700_000_000)
 	require.NoError(t, err)
 	assert.Empty(t, buckets)
+}
+
+// Runs on the global LOG_DB, so the dialect suites reuse it.
+func TestQueryModelHealthSumsChannelsPerModel(t *testing.T) {
+	clearDialectTestLogs(t)
+	t.Cleanup(func() { clearDialectTestLogs(t) })
+
+	const startTs int64 = 1_700_000_000
+	endTs := startTs + ChannelHealthBlockCount*ChannelHealthBlockSeconds
+	at := func(block int64) int64 { return startTs + block*ChannelHealthBlockSeconds + 30 }
+	require.NoError(t, LOG_DB.Create(&[]Log{
+		// The first block of m-a adds up two channels.
+		{UserId: 1, ChannelId: 1, ModelName: "m-a", Type: LogTypeConsume, CreatedAt: at(0)},
+		{UserId: 1, ChannelId: 1, ModelName: "m-a", Type: LogTypeConsume, CreatedAt: at(0)},
+		{UserId: 1, ChannelId: 2, ModelName: "m-a", Type: LogTypeConsume, CreatedAt: at(0)},
+		{UserId: 1, ChannelId: 2, ModelName: "m-a", Type: LogTypeError, CreatedAt: at(0)},
+		{UserId: 1, ChannelId: 2, ModelName: "m-a", Type: LogTypeError, CreatedAt: endTs - 1},
+		{UserId: 1, ChannelId: 1, ModelName: "m-b", Type: LogTypeConsume, CreatedAt: at(5)},
+		// Left out: no channel, no model, other types, outside [startTs, endTs).
+		{UserId: 1, ChannelId: 0, ModelName: "m-a", Type: LogTypeError, CreatedAt: at(1)},
+		{UserId: 1, ChannelId: 1, ModelName: "", Type: LogTypeConsume, CreatedAt: at(1)},
+		{UserId: 1, ChannelId: 1, ModelName: "m-a", Type: LogTypeRefund, CreatedAt: at(2)},
+		{UserId: 1, ChannelId: 1, ModelName: "m-a", Type: LogTypeConsume, CreatedAt: startTs - 1},
+		{UserId: 1, ChannelId: 1, ModelName: "m-a", Type: LogTypeConsume, CreatedAt: endTs},
+	}).Error)
+
+	models, err := queryModelHealth(startTs, endTs)
+	require.NoError(t, err)
+
+	modelA := make([]ChannelHealthBucket, ChannelHealthBlockCount)
+	modelA[0] = ChannelHealthBucket{Success: 3, Failed: 1}
+	modelA[ChannelHealthBlockCount-1] = ChannelHealthBucket{Failed: 1}
+	modelB := make([]ChannelHealthBucket, ChannelHealthBlockCount)
+	modelB[5] = ChannelHealthBucket{Success: 1}
+	assert.Equal(t, []ModelHealth{
+		{ModelName: "m-a", Buckets: modelA},
+		{ModelName: "m-b", Buckets: modelB},
+	}, models)
+}
+
+func TestGetRecentModelHealthFiltersAfterCache(t *testing.T) {
+	db := useSQLiteLogTestDB(t)
+	resetCache := func() {
+		modelHealthCacheMu.Lock()
+		modelHealthCache, modelHealthCacheExpires = ModelHealthWindow{}, time.Time{}
+		modelHealthCacheMu.Unlock()
+	}
+	resetCache()
+	t.Cleanup(resetCache)
+
+	createdAt := time.Now().Unix() - 300
+	require.NoError(t, db.Create(&[]Log{
+		{UserId: 1, ChannelId: 1, ModelName: "m-a", Type: LogTypeConsume, CreatedAt: createdAt},
+		{UserId: 1, ChannelId: 1, ModelName: "m-b", Type: LogTypeConsume, CreatedAt: createdAt},
+	}).Error)
+
+	subset, err := GetRecentModelHealth(map[string]struct{}{"m-a": {}})
+	require.NoError(t, err)
+	assert.Equal(t, ChannelHealthBlockCount, subset.BlockCount)
+	assert.Equal(t, ChannelHealthBlockSeconds, subset.BlockSeconds)
+	assert.Zero(t, subset.StartTs%60)
+	want := make([]ChannelHealthBucket, ChannelHealthBlockCount)
+	want[(createdAt-subset.StartTs)/ChannelHealthBlockSeconds] = ChannelHealthBucket{Success: 1}
+	assert.Equal(t, []ModelHealth{{ModelName: "m-a", Buckets: want}}, subset.Models)
+
+	empty, err := GetRecentModelHealth(map[string]struct{}{})
+	require.NoError(t, err)
+	assert.NotNil(t, empty.Models)
+	assert.Empty(t, empty.Models)
+
+	// Caller filters must not alter the shared cache.
+	all, err := GetRecentModelHealth(nil)
+	require.NoError(t, err)
+	require.Len(t, all.Models, 2)
+	assert.Equal(t, "m-a", all.Models[0].ModelName)
+	assert.Equal(t, "m-b", all.Models[1].ModelName)
 }
 
 func TestChannelHealthBucketExprPerDialect(t *testing.T) {

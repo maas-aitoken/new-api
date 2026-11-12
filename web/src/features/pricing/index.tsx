@@ -111,10 +111,11 @@ export function PricingContent({
         const model = (models || []).find(
           (item) => item.model_name === modelName
         )
-        if (model?.id) {
+        const catalogKey = model?.catalog_key || String(model?.id ?? '')
+        if (catalogKey) {
           navigate({
             to: '/model-square/$modelId',
-            params: { modelId: String(model.id) },
+            params: { modelId: catalogKey },
           })
         }
         return

@@ -28,6 +28,7 @@ const (
 )
 
 type BoundChannel struct {
+	ID   int    `json:"id"`
 	Name string `json:"name"`
 	Type int    `json:"type"`
 }
@@ -40,6 +41,7 @@ type Model struct {
 	Tags               string         `json:"tags,omitempty" gorm:"type:varchar(255)"`
 	VendorID           int            `json:"vendor_id,omitempty" gorm:"index"`
 	Endpoints          string         `json:"endpoints,omitempty" gorm:"type:text"`
+	Capabilities       string         `json:"capabilities,omitempty" gorm:"type:text"`
 	SupportedEndpoints []string       `json:"supported_endpoints,omitempty" gorm:"-"`
 	ContextLength      int64          `json:"context_length,omitempty" gorm:"bigint"`
 	ParameterCount     string         `json:"parameter_count,omitempty" gorm:"type:varchar(64)"`
@@ -77,8 +79,8 @@ func (mi *Model) MatchesName(name string) bool {
 	}
 }
 
-// resolveModelMetadata preserves catalog precedence: exact, prefix, suffix,
-// then contains. The first matching record within a rule type wins.
+// resolveModelMetadata 保持与能力解析相同的优先级：精确 → 前缀 → 后缀 → 包含，
+// 同一规则内以更长的匹配键优先。这样同一个模型名的元数据来源与能力声明来源一致。
 func resolveModelMetadata(records []Model, names []string) map[string]*Model {
 	resolved := make(map[string]*Model)
 	for i := range records {
@@ -87,23 +89,53 @@ func resolveModelMetadata(records []Model, names []string) map[string]*Model {
 		}
 	}
 	for _, rule := range []int{NameRulePrefix, NameRuleSuffix, NameRuleContains} {
+		matchedLength := make(map[string]int, len(names))
+		// 本轮规则的最长匹配先记在 best 里，等整轮扫描完再合并。
+		// 直接写 resolved 会让先遍历到的短前缀占位，后续更长的前缀被
+		// "已被解析" 的判断挡掉，导致 claude-opus-5-5 落到 claude-opus-5 上。
+		best := make(map[string]*Model, len(names))
 		for i := range records {
 			metadata := &records[i]
 			if metadata.NameRule != rule {
 				continue
 			}
 			for _, name := range names {
-				if _, exists := resolved[name]; !exists && metadata.MatchesName(name) {
-					resolved[name] = metadata
+				if _, exists := resolved[name]; exists {
+					continue
 				}
+				if !metadata.MatchesName(name) {
+					continue
+				}
+				if length, ok := matchedLength[name]; ok && length >= len(metadata.ModelName) {
+					continue
+				}
+				matchedLength[name] = len(metadata.ModelName)
+				best[name] = metadata
 			}
+		}
+		for name, metadata := range best {
+			resolved[name] = metadata
 		}
 	}
 	return resolved
 }
 
+// ResolveModelMetadataByName maps concrete model names to the declaration row
+// that governs them (exact → prefix → suffix → contains, longest key first).
+// Callers that start from live routes, such as the public model square, can use
+// it to pick up metadata declared by a rule row instead of requiring an exact row.
+func ResolveModelMetadataByName(names []string) (map[string]*Model, error) {
+	var records []Model
+	if err := DB.Find(&records).Error; err != nil {
+		return nil, err
+	}
+	return resolveModelMetadata(records, names), nil
+}
+
 // FillModelSquareStates applies the same metadata policy as the public catalog
-// to live routes, then aggregates concrete models for metadata rule rows.
+// to live routes. A rule row only reports and aggregates the models it actually
+// governs (MatchedModels), so names with their own exact declaration are not
+// counted twice across rows.
 func FillModelSquareStates(rows []*Model, configured map[string][]int, connections []ModelConnection) error {
 	var metadata []Model
 	if err := DB.Find(&metadata).Error; err != nil {
@@ -146,10 +178,18 @@ func FillModelSquareStates(rows []*Model, configured map[string][]int, connectio
 			continue
 		}
 		total, visible, hidden := 0, 0, 0
+		governed := make([]string, 0)
 		for name := range configured {
-			if !row.MatchesName(name) {
-				continue
+			// 只认这条规则真正兜底的模型：已有精确行或更具体的规则命中时，
+			// 那个模型不归本行，渠道数也不再重复统计。
+			if policy := resolved[name]; policy != nil && policy.Id == row.Id {
+				governed = append(governed, name)
 			}
+		}
+		sort.Strings(governed)
+		row.MatchedModels = governed
+		row.MatchedCount = len(governed)
+		for _, name := range governed {
 			total++
 			switch states[name] {
 			case ModelSquareVisible:
@@ -200,26 +240,9 @@ func SearchModelsWithChannels(keyword, vendor, status, syncOfficial string, offs
 	_, filterStatus := parseModelStatusFilter(status)
 	_, filterSync := parseModelSyncFilter(syncOfficial)
 	if !filterStatus && !filterSync && (vendor == "" || vendor == "0") {
-		configured, err := GetConfiguredModelChannels()
+		records, err = appendChannelOnlyModels(records, keyword)
 		if err != nil {
 			return nil, 0, err
-		}
-		var exactNames []string
-		if err := DB.Model(&Model{}).Where("name_rule = ?", NameRuleExact).Pluck("model_name", &exactNames).Error; err != nil {
-			return nil, 0, err
-		}
-		for _, name := range exactNames {
-			delete(configured, name)
-		}
-		names := make([]string, 0, len(configured))
-		for name := range configured {
-			if keyword == "" || strings.Contains(strings.ToLower(name), strings.ToLower(keyword)) {
-				names = append(names, name)
-			}
-		}
-		sort.Strings(names)
-		for _, name := range names {
-			records = append(records, &Model{ModelName: name, NameRule: NameRuleExact})
 		}
 	}
 	total := len(records)
@@ -236,8 +259,56 @@ func SearchModelsWithChannels(keyword, vendor, status, syncOfficial string, offs
 	return records[offset:end], int64(total), nil
 }
 
+// appendChannelOnlyModels adds one synthetic row per served model name that no
+// declaration covers. A name matched by a rule row belongs to that row (see
+// MatchedModels), so it never becomes a sibling row; when the keyword hits such
+// a name, its rule row is kept in the result instead of returning nothing.
+func appendChannelOnlyModels(records []*Model, keyword string) ([]*Model, error) {
+	configured, err := GetConfiguredModelChannels()
+	if err != nil {
+		return nil, err
+	}
+	if len(configured) == 0 {
+		return records, nil
+	}
+	var declarations []Model
+	if err := DB.Order("id").Find(&declarations).Error; err != nil {
+		return nil, err
+	}
+	names := make([]string, 0, len(configured))
+	for name := range configured {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	resolved := resolveModelMetadata(declarations, names)
+
+	listed := make(map[int]bool, len(records))
+	for _, record := range records {
+		if record != nil {
+			listed[record.Id] = true
+		}
+	}
+	lowerKeyword := strings.ToLower(keyword)
+	for _, name := range names {
+		if keyword != "" && !strings.Contains(strings.ToLower(name), lowerKeyword) {
+			continue
+		}
+		declaration := resolved[name]
+		if declaration == nil {
+			records = append(records, &Model{ModelName: name, NameRule: NameRuleExact})
+			continue
+		}
+		if listed[declaration.Id] {
+			continue
+		}
+		listed[declaration.Id] = true
+		records = append(records, declaration)
+	}
+	return records, nil
+}
+
 func (mi *Model) Insert() error {
-	return metadataTransaction(func(tx *gorm.DB) error {
+	err := metadataTransaction(func(tx *gorm.DB) error {
 		if err := validateModelVendor(tx, mi.VendorID); err != nil {
 			return err
 		}
@@ -250,6 +321,10 @@ func (mi *Model) Insert() error {
 		mi.Status, mi.SyncOfficial = status, syncOfficial
 		return tx.Model(&Model{}).Where("id = ?", mi.Id).Updates(map[string]any{"status": status, "sync_official": syncOfficial}).Error
 	})
+	if err == nil {
+		_ = InitCapabilityCache()
+	}
+	return err
 }
 
 func IsModelNameDuplicated(id int, name string) (bool, error) {
@@ -262,14 +337,18 @@ func IsModelNameDuplicated(id int, name string) (bool, error) {
 }
 
 func (mi *Model) Update() error {
-	return metadataTransaction(func(tx *gorm.DB) error {
+	err := metadataTransaction(func(tx *gorm.DB) error {
 		if err := validateModelVendor(tx, mi.VendorID); err != nil {
 			return err
 		}
 		mi.UpdatedTime = common.GetTimestamp()
 		return tx.Model(&Model{}).Where("id = ?", mi.Id).
-			Select("model_name", "description", "icon", "tags", "vendor_id", "endpoints", "context_length", "parameter_count", "release_date", "status", "sync_official", "name_rule", "updated_time").Updates(mi).Error
+			Select("model_name", "description", "icon", "tags", "vendor_id", "endpoints", "capabilities", "context_length", "parameter_count", "release_date", "status", "sync_official", "name_rule", "updated_time").Updates(mi).Error
 	})
+	if err == nil {
+		_ = InitCapabilityCache()
+	}
+	return err
 }
 
 func (mi *Model) Delete() error {
@@ -381,6 +460,7 @@ func DeleteModelMetadata(ids []int, removeFromChannels, removePricing bool) (Mod
 	if result.UpdatedChannels > 0 {
 		InitChannelCache()
 	}
+	_ = InitCapabilityCache()
 	RefreshPricing()
 	return result, nil
 }
@@ -415,12 +495,13 @@ func GetBoundChannelsByModelsMap(modelNames []string) (map[string][]BoundChannel
 	}
 	type row struct {
 		Model string
+		ID    int
 		Name  string
 		Type  int
 	}
 	var rows []row
 	err := excludeDisabledChannelModels(DB.Table("channels")).
-		Select("abilities.model as model, channels.name as name, channels.type as type").
+		Select("abilities.model as model, channels.id as id, channels.name as name, channels.type as type").
 		Joins("JOIN abilities ON abilities.channel_id = channels.id").
 		Where("abilities.model IN ? AND abilities.enabled = ?", modelNames, true).
 		Distinct().
@@ -429,7 +510,7 @@ func GetBoundChannelsByModelsMap(modelNames []string) (map[string][]BoundChannel
 		return nil, err
 	}
 	for _, r := range rows {
-		result[r.Model] = append(result[r.Model], BoundChannel{Name: r.Name, Type: r.Type})
+		result[r.Model] = append(result[r.Model], BoundChannel{ID: r.ID, Name: r.Name, Type: r.Type})
 	}
 	return result, nil
 }

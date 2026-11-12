@@ -1232,6 +1232,102 @@ test('quick options and detailed settings share changes across tabs and save the
   })
 })
 
+test.each(['stacked', 'inline'])(
+  'advanced custom body passthrough saves and reloads from %s quick options and can be disabled in detailed settings',
+  async (layout) => {
+    if (layout === 'inline') useWideScreen()
+    const settings = {
+      advanced_custom: {
+        advanced_routes: [
+          {
+            incoming_path: '/v1/chat/completions',
+            upstream_path: '/v1/chat/completions',
+            converter: 'none',
+          },
+        ],
+      },
+    }
+    editingChannel = {
+      ...editingChannel,
+      type: 58,
+      settings: JSON.stringify(settings),
+      header_override: '{"*":true}',
+    }
+    const put = vi
+      .spyOn(api, 'put')
+      .mockImplementation(async (_url, payload) => {
+        editingChannel = { ...editingChannel, ...(payload as Partial<Channel>) }
+        return { data: { success: true } }
+      })
+    const user = userEvent.setup()
+    render(<ConfigurationHarness currentRow={editingChannel} />)
+    await screen.findByDisplayValue('Existing channel')
+    const quick = within(screen.getByRole('group', { name: 'Quick options' }))
+    const toggle = quick.getByRole('switch', { name: 'Pass Through Body' })
+    expect(toggle).not.toBeChecked()
+    expect(
+      quick.getByRole('switch', { name: 'Pass Through Request Headers' })
+    ).toBeChecked()
+    await user.click(toggle)
+    const warning = await screen.findByRole('alertdialog', {
+      name: 'Enable request body passthrough?',
+    })
+    expect(warning).toHaveTextContent(
+      'Channel-level body passthrough applies to all routes. Requests to routes that require format conversion will fail. To enable passthrough for selected routes only, use the route-level switches instead.'
+    )
+    await user.click(within(warning).getByRole('button', { name: 'Cancel' }))
+    await waitFor(() =>
+      expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
+    )
+    expect(toggle).not.toBeChecked()
+    await user.click(toggle)
+    await user.click(
+      await screen.findByRole('button', { name: 'Enable passthrough' })
+    )
+    expect(toggle).toBeChecked()
+    await user.click(screen.getByRole('button', { name: 'Update Channel' }))
+    await waitFor(() => expect(put).toHaveBeenCalledTimes(1))
+    expect(JSON.parse(editingChannel.setting ?? '{}')).toMatchObject({
+      pass_through_body_enabled: true,
+    })
+    expect(JSON.parse(editingChannel.settings ?? '{}').advanced_custom).toEqual(
+      settings.advanced_custom
+    )
+    expect(JSON.parse(editingChannel.header_override ?? '{}')).toEqual({
+      '*': true,
+    })
+
+    await waitFor(() =>
+      expect(
+        screen.queryByRole('button', { name: 'Update Channel' })
+      ).not.toBeInTheDocument()
+    )
+    await user.click(screen.getByRole('button', { name: 'Open channel' }))
+    await screen.findByDisplayValue('Existing channel')
+    expect(
+      within(screen.getByRole('group', { name: 'Quick options' })).getByRole(
+        'switch',
+        { name: 'Pass Through Body' }
+      )
+    ).toBeChecked()
+    await user.click(screen.getByRole('tab', { name: /Request & Response/ }))
+    const detailed = within(
+      screen.getByRole('group', { name: 'Request processing' })
+    ).getByRole('switch', { name: 'Pass Through Body' })
+    expect(detailed).toBeChecked()
+    await user.click(detailed)
+    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Update Channel' }))
+    await waitFor(() => expect(put).toHaveBeenCalledTimes(2))
+    expect(JSON.parse(editingChannel.setting ?? '{}')).toMatchObject({
+      pass_through_body_enabled: false,
+    })
+    expect(JSON.parse(editingChannel.settings ?? '{}').advanced_custom).toEqual(
+      settings.advanced_custom
+    )
+  }
+)
+
 test('quick options show only applicable shortcuts when the provider changes', async () => {
   const user = userEvent.setup()
   render(<ConfigurationHarness />)
@@ -1638,6 +1734,32 @@ test('a saved upstream TLS verification skip marks Other Settings and turning it
   expect(JSON.parse(payload.setting)).not.toHaveProperty(
     'tls_insecure_skip_verify'
   )
+})
+
+test('saving a channel from the drawer keeps the per-model capacity limits and pool bindings it does not display', async () => {
+  // 额度在能力设置页编辑、容量池绑定在资源池页编辑，抽屉都不显示；保存渠道不能把它们冲掉。
+  editingChannel = {
+    ...editingChannel,
+    setting:
+      '{"model_limits":{"gpt-5":{"rpm":60,"tpm":90000,"max_concurrency":4}},"capacity_pools":{"gpt-5":3}}',
+  }
+  const put = vi
+    .spyOn(api, 'put')
+    .mockResolvedValue({ data: { success: true } })
+  const user = userEvent.setup()
+  render(<ConfigurationHarness currentRow={editingChannel} />)
+  await screen.findByDisplayValue('Existing channel')
+  await user.click(screen.getByRole('button', { name: 'Update Channel' }))
+  await waitFor(() => expect(put).toHaveBeenCalled())
+  const payload = put.mock.calls[0]?.[1] as Record<string, unknown>
+  expect(JSON.parse(payload.setting as string)).toMatchObject({
+    model_limits: { 'gpt-5': { rpm: 60, tpm: 90000, max_concurrency: 4 } },
+    capacity_pools: { 'gpt-5': 3 },
+  })
+  // 渠道级额度已停用，不再随渠道一起提交。
+  expect(payload).not.toHaveProperty('rpm')
+  expect(payload).not.toHaveProperty('tpm')
+  expect(payload).not.toHaveProperty('max_concurrency')
 })
 
 test('turning on the upstream TLS verification skip saves it in the channel setting', async () => {

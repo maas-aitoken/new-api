@@ -8,8 +8,6 @@ export const modelSquareQueryKeys = {
   details: () => [...modelSquareQueryKeys.all, 'detail'] as const,
   detail: (modelId: string | number) =>
     [...modelSquareQueryKeys.details(), String(modelId)] as const,
-  provider: (modelId: string | number, providerSlug: string) =>
-    [...modelSquareQueryKeys.detail(modelId), 'provider', providerSlug] as const,
 }
 
 export function invalidateModelSquareQueries(

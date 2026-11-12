@@ -645,7 +645,9 @@ func TestSecurityAccountEmailConfirmationAndAudit(t *testing.T) {
 			require.NoError(t, err)
 			assert.Contains(t, string(encoded), "user.binding_bind")
 			assert.NotContains(t, string(encoded), flow.FlowToken)
-			assert.NotContains(t, string(encoded), newCode)
+			// Audit event and request IDs are long runs of time digits that can
+			// contain the six-digit code by chance; only the whole code is a leak.
+			assert.NotRegexp(t, `(^|\D)`+newCode+`(\D|$)`, string(encoded))
 		})
 	}
 }
@@ -798,6 +800,40 @@ func TestSecurityAccountEmailRejectsChangedAuthorization(t *testing.T) {
 			assert.Equal(t, scenario == "notification failure", current.Email == flow.Email)
 		})
 	}
+}
+
+// SSO owns the email of an HOIDC account, like its password and username.
+func TestSecurityAccountEmailRefusedForSsoAccount(t *testing.T) {
+	t.Run("refused before the proof is consumed", func(t *testing.T) {
+		user, identity := setupSecurityEnrollmentTest(t)
+		useHoidcEmailAccount(t, user)
+		context, err := common.Marshal(service.AccountBindingContext{Provider: "email", Email: "personal@example.com"})
+		require.NoError(t, err)
+		operation := service.VerificationOperation{Scope: service.VerificationScopeAccountBind, Context: context}
+		proof := issueSecurityEnrollmentProof(t, identity, operation, service.VerificationMethodEmail)
+		response := securityEnrollmentRequest(http.MethodPost, "/api/oauth/email/bind/start", `{"email":"personal@example.com"}`, proof, identity, EmailBindStart)
+		assert.Equal(t, "SSO_EMAIL_MANAGED", decodeSecurityEnrollmentResponse(t, response).Code)
+		stored, err := model.GetUserById(user.Id, false)
+		require.NoError(t, err)
+		assert.Equal(t, "hoidc-user@example.com", stored.Email)
+		_, err = service.ConsumeOperationProof(proof, identity, operation)
+		assert.NoError(t, err, "a refused request must not burn the verification")
+	})
+	t.Run("account became SSO during the flow", func(t *testing.T) {
+		user, identity := setupSecurityEnrollmentTest(t)
+		mailbox := newSecurityMailbox(t)
+		require.NoError(t, model.DB.Create(&model.TwoFA{UserId: user.Id, Secret: "JBSWY3DPEHPK3PXP", IsEnabled: true}).Error)
+		flow := startSecurityEmailBinding(t, identity, "new@example.com", service.VerificationMethodTwoFA)
+		code := mailbox.code(t, flow.Email)
+		require.NoError(t, model.DB.Model(user).Update("hoidc_id", "10001").Error)
+		request, err := common.Marshal(map[string]string{"flow_token": flow.FlowToken, "new_code": code})
+		require.NoError(t, err)
+		response := securityEnrollmentRequest(http.MethodPost, "/api/oauth/email/bind", string(request), "", identity, EmailBind)
+		assert.Equal(t, "SSO_EMAIL_MANAGED", decodeSecurityEnrollmentResponse(t, response).Code)
+		stored, err := model.GetUserById(user.Id, false)
+		require.NoError(t, err)
+		assert.Empty(t, stored.Email)
+	})
 }
 
 func TestSecurityAccountOAuthBindingRejectsInvalidFlow(t *testing.T) {

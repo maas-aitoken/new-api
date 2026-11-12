@@ -68,10 +68,6 @@ export interface ContentPart {
 export interface ChatCompletionRequest {
   model: string
   group?: string
-  provider?: {
-    order: string[]
-    allow_fallbacks: boolean
-  }
   messages: ChatCompletionMessage[]
   stream: boolean
   temperature?: number
@@ -132,15 +128,6 @@ export interface PlaygroundConfig {
   presence_penalty: number
   seed: number | null
   stream: boolean
-  providerOrder: string[]
-  allowProviderFallbacks: boolean
-}
-
-export interface PlaygroundProviderOption {
-  slug: string
-  name: string
-  icon?: string
-  available: boolean
 }
 
 export interface ParameterEnabled {

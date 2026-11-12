@@ -70,6 +70,7 @@ export function PricingTable(props: PricingTableProps) {
     usdExchangeRate,
     showRechargePrice,
     selectedGroup,
+    showChannels: models.some((model) => Array.isArray(model.channels)),
   })
 
   const { table } = useDataTable({

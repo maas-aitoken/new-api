@@ -42,14 +42,12 @@ func AppendTaskPluginIdentityFilter(c *gin.Context, pluginKey string) {
 }
 
 type RetryParam struct {
-	Ctx                *gin.Context
-	TokenGroup         string
-	ModelName          string
-	RequestPath        string
-	ProviderRouting    *model.ProviderRouting
-	Retry              *int
-	ExcludedChannelIDs map[int]struct{}
-	resetNextTry       bool
+	Ctx          *gin.Context
+	TokenGroup   string
+	ModelName    string
+	RequestPath  string
+	Retry        *int
+	resetNextTry bool
 }
 
 func (p *RetryParam) GetRetry() int {
@@ -76,18 +74,6 @@ func (p *RetryParam) IncreaseRetry() {
 
 func (p *RetryParam) ResetRetryNextTry() {
 	p.resetNextTry = true
-}
-
-// ExcludeChannel records a failed channel for this request so provider
-// routing can select another internal channel on the next retry.
-func (p *RetryParam) ExcludeChannel(channelID int) {
-	if channelID <= 0 {
-		return
-	}
-	if p.ExcludedChannelIDs == nil {
-		p.ExcludedChannelIDs = make(map[int]struct{})
-	}
-	p.ExcludedChannelIDs[channelID] = struct{}{}
 }
 
 // CacheGetRandomSatisfiedChannel tries to get a random channel that satisfies the requirements.
@@ -130,8 +116,8 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 	var err error
 	selectGroup := param.TokenGroup
 	userGroup := common.GetContextKeyString(param.Ctx, constant.ContextKeyUserGroup)
-	providerRouting := param.ProviderRouting.Normalized()
 	filters := GetChannelConstraints(param.Ctx).Filters
+	affinityRetryOffset := param.Ctx.GetInt(ginKeyChannelAffinityRetryOffset)
 
 	if param.TokenGroup == "auto" {
 		autoGroups := GetRequestAutoGroups(param.Ctx, userGroup)
@@ -154,15 +140,15 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 			autoGroup := autoGroups[i]
 			// Calculate priorityRetry for current group
 			// 计算当前分组的 priorityRetry
-			priorityRetry := param.GetRetry()
-			// If moved to a new group, reset priorityRetry and update startRetryIndex
-			// 如果切换到新分组，重置 priorityRetry 并更新 startRetryIndex
+			groupRetry := param.GetRetry()
+			// A new group starts from its highest priority without the affinity offset.
 			if i > startGroupIndex {
-				priorityRetry = 0
+				groupRetry = 0
 			}
+			priorityRetry := max(groupRetry-affinityRetryOffset, 0)
 			logger.LogDebug(param.Ctx, "Auto selecting group: %s, priorityRetry: %d", autoGroup, priorityRetry)
 
-			channel, _ = getChannelForRouting(autoGroup, param.ModelName, param.RequestPath, priorityRetry, providerRouting, param.ExcludedChannelIDs, filters)
+			channel, _ = model.GetRandomSatisfiedChannel(autoGroup, param.ModelName, priorityRetry, filters)
 			if channel == nil {
 				// Current group has no available channel for this model, try next group
 				// 当前分组没有该模型的可用渠道，尝试下一个分组
@@ -173,6 +159,8 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 				// Reset retry counter so outer loop can continue for next group
 				// 重置重试计数器，以便外层循环可以为下一个分组继续
 				param.SetRetry(0)
+				affinityRetryOffset = 0
+				param.Ctx.Set(ginKeyChannelAffinityRetryOffset, 0)
 				continue
 			}
 			common.SetContextKey(param.Ctx, constant.ContextKeyAutoGroup, autoGroup)
@@ -181,17 +169,18 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 
 			// Prepare state for next retry
 			// 为下一次重试准备状态
-			if crossGroupRetry && priorityRetry >= common.RetryTimes {
+			if crossGroupRetry && groupRetry >= common.RetryTimes {
 				// Current group has exhausted all retries, prepare to switch to next group
 				// This request still uses current group, but next retry will use next group
 				// 当前分组已用完所有重试次数，准备切换到下一个分组
 				// 本次请求仍使用当前分组，但下次重试将使用下一个分组
-				logger.LogDebug(param.Ctx, "Current group %s retries exhausted (priorityRetry=%d >= RetryTimes=%d), preparing switch to next group for next retry", autoGroup, priorityRetry, common.RetryTimes)
+				logger.LogDebug(param.Ctx, "Current group %s retries exhausted (groupRetry=%d >= RetryTimes=%d), preparing switch to next group for next retry", autoGroup, groupRetry, common.RetryTimes)
 				common.SetContextKey(param.Ctx, constant.ContextKeyAutoGroupIndex, i+1)
 				// Reset retry counter so outer loop can continue for next group
 				// 重置重试计数器，以便外层循环可以为下一个分组继续
 				param.SetRetry(0)
 				param.ResetRetryNextTry()
+				param.Ctx.Set(ginKeyChannelAffinityRetryOffset, 0)
 			} else {
 				// Stay in current group, save current state
 				// 保持在当前分组，保存当前状态
@@ -200,7 +189,7 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 			break
 		}
 	} else {
-		channel, err = getChannelForRouting(param.TokenGroup, param.ModelName, param.RequestPath, param.GetRetry(), providerRouting, param.ExcludedChannelIDs, filters)
+		channel, err = model.GetRandomSatisfiedChannel(param.TokenGroup, param.ModelName, max(param.GetRetry()-affinityRetryOffset, 0), filters)
 		if err != nil {
 			return nil, param.TokenGroup, err
 		}
@@ -208,93 +197,57 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 	return channel, selectGroup, nil
 }
 
-func getChannelForRouting(group, modelName, requestPath string, retry int, routing *model.ProviderRouting, excluded map[int]struct{}, filters []dto.ChannelFilter) (*model.Channel, error) {
-	if routing == nil {
-		return model.GetRandomSatisfiedChannel(group, modelName, retry, filters)
-	}
-
-	available, err := model.GetAvailableProviderSlugsWithFilters(group, modelName, requestPath, filters)
-	if err != nil {
-		return nil, err
-	}
-	availableSet := make(map[string]struct{}, len(available))
-	for _, provider := range available {
-		availableSet[provider] = struct{}{}
-	}
-	providers := make([]string, 0, len(routing.Order)+len(available))
-	seen := make(map[string]struct{}, len(routing.Order)+len(available))
-	for _, provider := range routing.Order {
-		if _, exists := availableSet[provider]; !exists {
-			continue
-		}
-		providers = append(providers, provider)
-		seen[provider] = struct{}{}
-	}
-	if len(providers) == 0 && !routing.AllowFallbacks {
-		return nil, nil
-	}
-	if routing.AllowFallbacks {
-		for _, provider := range available {
-			if _, exists := seen[provider]; exists {
-				continue
-			}
-			providers = append(providers, provider)
-		}
-	}
-	for _, provider := range providers {
-		channel, err := model.GetRandomSatisfiedChannelForProviderExcludingWithFilters(
-			group,
-			modelName,
-			requestPath,
-			provider,
-			excluded,
-			filters,
-		)
-		if err != nil {
-			return nil, err
-		}
-		if channel != nil {
-			return channel, nil
-		}
-	}
-	return nil, nil
-}
-
 func pinnedTaskPluginIdentities(c *gin.Context, expected string) ([]int, []string) {
 	if c == nil || expected == "" {
 		return nil, nil
 	}
+	// A shared host endpoint and a native route several plugins declare both
+	// admit a channel of any candidate.
+	var generation *jsplugin.RoutingGeneration
+	var candidates []*jsplugin.LoadedPlugin
 	if value, exists := c.Get(jsplugin.ContextKeyPinnedEndpoint); exists {
-		pinned, ok := value.(jsplugin.PinnedEndpoint)
-		if ok && pinned.Generation != nil && len(pinned.Candidates) > 1 {
-			expectedFound := false
-			channelTypes := make([]int, 0, len(pinned.Candidates))
-			pluginKeys := make([]string, 0, len(pinned.Candidates))
-			seen := make(map[int]struct{}, len(pinned.Candidates))
+		if pinned, ok := value.(jsplugin.PinnedEndpoint); ok && len(pinned.Candidates) > 1 {
+			generation = pinned.Generation
 			for _, candidate := range pinned.Candidates {
-				if candidate.Plugin == nil {
+				candidates = append(candidates, candidate.Plugin)
+			}
+		}
+	} else if value, exists := c.Get(jsplugin.ContextKeyPinnedRoute); exists {
+		if pinned, ok := value.(jsplugin.PinnedRoute); ok && len(pinned.Candidates) > 1 {
+			generation = pinned.Generation
+			for _, candidate := range pinned.Candidates {
+				candidates = append(candidates, candidate.Plugin)
+			}
+		}
+	}
+	if generation != nil {
+		expectedFound := false
+		channelTypes := make([]int, 0, len(candidates))
+		pluginKeys := make([]string, 0, len(candidates))
+		seen := make(map[int]struct{}, len(candidates))
+		for _, candidate := range candidates {
+			if candidate == nil {
+				continue
+			}
+			if candidate.Meta.Key == expected {
+				expectedFound = true
+			}
+			pluginKeys = append(pluginKeys, candidate.Meta.Key)
+			for _, channelType := range candidate.Meta.ChannelTypes {
+				if channelType == 0 || channelType == constant.ChannelTypeTaskPlugin {
 					continue
 				}
-				if candidate.Plugin.Meta.Key == expected {
-					expectedFound = true
+				if _, duplicate := seen[channelType]; duplicate {
+					continue
 				}
-				pluginKeys = append(pluginKeys, candidate.Plugin.Meta.Key)
-				for _, channelType := range candidate.Plugin.Meta.ChannelTypes {
-					if channelType == 0 || channelType == constant.ChannelTypeTaskPlugin {
-						continue
-					}
-					if _, duplicate := seen[channelType]; duplicate {
-						continue
-					}
-					if plugin, indexed := pinned.Generation.GetByChannelType(channelType); indexed && plugin == candidate.Plugin {
-						seen[channelType] = struct{}{}
-						channelTypes = append(channelTypes, channelType)
-					}
+				if plugin, indexed := generation.GetByChannelType(channelType); indexed && plugin == candidate {
+					seen[channelType] = struct{}{}
+					channelTypes = append(channelTypes, channelType)
 				}
 			}
-			if expectedFound {
-				return channelTypes, pluginKeys
-			}
+		}
+		if expectedFound {
+			return channelTypes, pluginKeys
 		}
 	}
 	value, exists := c.Get(jsplugin.ContextKeyPinnedPlugin)
@@ -366,7 +319,7 @@ func SelectChannelForRequest(c *gin.Context, modelName string, retry *RetryParam
 	usingGroup := retry.TokenGroup
 	var channel *model.Channel
 	var selectGroup string
-	if retry.GetRetry() == 0 && retry.ProviderRouting == nil {
+	if retry.GetRetry() == 0 {
 		if preferredChannelID, found := GetPreferredChannelByAffinity(c, modelName, usingGroup); found {
 			affinityUsable := false
 			preferred, err := model.CacheGetChannel(preferredChannelID)

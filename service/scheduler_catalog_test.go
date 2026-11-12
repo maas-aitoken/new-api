@@ -8,60 +8,154 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
+	channelcapacity "github.com/QuantumNous/new-api/pkg/channel_capacity"
+	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-func TestBuildSchedulerCatalogFromChannelsIsCredentialFreeAndExpandsKeys(t *testing.T) {
+func TestBuildSchedulerCatalogFromChannelsEmitsOneCredentialFreeEndpointPerChannel(t *testing.T) {
 	priority := int64(7)
 	weight := uint(3)
+	setting := `{"model_limits":{"deepseek-v4-flash":{"rpm":120,"tpm":90000,"max_concurrency":20}}}`
 	channel := &model.Channel{
-		Id:             42,
-		Type:           constant.ChannelTypeOpenAI,
-		Key:            "secret-one\nsecret-two",
-		Status:         common.ChannelStatusEnabled,
-		Models:         "deepseek-v4-flash,alias-model",
-		Group:          "default,paid",
-		Priority:       &priority,
-		Weight:         &weight,
-		RPM:            120,
-		TPM:            90000,
-		MaxConcurrency: 20,
+		Id:       42,
+		Type:     constant.ChannelTypeOpenAI,
+		Key:      "secret-one\nsecret-two",
+		Status:   common.ChannelStatusEnabled,
+		Models:   "deepseek-v4-flash,alias-model",
+		Group:    "default,paid",
+		Priority: &priority,
+		Weight:   &weight,
+		Setting:  &setting,
 		ChannelInfo: model.ChannelInfo{
 			IsMultiKey:         true,
 			MultiKeyStatusList: map[int]int{1: common.ChannelStatusManuallyDisabled},
 		},
 	}
 
-	catalog, err := BuildSchedulerCatalogFromChannels("deepseek-v4-flash", []*model.Channel{channel})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(catalog.Endpoints) != 2 || catalog.Version == "" {
-		t.Fatalf("catalog=%+v", catalog)
-	}
-	if catalog.Endpoints[0].EndpointID != "new-api-ch-42-k0" || catalog.Endpoints[1].EndpointID != "new-api-ch-42-k1" {
-		t.Fatalf("unexpected endpoint ids: %+v", catalog.Endpoints)
-	}
-	if !catalog.Endpoints[0].Enabled || catalog.Endpoints[1].Enabled {
-		t.Fatalf("key status was not projected: %+v", catalog.Endpoints)
-	}
+	catalog, err := BuildSchedulerCatalogFromChannels("deepseek-v4-flash", []*model.Channel{channel}, nil)
+	require.NoError(t, err)
+	require.NotEmpty(t, catalog.Version)
+	// 两个 key 只发一个端点，额度是整个渠道合计；渠道内用哪个 key 由 new-api 自己轮询。
+	assert.Equal(t, []SchedulerEndpoint{{
+		EndpointID:     "new-api-ch-42",
+		ChannelID:      42,
+		Provider:       constant.GetChannelTypeName(constant.ChannelTypeOpenAI),
+		Model:          "deepseek-v4-flash",
+		Enabled:        true,
+		Priority:       priority,
+		Weight:         int64(weight),
+		Limits:         SchedulerLimits{RPM: 120, TPM: 90000, MaxConcurrency: 20},
+		CapacityPoolID: channelcapacity.PoolID(42, "deepseek-v4-flash"),
+	}}, catalog.Endpoints)
 	data := string(mustJSON(t, catalog))
 	if strings.Contains(data, "secret-one") || strings.Contains(data, "secret-two") || strings.Contains(data, "base_url") {
 		t.Fatalf("catalog leaked credential/configuration: %s", data)
 	}
-	if catalog.Endpoints[0].Provider != constant.GetChannelTypeName(constant.ChannelTypeOpenAI) || catalog.Endpoints[0].Priority != priority || catalog.Endpoints[0].Weight != int64(weight) {
-		t.Fatalf("channel metadata mismatch: %+v", catalog.Endpoints[0])
+}
+
+func TestBuildSchedulerCatalogEnabledNeedsAnUsableKey(t *testing.T) {
+	cases := []struct {
+		name    string
+		channel model.Channel
+		want    bool
+	}{
+		{name: "single key", channel: model.Channel{Key: "k", Status: common.ChannelStatusEnabled}, want: true},
+		{name: "channel disabled", channel: model.Channel{Key: "k", Status: common.ChannelStatusAutoDisabled}, want: false},
+		{name: "no key", channel: model.Channel{Status: common.ChannelStatusEnabled}, want: false},
+		{name: "every key disabled", channel: model.Channel{Key: "k1\nk2", Status: common.ChannelStatusEnabled, ChannelInfo: model.ChannelInfo{
+			IsMultiKey: true, MultiKeyStatusList: map[int]int{0: common.ChannelStatusAutoDisabled, 1: common.ChannelStatusManuallyDisabled},
+		}}, want: false},
+		// 状态表里没登记的 key 按启用算，与 GetNextEnabledKey 一致；空白 key 不算。
+		{name: "only the enabled key is blank", channel: model.Channel{Key: "k1\n  ", Status: common.ChannelStatusEnabled, ChannelInfo: model.ChannelInfo{
+			IsMultiKey: true, MultiKeyStatusList: map[int]int{0: common.ChannelStatusAutoDisabled},
+		}}, want: false},
 	}
-	if catalog.Endpoints[0].Limits.RPM != 120 || catalog.Endpoints[0].Limits.TPM != 90000 || catalog.Endpoints[0].Limits.MaxConcurrency != 20 {
-		t.Fatalf("channel capacity mismatch: %+v", catalog.Endpoints[0].Limits)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			channel := tc.channel
+			channel.Id = 3
+			channel.Type = constant.ChannelTypeOpenAI
+			channel.Models = "m"
+			catalog, err := BuildSchedulerCatalogFromChannels("m", []*model.Channel{&channel}, nil)
+			require.NoError(t, err)
+			require.Len(t, catalog.Endpoints, 1)
+			assert.Equal(t, tc.want, catalog.Endpoints[0].Enabled)
+		})
 	}
+}
+
+func TestBuildSchedulerCatalogPoolsByMappedUpstreamModel(t *testing.T) {
+	mapping := `{"alias":"upstream-x"}`
+	setting := `{"model_limits":{"upstream-x":{"rpm":30}}}`
+	channel := &model.Channel{
+		Id: 5, Type: constant.ChannelTypeOpenAI, Key: "secret", Status: common.ChannelStatusEnabled,
+		Models: "alias,upstream-x,other", ModelMapping: &mapping, Setting: &setting,
+	}
+
+	viaAlias, err := BuildSchedulerCatalogFromChannels("alias", []*model.Channel{channel}, nil)
+	require.NoError(t, err)
+	direct, err := BuildSchedulerCatalogFromChannels("upstream-x", []*model.Channel{channel}, nil)
+	require.NoError(t, err)
+	other, err := BuildSchedulerCatalogFromChannels("other", []*model.Channel{channel}, nil)
+	require.NoError(t, err)
+
+	// 别名与上游名打到同一个上游模型，共用一个池和一份额度；别的模型各算各的、不限。
+	assert.Equal(t, viaAlias.Endpoints[0].CapacityPoolID, direct.Endpoints[0].CapacityPoolID)
+	assert.Equal(t, SchedulerLimits{RPM: 30}, viaAlias.Endpoints[0].Limits)
+	assert.Equal(t, SchedulerLimits{RPM: 30}, direct.Endpoints[0].Limits)
+	assert.NotEqual(t, viaAlias.Endpoints[0].CapacityPoolID, other.Endpoints[0].CapacityPoolID)
+	assert.Equal(t, SchedulerLimits{}, other.Endpoints[0].Limits)
+
+	// 额度变化要换 Catalog 版本，调度器才会重新加载。
+	changed := `{"model_limits":{"upstream-x":{"rpm":31}}}`
+	channel.Setting = &changed
+	reloaded, err := BuildSchedulerCatalogFromChannels("alias", []*model.Channel{channel}, nil)
+	require.NoError(t, err)
+	assert.NotEqual(t, viaAlias.Version, reloaded.Version)
+}
+
+func TestBuildSchedulerCatalogCountsBoundMembersInCapacityPool(t *testing.T) {
+	mapping := `{"alias":"upstream-x"}`
+	bound := `{"model_limits":{"upstream-x":{"rpm":30}},"capacity_pools":{"upstream-x":3}}`
+	dangling := `{"model_limits":{"upstream-x":{"rpm":7}},"capacity_pools":{"upstream-x":99}}`
+	channels := []*model.Channel{
+		{Id: 5, Type: constant.ChannelTypeOpenAI, Key: "k1\nk2", Status: common.ChannelStatusEnabled, Models: "alias", ModelMapping: &mapping, Setting: &bound,
+			ChannelInfo: model.ChannelInfo{IsMultiKey: true}},
+		{Id: 6, Type: constant.ChannelTypeOpenAI, Key: "k", Status: common.ChannelStatusEnabled, Models: "alias", ModelMapping: &mapping, Setting: &bound},
+		{Id: 8, Type: constant.ChannelTypeOpenAI, Key: "k", Status: common.ChannelStatusEnabled, Models: "alias", ModelMapping: &mapping, Setting: &dangling},
+	}
+	floors := map[int]dto.ModelLimit{3: {RPM: 40, MaxConcurrency: 4}}
+
+	catalog, err := BuildSchedulerCatalogFromChannels("alias", channels, floors)
+	require.NoError(t, err)
+	require.Len(t, catalog.Endpoints, 3)
+	for _, endpoint := range catalog.Endpoints {
+		if endpoint.ChannelID == 8 {
+			// 指向已删除的池：按没绑定处理，回到自己的 <渠道, 上游模型> 池和额度。
+			assert.Equal(t, channelcapacity.PoolID(8, "upstream-x"), endpoint.CapacityPoolID)
+			assert.Equal(t, SchedulerLimits{RPM: 7}, endpoint.Limits)
+			continue
+		}
+		// 两个渠道都计进容量池，Limits 是池的保底额度，自己的 model_limits 不生效。
+		assert.Equal(t, "cp-3", endpoint.CapacityPoolID)
+		assert.Equal(t, SchedulerLimits{RPM: 40, MaxConcurrency: 4}, endpoint.Limits)
+	}
+
+	// 动态额度不进 Catalog：只有保底额度变了才换版本。
+	again, err := BuildSchedulerCatalogFromChannels("alias", channels, map[int]dto.ModelLimit{3: {RPM: 40, MaxConcurrency: 4}})
+	require.NoError(t, err)
+	assert.Equal(t, catalog.Version, again.Version)
+	changed, err := BuildSchedulerCatalogFromChannels("alias", channels, map[int]dto.ModelLimit{3: {RPM: 41, MaxConcurrency: 4}})
+	require.NoError(t, err)
+	assert.NotEqual(t, catalog.Version, changed.Version)
 }
 
 func TestBuildSchedulerCatalogIncludesModelMappingSourceAlias(t *testing.T) {
 	mapping := `{"customer-model":"deepseek-v4-flash"}`
 	channel := &model.Channel{Id: 9, Type: constant.ChannelTypeOpenAI, Key: "secret", Status: common.ChannelStatusEnabled, Models: "deepseek-v4-flash", ModelMapping: &mapping}
-	catalog, err := BuildSchedulerCatalogFromChannels("customer-model", []*model.Channel{channel})
+	catalog, err := BuildSchedulerCatalogFromChannels("customer-model", []*model.Channel{channel}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,25 +164,50 @@ func TestBuildSchedulerCatalogIncludesModelMappingSourceAlias(t *testing.T) {
 	}
 }
 
-func TestBuildSchedulerCatalogRejectsUnknownModel(t *testing.T) {
-	channel := &model.Channel{Id: 1, Type: constant.ChannelTypeOpenAI, Key: "secret", Status: common.ChannelStatusEnabled, Models: "other-model"}
-	if _, err := BuildSchedulerCatalogFromChannels("missing-model", []*model.Channel{channel}); err == nil {
-		t.Fatal("expected unknown model error")
+// 客户端发带推理后缀的名字、渠道只列了基础名时，原生选路会退到路由名；Catalog 也要有
+// 这个渠道的端点，否则调度器加载不到这个模型。
+func TestBuildSchedulerCatalogServesSuffixedModelsLikeNativeRouting(t *testing.T) {
+	limited := `{"model_limits":{"gpt-5":{"rpm":30}}}`
+	channels := []*model.Channel{
+		{Id: 1, Type: constant.ChannelTypeOpenAI, Key: "k", Status: common.ChannelStatusEnabled, Models: "gpt-5", Setting: &limited},
+		{Id: 2, Type: constant.ChannelTypeOpenAI, Key: "k", Status: common.ChannelStatusEnabled, Models: "gpt-5-high"},
+		{Id: 3, Type: constant.ChannelTypeOpenAI, Key: "k", Status: common.ChannelStatusEnabled, Models: "other"},
 	}
+	endpointChannels := func(requested string) []int {
+		catalog, err := BuildSchedulerCatalogFromChannels(requested, channels, nil)
+		require.NoError(t, err, requested)
+		ids := make([]int, 0, len(catalog.Endpoints))
+		for _, endpoint := range catalog.Endpoints {
+			assert.Equal(t, requested, endpoint.Model, "端点模型保持请求名，调度器按它比对")
+			ids = append(ids, endpoint.ChannelID)
+		}
+		return ids
+	}
+
+	assert.Equal(t, []int{1}, endpointChannels("gpt-5-low"))
+	assert.Equal(t, []int{1}, endpointChannels("gpt-5@effort:high"))
+	assert.Equal(t, []int{1}, endpointChannels("gpt-5"))
+	// Catalog 不分分组，列了原名和列了路由名的渠道都放进来，调度器只在 allowed_channel_ids 里选。
+	assert.Equal(t, []int{1, 2}, endpointChannels("gpt-5-high"))
+	_, err := BuildSchedulerCatalogFromChannels("gpt-6-high", channels, nil)
+	assert.Error(t, err)
+
+	// 退到基础名服务的请求计进基础名的池、受基础名的额度约束，与中继计数同一个池；
+	// 列了原名的渠道仍按自己的名字算。
+	suffixed, err := BuildSchedulerCatalogFromChannels("gpt-5-high", channels, nil)
+	require.NoError(t, err)
+	require.Len(t, suffixed.Endpoints, 2)
+	assert.Equal(t, channelcapacity.PoolID(1, "gpt-5"), suffixed.Endpoints[0].CapacityPoolID)
+	assert.Equal(t, SchedulerLimits{RPM: 30}, suffixed.Endpoints[0].Limits)
+	assert.Equal(t, channelcapacity.PoolID(2, "gpt-5-high"), suffixed.Endpoints[1].CapacityPoolID)
+	assert.Equal(t, SchedulerLimits{}, suffixed.Endpoints[1].Limits)
 }
 
-func TestBuildSchedulerCatalogAdvertisesRelayRequestCapabilities(t *testing.T) {
-	channel := &model.Channel{Id: 1, Type: constant.ChannelTypeOpenAI, Key: "secret", Status: common.ChannelStatusEnabled, Models: "m"}
-
-	catalog, err := BuildSchedulerCatalogFromChannels("m", []*model.Channel{channel})
-	require.NoError(t, err)
-	require.Len(t, catalog.Endpoints, 1)
-
-	capabilities := catalog.Endpoints[0].Capabilities
-	assert.True(t, capabilities.Stream)
-	assert.True(t, capabilities.Tools)
-	assert.True(t, capabilities.JSONMode)
-	assert.False(t, capabilities.Vision)
+func TestBuildSchedulerCatalogRejectsUnknownModel(t *testing.T) {
+	channel := &model.Channel{Id: 1, Type: constant.ChannelTypeOpenAI, Key: "secret", Status: common.ChannelStatusEnabled, Models: "other-model"}
+	if _, err := BuildSchedulerCatalogFromChannels("missing-model", []*model.Channel{channel}, nil); err == nil {
+		t.Fatal("expected unknown model error")
+	}
 }
 
 func mustJSON(t *testing.T, value any) []byte {

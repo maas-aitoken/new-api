@@ -5,6 +5,7 @@ import (
 	"crypto/md5"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -14,22 +15,151 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/pkg/autorouter/modelrank"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting/autorouter_setting"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 )
 
 // RegisterScheduledSystemTasks wires the periodic channel test, upstream model
-// update, and async task polling (Midjourney / Suno / video) jobs into the
+// update, auto router ranking and async task polling (Midjourney / Suno /
+// video) jobs into the
 // system task framework so a DB lease dedups execution across multiple master
 // instances and each run is recorded as one task row. Call this before
 // service.StartSystemTaskRunner.
 func RegisterScheduledSystemTasks() {
 	service.RegisterSystemTaskHandler(channelTestHandler{})
 	service.RegisterSystemTaskHandler(channelModelRecoveryHandler{})
+	service.RegisterSystemTaskHandler(capabilityGateEventCleanupHandler{})
+	service.RegisterSystemTaskHandler(autoRouteLogCleanupHandler{})
 	service.RegisterSystemTaskHandler(modelUpdateHandler{})
 	service.RegisterSystemTaskHandler(midjourneyPollHandler{})
 	service.RegisterSystemTaskHandler(asyncTaskPollHandler{})
+	service.RegisterSystemTaskHandler(autoRouterRankHandler{})
 	service.RegisterSystemTaskHandler(ssoUserSyncHandler{})
+	service.RegisterSystemTaskHandler(externalUsageSyncHandler{})
+	service.RegisterSystemTaskHandler(subscriptionUsageAlertHandler{})
+}
+
+type subscriptionUsageAlertHandler struct{}
+
+func (subscriptionUsageAlertHandler) Type() string { return model.SystemTaskTypeSubscriptionUsage }
+
+func (subscriptionUsageAlertHandler) Enabled() bool {
+	return operation_setting.IsQuotaTierEnabled() && common.QuotaIncreaseNotifyUrl != ""
+}
+
+func (subscriptionUsageAlertHandler) Interval() time.Duration { return 10 * time.Minute }
+
+func (subscriptionUsageAlertHandler) NewPayload() any { return nil }
+
+func (subscriptionUsageAlertHandler) Run(ctx context.Context, task *model.SystemTask, runnerID string) {
+	result, err := service.NotifySubscriptionUsage(ctx)
+	status := model.SystemTaskStatusSucceeded
+	if err != nil {
+		status = model.SystemTaskStatusFailed
+	}
+	finishSystemTaskHandler(task, runnerID, status, result, err)
+}
+
+type externalUsageSyncHandler struct{}
+
+func (externalUsageSyncHandler) Type() string { return model.SystemTaskTypeExternalUsageSync }
+
+func (externalUsageSyncHandler) Enabled() bool {
+	configs, err := service.LoadExternalPlatformConfigs()
+	return err == nil && len(configs) > 0
+}
+
+func (externalUsageSyncHandler) Interval() time.Duration { return 10 * time.Minute }
+
+func (externalUsageSyncHandler) NewPayload() any { return nil }
+
+func (externalUsageSyncHandler) Run(ctx context.Context, task *model.SystemTask, runnerID string) {
+	result, err := service.RunExternalPlatformSync(ctx)
+	status := model.SystemTaskStatusSucceeded
+	if err != nil {
+		status = model.SystemTaskStatusFailed
+	}
+	finishSystemTaskHandler(task, runnerID, status, result, err)
+}
+
+// autoRouterRankHandler regenerates the auto router's task → model lists from
+// public leaderboards. One node builds them under the task lease and writes
+// the options; the others pick them up through the option sync, so a new
+// ranking takes effect everywhere without a restart.
+type autoRouterRankHandler struct{}
+
+func (autoRouterRankHandler) Type() string { return model.SystemTaskTypeAutoRouterRank }
+
+func (autoRouterRankHandler) Enabled() bool {
+	setting := autorouter_setting.GetAutoRouterSetting()
+	return setting.Enabled && setting.RankRefreshEnabled && setting.Connections().RankKeysReady()
+}
+
+// Interval is the refresh period, or a short retry delay while the stored
+// ranking predates the current task types, so a new taxonomy gets its ranking
+// without waiting a whole period.
+func (autoRouterRankHandler) Interval() time.Duration {
+	setting := autorouter_setting.GetAutoRouterSetting()
+	if !setting.RankingCurrent() {
+		return autoRouterRankRetryInterval
+	}
+	return time.Duration(max(setting.RankRefreshIntervalHours, 1)) * time.Hour
+}
+
+const autoRouterRankRetryInterval = 10 * time.Minute
+
+func (autoRouterRankHandler) NewPayload() any { return nil }
+
+// Run leaves the current lists in place when any source fails, so a failed
+// refresh only delays the next ranking. rank_sources is written last and
+// marks a complete update.
+func (autoRouterRankHandler) Run(ctx context.Context, task *model.SystemTask, runnerID string) {
+	connections := autorouter_setting.GetAutoRouterSetting().Connections()
+	cfg := modelrank.DefaultConfig()
+	cfg.AAKey = connections.ArtificialAnalysisKey.Value
+	cfg.DAKey = connections.DesignArenaKey.Value
+	cfg.OpenRouterKey = connections.OpenRouterKey.Value
+	mapping, err := modelrank.Build(ctx, cfg)
+	if err != nil {
+		finishSystemTaskHandler(task, runnerID, model.SystemTaskStatusFailed, nil, err)
+		return
+	}
+	taskScores := make(map[string]map[string]float64, len(mapping.Evidence))
+	for taskType, entries := range mapping.Evidence {
+		taskScores[taskType] = make(map[string]float64, len(entries))
+		for _, entry := range entries {
+			taskScores[taskType][entry.Model] = entry.Score
+		}
+	}
+	options := []struct {
+		key   string
+		value any
+	}{
+		{"autorouter_setting.task_models", mapping.TaskModels},
+		{"autorouter_setting.task_scores", taskScores},
+		{"autorouter_setting.default_models", mapping.DefaultModels},
+		{"autorouter_setting.rank_sources", mapping.Sources},
+	}
+	for _, option := range options {
+		value, err := common.Marshal(option.value)
+		if err == nil {
+			err = model.UpdateOption(option.key, string(value))
+		}
+		if err != nil {
+			finishSystemTaskHandler(task, runnerID, model.SystemTaskStatusFailed, nil, err)
+			return
+		}
+	}
+	summary := map[string]any{"rank_sources": mapping.Sources, "default_models": len(mapping.DefaultModels)}
+	if len(mapping.StaleMetrics) > 0 {
+		summary["stale_metrics"] = mapping.StaleMetrics
+	}
+	for profile, models := range mapping.TaskModels {
+		summary[profile] = map[string]any{"models": len(models), "top": models[:min(len(models), 3)]}
+	}
+	finishSystemTaskHandler(task, runnerID, model.SystemTaskStatusSucceeded, summary, nil)
 }
 
 type channelModelRecoveryHandler struct{}
@@ -65,6 +195,63 @@ func (channelModelRecoveryHandler) Interval() time.Duration {
 }
 
 func (channelModelRecoveryHandler) NewPayload() any { return nil }
+
+// capabilityGateEventCleanupHandler 清理超过保留期的能力门控事件。
+// 它必须是独立任务：挂在渠道恢复任务上时，只要断路器没开、也没有过期的
+// 渠道事件，那个任务就根本不会被调度，门控事件会永远留在库里。
+// ClickHouse 日志库靠表 TTL 过期，HasCapabilityGateEventsBefore 对它恒为 false。
+type capabilityGateEventCleanupHandler struct{}
+
+func (capabilityGateEventCleanupHandler) Type() string {
+	return model.SystemTaskTypeCapabilityGateClean
+}
+
+func (capabilityGateEventCleanupHandler) Enabled() bool {
+	retention := time.Duration(operation_setting.GetCapabilityGateSetting().EventRetentionDays) * 24 * time.Hour
+	return model.HasCapabilityGateEventsBefore(time.Now().Add(-retention).Unix())
+}
+
+func (capabilityGateEventCleanupHandler) Interval() time.Duration { return time.Hour }
+
+func (capabilityGateEventCleanupHandler) NewPayload() any { return nil }
+
+func (capabilityGateEventCleanupHandler) Run(ctx context.Context, task *model.SystemTask, runnerID string) {
+	retention := time.Duration(operation_setting.GetCapabilityGateSetting().EventRetentionDays) * 24 * time.Hour
+	deleted, err := model.CleanupCapabilityGateEvents(ctx, time.Now().Add(-retention).Unix())
+	summary := map[string]any{"deleted": deleted}
+	if err != nil {
+		finishSystemTaskHandler(task, runnerID, model.SystemTaskStatusFailed, summary, err)
+		return
+	}
+	finishSystemTaskHandler(task, runnerID, model.SystemTaskStatusSucceeded, summary, nil)
+}
+
+// autoRouteLogCleanupHandler 清理超过保留期的选路日志。和门控事件的清理一样是独立任务，
+// 不依赖 auto 是否开启：关掉 auto 之后遗留的日志仍然要按保留期过期。
+// ClickHouse 日志库靠表 TTL 过期，HasAutoRouteLogsBefore 对它恒为 false。
+type autoRouteLogCleanupHandler struct{}
+
+func (autoRouteLogCleanupHandler) Type() string { return model.SystemTaskTypeAutoRouteLogClean }
+
+func (autoRouteLogCleanupHandler) Enabled() bool {
+	retention := autorouter_setting.GetAutoRouterSetting().RouteLogRetention()
+	return model.HasAutoRouteLogsBefore(time.Now().Add(-retention).Unix())
+}
+
+func (autoRouteLogCleanupHandler) Interval() time.Duration { return time.Hour }
+
+func (autoRouteLogCleanupHandler) NewPayload() any { return nil }
+
+func (autoRouteLogCleanupHandler) Run(ctx context.Context, task *model.SystemTask, runnerID string) {
+	retention := autorouter_setting.GetAutoRouterSetting().RouteLogRetention()
+	deleted, err := model.CleanupAutoRouteLogs(ctx, time.Now().Add(-retention).Unix())
+	summary := map[string]any{"deleted": deleted}
+	if err != nil {
+		finishSystemTaskHandler(task, runnerID, model.SystemTaskStatusFailed, summary, err)
+		return
+	}
+	finishSystemTaskHandler(task, runnerID, model.SystemTaskStatusSucceeded, summary, nil)
+}
 
 func (channelModelRecoveryHandler) Run(ctx context.Context, task *model.SystemTask, runnerID string) {
 	summary, err := runChannelModelRecoveryTask(ctx, service.NewSystemTaskProgressReporter(task, runnerID))
@@ -263,7 +450,13 @@ func runSsoUserSync(_ context.Context) (*ssoSyncResult, error) {
 		if u.Uid == 0 {
 			hoidcId = "sso:" + email
 		}
-		_, err := service.ProvisionSsoUser(hoidcId, email, u.Name, u.Avatar, u.DepartmentTreePathStr, common.HoidcAllowSignup)
+		_, err := service.ProvisionSsoUser(
+			hoidcId, email, u.Name, u.Avatar, u.DepartmentTreePathStr,
+			u.StraightLineManagerEmail, u.StraightLineManagerName,
+			u.StraightLineManagerUid, u.MentorUid, u.DottedLineManagerUid, u.OrganizationOid, u.DepartmentOid,
+			&u.IsCharge,
+			common.HoidcAllowSignup,
+		)
 		if err != nil {
 			result.Failed++
 			common.SysError(fmt.Sprintf("SSO sync failed for %s: %v", email, err))
@@ -273,6 +466,21 @@ func runSsoUserSync(_ context.Context) (*ssoSyncResult, error) {
 	}
 	common.SysLog(fmt.Sprintf("SSO user sync completed: fetched=%d synced=%d skipped=%d failed=%d",
 		result.Fetched, result.Synced, result.Skipped, result.Failed))
+
+	edges := make(map[string]string, len(users))
+	for _, u := range users {
+		if u.Uid == 0 || u.StraightLineManagerUid == 0 {
+			continue
+		}
+		// 上游把 manager uid 定义成 int64，这里要用 FormatInt 而不是 Itoa。
+		// 两边都转成字符串去对 users.hoidc_id。
+		edges[strconv.Itoa(u.Uid)] = strconv.FormatInt(u.StraightLineManagerUid, 10)
+	}
+	if rebuilt, err := model.ReplaceAllUserLeaders(edges); err != nil {
+		common.SysError(fmt.Sprintf("SSO sync: failed to rebuild leader edges: %v", err))
+	} else {
+		common.SysLog(fmt.Sprintf("SSO sync: rebuilt %d leader edges from %d candidates", rebuilt, len(edges)))
+	}
 
 	cutoff := time.Now().Unix() - 24*3600
 	disabled, err := model.DisableStaleSsoUsers(cutoff)
@@ -286,11 +494,19 @@ func runSsoUserSync(_ context.Context) (*ssoSyncResult, error) {
 }
 
 type ssoUserListItem struct {
-	Uid                   int    `json:"uid"`
-	Email                 string `json:"email"`
-	Name                  string `json:"name"`
-	Avatar                string `json:"avatar"`
-	DepartmentTreePathStr string `json:"department_tree_path_str"`
+	Uid                      int    `json:"uid"`
+	Email                    string `json:"email"`
+	Name                     string `json:"name"`
+	Avatar                   string `json:"avatar"`
+	DepartmentTreePathStr    string `json:"department_tree_path_str"`
+	StraightLineManagerEmail string `json:"straight_line_manager_email"`
+	StraightLineManagerName  string `json:"straight_line_manager_name"`
+	StraightLineManagerUid   int64  `json:"straight_line_manager_uid"`
+	MentorUid                int64  `json:"mentor_uid"`
+	DottedLineManagerUid     int64  `json:"dotted_line_manager_uid"`
+	OrganizationOid          int64  `json:"organization_oid"`
+	DepartmentOid            int64  `json:"department_oid"`
+	IsCharge                 int    `json:"is_charge"`
 }
 
 func fetchAllSsoUsers() ([]ssoUserListItem, error) {
@@ -323,12 +539,18 @@ func fetchAllSsoUsers() ([]ssoUserListItem, error) {
 		return nil, fmt.Errorf("SSO user list failed: HTTP %d", resp.StatusCode)
 	}
 
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read SSO user list response: %w", err)
+	}
+	common.SysLog(common.LogText("SSO user list response: %s", raw))
+
 	var body struct {
 		Code int               `json:"code"`
 		Msg  string            `json:"msg"`
 		Data []ssoUserListItem `json:"data"`
 	}
-	if err := common.DecodeJson(resp.Body, &body); err != nil {
+	if err := common.Unmarshal(raw, &body); err != nil {
 		return nil, fmt.Errorf("failed to parse SSO user list response: %w", err)
 	}
 	if body.Code != 0 {

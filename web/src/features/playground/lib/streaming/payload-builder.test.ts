@@ -19,7 +19,7 @@ For commercial licensing, please contact support@quantumnous.com
 import { describe, expect, it } from 'vitest'
 
 import { DEFAULT_CONFIG, DEFAULT_PARAMETER_ENABLED } from '../../constants'
-import type { Message, PlaygroundConfig } from '../../types'
+import type { Message } from '../../types'
 import { buildChatCompletionPayload } from './payload-builder'
 
 const messages: Message[] = [
@@ -30,32 +30,16 @@ const messages: Message[] = [
   },
 ]
 
-describe('buildChatCompletionPayload provider routing', () => {
-  it('omits provider routing when no provider is selected', () => {
+describe('buildChatCompletionPayload', () => {
+  it('builds the model, group and stream fields', () => {
     const payload = buildChatCompletionPayload(
       messages,
       DEFAULT_CONFIG,
       DEFAULT_PARAMETER_ENABLED
     )
 
-    expect(payload.provider).toBeUndefined()
-  })
-
-  it('serializes provider order and fallback policy', () => {
-    const config: PlaygroundConfig = {
-      ...DEFAULT_CONFIG,
-      providerOrder: ['siliconflow', 'deepseek'],
-      allowProviderFallbacks: false,
-    }
-    const payload = buildChatCompletionPayload(
-      messages,
-      config,
-      DEFAULT_PARAMETER_ENABLED
-    )
-
-    expect(payload.provider).toEqual({
-      order: ['siliconflow', 'deepseek'],
-      allow_fallbacks: false,
-    })
+    expect(payload.model).toBe(DEFAULT_CONFIG.model)
+    expect(payload.group).toBe(DEFAULT_CONFIG.group)
+    expect(payload.stream).toBe(DEFAULT_CONFIG.stream)
   })
 })

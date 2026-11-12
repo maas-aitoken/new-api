@@ -90,10 +90,6 @@ export interface PricingToolbarProps {
     hasContextLength: boolean
     hasParameterCount: boolean
     hasReleaseDate: boolean
-    hasFree: boolean
-    hasBatch: boolean
-    regions: string[]
-    quantizations: string[]
   }
   onAdvancedFilterChange: (
     key: keyof PricingAdvancedFilters,

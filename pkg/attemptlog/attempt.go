@@ -94,9 +94,9 @@ type Attempt struct {
 	reasoningTokens int
 	costActual      int
 
-	// finishCostMultiplier is the <channel, model> cost multiplier collected
-	// at Finish time (the mapped upstream model name is only known then) and
-	// used only to scale the recorded cost_actual, never billing.
+	// finishCostMultiplier is the <channel, model> cost multiplier passed in at
+	// Finish time and used only to scale the recorded cost_actual, never
+	// billing.
 	finishCostMultiplier float64
 
 	finished bool

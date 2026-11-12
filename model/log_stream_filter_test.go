@@ -20,6 +20,7 @@ package model
 
 import (
 	"testing"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 
@@ -94,6 +95,54 @@ func TestGetAllLogsRetryFilter(t *testing.T) {
 	assert.Equal(t, int64(1), total)
 	assert.Len(t, logs, 1)
 	assert.Equal(t, retryOther, logs[0].Other)
+}
+
+// Rows written before the auto_routed column existed hold NULL. They did not ask for "auto",
+// so "not auto" has to keep them, and the stats must agree with the list.
+func TestAutoRoutedFilterKeepsRowsFromBeforeTheColumn(t *testing.T) {
+	db := useSQLiteLogTestDB(t)
+	now := time.Now().Unix()
+	require.NoError(t, db.Create(&[]Log{
+		{UserId: 7, CreatedAt: now, Type: LogTypeConsume, ModelName: "routed", Quota: 10, AutoRouted: true},
+		{UserId: 7, CreatedAt: now, Type: LogTypeConsume, ModelName: "direct", Quota: 20},
+		{UserId: 7, CreatedAt: now, Type: LogTypeConsume, ModelName: "legacy", Quota: 40},
+	}).Error)
+	require.NoError(t, db.Exec("UPDATE logs SET auto_routed = NULL WHERE model_name = ?", "legacy").Error)
+	yes, no := true, false
+
+	for _, tt := range []struct {
+		name   string
+		filter *bool
+		models []string
+		quota  int
+	}{
+		{"only auto", &yes, []string{"routed"}, 10},
+		{"not auto includes rows from before the column", &no, []string{"direct", "legacy"}, 60},
+		{"no filter keeps everything", nil, []string{"routed", "direct", "legacy"}, 70},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			filter := LogFilter{AutoRouted: tt.filter}
+
+			logs, total, err := GetAllLogs(filter, 0, 20)
+			require.NoError(t, err)
+			assert.EqualValues(t, len(tt.models), total)
+			var models []string
+			for _, log := range logs {
+				models = append(models, log.ModelName)
+			}
+			assert.ElementsMatch(t, tt.models, models)
+
+			userLogs, userTotal, err := GetUserLogs(7, filter, 0, 20)
+			require.NoError(t, err)
+			assert.EqualValues(t, len(tt.models), userTotal)
+			assert.Len(t, userLogs, len(tt.models))
+
+			stat, err := SumUsedQuota(0, now-1, now+1, "", "", "", 0, "", false, false, tt.filter)
+			require.NoError(t, err)
+			assert.Equal(t, tt.quota, stat.Quota)
+			assert.EqualValues(t, len(tt.models), stat.Total)
+		})
+	}
 }
 
 func TestSpecialLogFiltersFailClosedForUnsupportedDatabase(t *testing.T) {

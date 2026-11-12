@@ -104,10 +104,7 @@ func CountRequestToken(c *gin.Context, meta *types.TokenCountMeta, info *relayco
 	}
 
 	if info.RelayFormat == types.RelayFormatOpenAI {
-		tkm += meta.ToolsCount * 8
-		tkm += meta.MessagesCount * 3 // 每条消息的格式化token数量
-		tkm += meta.NameCount * 3
-		tkm += 3
+		tkm += promptFramingTokens(meta)
 	}
 
 	shouldFetchFiles := true
@@ -156,19 +153,31 @@ func CountRequestToken(c *gin.Context, meta *types.TokenCountMeta, info *relayco
 				return 0, fmt.Errorf("error counting image token, media index[%d], identifier[%s], err: %v", i, file.GetIdentifier(), err)
 			}
 			tkm += token
-		case types.FileTypeAudio:
-			tkm += 256
-		case types.FileTypeVideo:
-			tkm += 4096 * 2
-		case types.FileTypeFile:
-			tkm += 4096
 		default:
-			tkm += 4096 // Default case for unknown file types
+			tkm += fixedMediaTokens(file.FileType)
 		}
 	}
 
 	common.SetContextKey(c, constant.ContextKeyPromptTokens, tkm)
 	return tkm, nil
+}
+
+// promptFramingTokens 是 OpenAI 格式请求在正文之外的固定开销：每个工具 8、每条消息和每个 name 各 3，外加 3。
+// 计费用的精确计数和选路阶段的估算共用这一条规则。
+func promptFramingTokens(meta *types.TokenCountMeta) int {
+	return meta.ToolsCount*8 + meta.MessagesCount*3 + meta.NameCount*3 + 3
+}
+
+// fixedMediaTokens 是不按尺寸计的附件的固定开销，图片按尺寸另算。未识别的类型按文件计。
+func fixedMediaTokens(fileType types.FileType) int {
+	switch fileType {
+	case types.FileTypeAudio:
+		return 256
+	case types.FileTypeVideo:
+		return 4096 * 2
+	default:
+		return 4096
+	}
 }
 
 func CountTokenRealtime(info *relaycommon.RelayInfo, request dto.RealtimeEvent, model string) (int, int, error) {

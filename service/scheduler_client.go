@@ -6,7 +6,6 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"hash/fnv"
@@ -21,7 +20,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/logger"
-	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/observability"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/gin-gonic/gin"
 )
@@ -78,98 +77,40 @@ func (c SchedulerClientConfig) URLs() []string {
 	return schedulerResolvedURLs(c)
 }
 
+// SchedulerCandidate 只排到渠道；渠道内用哪个 key 由 new-api 自己轮询。旧版调度器
+// 回的 key_index、upstream_model 直接忽略。
 type SchedulerCandidate struct {
-	EndpointID    string   `json:"endpoint_id"`
-	ChannelID     int      `json:"channel_id"`
-	KeyIndex      int      `json:"key_index"`
-	Model         string   `json:"model"`
-	UpstreamModel string   `json:"upstream_model,omitempty"`
-	Reason        []string `json:"reason"`
+	EndpointID string   `json:"endpoint_id"`
+	ChannelID  int      `json:"channel_id"`
+	Model      string   `json:"model"`
+	Reason     []string `json:"reason"`
 }
 type schedulerRequest struct {
-	RequestID              string         `json:"request_id"`
-	UserID                 int64          `json:"user_id,omitempty"`
-	TokenID                int64          `json:"token_id,omitempty"`
-	Group                  string         `json:"group,omitempty"`
-	Model                  string         `json:"model"`
-	Workload               string         `json:"workload,omitempty"`
-	Capabilities           map[string]any `json:"capabilities"`
-	Policy                 map[string]any `json:"policy"`
-	EstimatedInputTokens   int            `json:"estimated_input_tokens"`
-	MaxOutputTokens        int            `json:"max_output_tokens"`
-	AllowedChannelIDs      []int          `json:"allowed_channel_ids"`
-	PreferredChannelID     int            `json:"preferred_channel_id,omitempty"`
-	AffinityKeyFingerprint string         `json:"affinity_key_fingerprint,omitempty"`
+	RequestID            string         `json:"request_id"`
+	UserID               int64          `json:"user_id,omitempty"`
+	TokenID              int64          `json:"token_id,omitempty"`
+	Group                string         `json:"group,omitempty"`
+	Model                string         `json:"model"`
+	Workload             string         `json:"workload,omitempty"`
+	Policy               map[string]any `json:"policy"`
+	EstimatedInputTokens int            `json:"estimated_input_tokens"`
+	// AllowedChannelIDs 是 new-api 按分组、禁用、能力、熔断收窄后的渠道范围，调度器只在
+	// 这里面排序。必须发数组：调度器把 null 当成缺参数返回 400，空数组表示没有可用渠道。
+	AllowedChannelIDs      []int  `json:"allowed_channel_ids"`
+	PreferredChannelID     int    `json:"preferred_channel_id,omitempty"`
+	AffinityKeyFingerprint string `json:"affinity_key_fingerprint,omitempty"`
 }
 
-type schedulerRequestShape struct {
-	Stream              bool            `json:"stream"`
-	Tools               json.RawMessage `json:"tools"`
-	MaxTokens           int             `json:"max_tokens"`
-	MaxCompletionTokens int             `json:"max_completion_tokens"`
-	// OpenAI Chat Completions structured output.
-	ResponseFormat *struct {
-		Type string `json:"type"`
-	} `json:"response_format"`
-	// Anthropic Messages structured output (Claude output_format).
-	OutputFormat json.RawMessage `json:"output_format"`
-	// Gemini native structured output. Both camelCase and snake_case spellings
-	// are accepted because new-api's Relay tolerates either on ingress.
-	GenerationConfig *struct {
-		ResponseMimeType      string          `json:"responseMimeType"`
-		ResponseMimeTypeSnake string          `json:"response_mime_type"`
-		ResponseSchema        json.RawMessage `json:"responseSchema"`
-		ResponseSchemaSnake   json.RawMessage `json:"response_schema"`
-	} `json:"generationConfig"`
-	// OpenAI Responses structured output (text.format).
-	Text *struct {
-		Format *struct {
-			Type string `json:"type"`
-		} `json:"format"`
-	} `json:"text"`
-}
 type schedulerResponse struct {
 	DecisionID        string `json:"decision_id"`
 	ScoreVersion      string `json:"score_version,omitempty"`
 	PreferenceVersion string `json:"preference_version,omitempty"`
 	CatalogVersion    string `json:"catalog_version"`
-	Reservation       *struct {
-		ReservationID   string `json:"reservation_id"`
-		EstimatedTokens int    `json:"estimated_tokens"`
-	} `json:"reservation,omitempty"`
+	// 调度器不再占位，旧版调度器回的 reservation 字段直接忽略。
+	// 所以不能单独把调度器回滚到边界调整前的版本：旧版在 schedule 时给首选候选占一个
+	// 30 秒的位，只有 /v1/attempt 上报才释放，本版不再上报，位只能等过期，并发上限为 N
+	// 的池 30 秒内放进 N 个请求后就开始拒绝。要回滚就和 new-api 一起回滚。
 	Candidates []SchedulerCandidate `json:"candidates"`
-}
-type schedulerReserveRequest struct {
-	RequestID       string `json:"request_id"`
-	DecisionID      string `json:"decision_id"`
-	AttemptNo       int    `json:"attempt_no"`
-	EndpointID      string `json:"endpoint_id"`
-	EstimatedTokens int    `json:"estimated_tokens"`
-}
-type schedulerResizeRequest struct {
-	RequestID       string `json:"request_id"`
-	DecisionID      string `json:"decision_id"`
-	AttemptNo       int    `json:"attempt_no"`
-	EndpointID      string `json:"endpoint_id"`
-	ReservationID   string `json:"reservation_id"`
-	EstimatedTokens int    `json:"estimated_tokens"`
-}
-type schedulerAttempt struct {
-	RequestID       string `json:"request_id"`
-	DecisionID      string `json:"decision_id"`
-	AttemptNo       int    `json:"attempt_no"`
-	EndpointID      string `json:"endpoint_id"`
-	ReservationID   string `json:"reservation_id"`
-	StatusCode      int    `json:"status_code"`
-	ErrorType       string `json:"error_type"`
-	Success         bool   `json:"success"`
-	StreamStarted   bool   `json:"stream_started"`
-	LatencyMS       int64  `json:"latency_ms"`
-	TTFTMS          int64  `json:"ttft_ms,omitempty"`
-	InputTokens     int    `json:"input_tokens"`
-	OutputTokens    int    `json:"output_tokens"`
-	EstimatedTokens int    `json:"estimated_tokens,omitempty"`
-	UsageUnverified bool   `json:"usage_unverified,omitempty"`
 }
 
 var schedulerConfigState struct {
@@ -178,8 +119,6 @@ var schedulerConfigState struct {
 	testOverride bool
 	config       SchedulerClientConfig
 }
-
-var schedulerAttemptAsyncSlots = make(chan struct{}, 256)
 
 const (
 	schedulerCircuitFailureThreshold = 3
@@ -220,6 +159,9 @@ func resetSchedulerCircuit() {
 	schedulerEndpointCircuitState.Lock()
 	schedulerEndpointCircuitState.states = make(map[string]*schedulerEndpointCircuit)
 	schedulerEndpointCircuitState.Unlock()
+	schedulerPreviewUnsupported.Lock()
+	schedulerPreviewUnsupported.until = nil
+	schedulerPreviewUnsupported.Unlock()
 }
 
 func schedulerCircuitAllows(now time.Time) bool {
@@ -588,7 +530,7 @@ func schedulerDecisionError(statusCode int, body []byte) *SchedulerDecisionError
 	}
 }
 
-func schedulerDoRequestWithFallback(ctx context.Context, config SchedulerClientConfig, method, path string, payload []byte, includeAuth bool) (schedulerRequestOutcome, error) {
+func schedulerDoRequestWithFallback(ctx context.Context, config SchedulerClientConfig, method, path, requestID string, payload []byte, includeAuth bool) (schedulerRequestOutcome, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -621,6 +563,10 @@ func schedulerDoRequestWithFallback(ctx context.Context, config SchedulerClientC
 			req.Header.Set("Authorization", "Bearer "+config.Token)
 		}
 		req.Header.Set("Content-Type", "application/json")
+		// 调度器的访问日志按这个头记请求号，与 new-api 的日志、选路留痕对得上。
+		if requestID != "" {
+			req.Header.Set(common.RequestIdKey, requestID)
+		}
 		if includeAuth {
 			signSchedulerRequest(req, config.SigningSecret, payload)
 		}
@@ -844,9 +790,10 @@ func SchedulerEmergencyNativeActive(c *gin.Context) bool {
 }
 
 // RecordSchedulerUsage stores the usage reported by an upstream handler on
-// the request context. Relay reports the attempt after the handler returns,
-// so this keeps the scheduler payload aligned with the billing usage that
-// new-api actually observed. Missing/negative values are normalized to zero.
+// the request context. Relay reads it after the handler returns: 计数池
+// （channel_capacity.Finish）按它把这次尝试的实际 TPM 记账，OTel 按 stream 标记
+// 判断流是否已经开始。名字是历史遗留，调度器本身已经不收尝试结果。
+// Missing/negative values are normalized to zero.
 func RecordSchedulerUsage(c *gin.Context, usage *dto.Usage, streamStarted bool) {
 	if c == nil {
 		return
@@ -854,7 +801,6 @@ func RecordSchedulerUsage(c *gin.Context, usage *dto.Usage, streamStarted bool) 
 	if usage == nil {
 		common.SetContextKey(c, constant.ContextKeySchedulerInputTokens, 0)
 		common.SetContextKey(c, constant.ContextKeySchedulerOutputTokens, 0)
-		common.SetContextKey(c, constant.ContextKeySchedulerUsageUnverified, true)
 		if streamStarted {
 			common.SetContextKey(c, constant.ContextKeySchedulerStreamStarted, true)
 		}
@@ -876,8 +822,6 @@ func RecordSchedulerUsage(c *gin.Context, usage *dto.Usage, streamStarted bool) 
 	}
 	common.SetContextKey(c, constant.ContextKeySchedulerInputTokens, input)
 	common.SetContextKey(c, constant.ContextKeySchedulerOutputTokens, output)
-	usageUnverified := usage.BillingUsage != nil && usage.BillingUsage.Estimated
-	common.SetContextKey(c, constant.ContextKeySchedulerUsageUnverified, usageUnverified)
 	if streamStarted {
 		common.SetContextKey(c, constant.ContextKeySchedulerStreamStarted, true)
 	}
@@ -893,21 +837,13 @@ func ResetSchedulerAttemptMetrics(c *gin.Context) {
 	}
 	common.SetContextKey(c, constant.ContextKeySchedulerInputTokens, 0)
 	common.SetContextKey(c, constant.ContextKeySchedulerOutputTokens, 0)
-	common.SetContextKey(c, constant.ContextKeySchedulerUsageUnverified, false)
 	common.SetContextKey(c, constant.ContextKeySchedulerStreamStarted, false)
-	common.SetContextKey(c, constant.ContextKeySchedulerTTFTMS, 0)
-}
-
-func applySchedulerCandidateContext(c *gin.Context, candidate SchedulerCandidate) {
-	common.SetContextKey(c, constant.ContextKeySchedulerKeyIndex, candidate.KeyIndex)
-	if candidate.UpstreamModel != "" {
-		common.SetContextKey(c, constant.ContextKeySchedulerUpstreamModel, candidate.UpstreamModel)
-	}
 }
 
 // SchedulerCandidateForInitial returns the first Scheduler candidate for the
 // initial attempt. It is intentionally inert unless Enforced (including a
 // selected Canary request) is active; Shadow keeps native routing authoritative.
+// 重试不再回到调度器，由 new-api 原生选路接手。
 func SchedulerCandidateForInitial(c *gin.Context) (SchedulerCandidate, bool) {
 	if !SchedulerEnforcedForRequest(c) {
 		return SchedulerCandidate{}, false
@@ -916,154 +852,7 @@ func SchedulerCandidateForInitial(c *gin.Context) (SchedulerCandidate, bool) {
 	if !ok || len(candidates) == 0 {
 		return SchedulerCandidate{}, false
 	}
-	candidate := candidates[0]
-	applySchedulerCandidateContext(c, candidate)
-	return candidate, true
-}
-
-// SchedulerCandidateForRetry is intentionally inert unless Enforced is
-// explicitly selected. It only selects metadata already obtained by Shadow;
-// Reservation re-acquisition per retry is a separate gate.
-func SchedulerCandidateForRetry(c *gin.Context, retry int) (SchedulerCandidate, bool) {
-	if !SchedulerEnforcedForRequest(c) || retry < 0 {
-		return SchedulerCandidate{}, false
-	}
-	candidates, ok := common.GetContextKeyType[[]SchedulerCandidate](c, constant.ContextKeySchedulerCandidates)
-	if !ok || retry >= len(candidates) {
-		return SchedulerCandidate{}, false
-	}
-	candidate := candidates[retry]
-	applySchedulerCandidateContext(c, candidate)
-	return candidate, true
-}
-
-func SchedulerEndpointForChannel(c *gin.Context, channelID int) string {
-	candidates, ok := common.GetContextKeyType[[]SchedulerCandidate](c, constant.ContextKeySchedulerCandidates)
-	if !ok {
-		return ""
-	}
-	for _, candidate := range candidates {
-		if candidate.ChannelID == channelID {
-			return candidate.EndpointID
-		}
-	}
-	// In Shadow the native route may intentionally differ; release the
-	// Scheduler reservation bound to the first candidate in that case.
-	if len(candidates) > 0 {
-		return candidates[0].EndpointID
-	}
-	return ""
-}
-
-func ReserveSchedulerCandidate(c *gin.Context, candidate SchedulerCandidate, attemptNo int) error {
-	config := SchedulerClient()
-	if !SchedulerEnforcedForRequest(c) || attemptNo < 2 {
-		return nil
-	}
-	if candidate.EndpointID == "" {
-		return fmt.Errorf("scheduler candidate endpoint is empty")
-	}
-	if len(config.URLs()) == 0 || config.Token == "" {
-		return nil
-	}
-	estimatedTokens := common.GetContextKeyInt(c, constant.ContextKeySchedulerEstimatedTokens)
-	if estimatedTokens <= 0 {
-		estimatedTokens = common.GetContextKeyInt(c, constant.ContextKeyEstimatedTokens)
-	}
-	body := schedulerReserveRequest{RequestID: c.GetString(common.RequestIdKey), DecisionID: common.GetContextKeyString(c, constant.ContextKeySchedulerDecisionID), AttemptNo: attemptNo, EndpointID: candidate.EndpointID, EstimatedTokens: estimatedTokens}
-	payload, err := common.Marshal(body)
-	if err != nil {
-		return err
-	}
-	outcome, err := schedulerDoRequestWithFallback(c.Request.Context(), config, http.MethodPost, "/v1/reserve", payload, true)
-	if err != nil {
-		return err
-	}
-	if outcome.err != nil {
-		return outcome.err
-	}
-	if outcome.status < 200 || outcome.status >= 300 {
-		return fmt.Errorf("scheduler reserve status %d", outcome.status)
-	}
-	var reservation struct {
-		ReservationID string `json:"reservation_id"`
-	}
-	if err := common.DecodeJson(bytes.NewReader(outcome.body), &reservation); err != nil {
-		return err
-	}
-	if reservation.ReservationID == "" {
-		return fmt.Errorf("scheduler reserve returned no reservation")
-	}
-	common.SetContextKey(c, constant.ContextKeySchedulerReservationID, reservation.ReservationID)
-	return nil
-}
-
-// ResizeSchedulerReservation updates the first-attempt estimate after Relay
-// has computed canonical prompt tokens. It is enforced-only: Shadow keeps the
-// original best-effort reservation and records the canonical estimate solely
-// for Attempt telemetry.
-func ResizeSchedulerReservation(c *gin.Context, estimatedTokens int) error {
-	config := SchedulerClient()
-	if !SchedulerEnforcedForRequest(c) || len(config.URLs()) == 0 || config.Token == "" {
-		return nil
-	}
-	if estimatedTokens < 0 {
-		estimatedTokens = 0
-	}
-	if initialEstimate := common.GetContextKeyInt(c, constant.ContextKeySchedulerEstimatedTokens); initialEstimate == estimatedTokens {
-		return nil
-	}
-	decisionID := common.GetContextKeyString(c, constant.ContextKeySchedulerDecisionID)
-	reservationID := common.GetContextKeyString(c, constant.ContextKeySchedulerReservationID)
-	if decisionID == "" || reservationID == "" {
-		return nil
-	}
-	candidates, ok := common.GetContextKeyType[[]SchedulerCandidate](c, constant.ContextKeySchedulerCandidates)
-	if !ok || len(candidates) == 0 {
-		return fmt.Errorf("scheduler resize candidates are empty")
-	}
-	// Schedule reserves the first candidate. Distributor may have selected a
-	// different native channel before Relay consumes the enforced chain, so do
-	// not derive this identity from the current ChannelID.
-	endpointID := candidates[0].EndpointID
-	if endpointID == "" {
-		return fmt.Errorf("scheduler resize endpoint is empty")
-	}
-	body := schedulerResizeRequest{RequestID: c.GetString(common.RequestIdKey), DecisionID: decisionID, AttemptNo: 1, EndpointID: endpointID, ReservationID: reservationID, EstimatedTokens: estimatedTokens}
-	payload, err := common.Marshal(body)
-	if err != nil {
-		return err
-	}
-	outcome, err := schedulerDoRequestWithFallback(context.Background(), config, http.MethodPost, "/v1/resize", payload, true)
-	if err != nil {
-		return err
-	}
-	if outcome.err != nil {
-		return outcome.err
-	}
-	if outcome.status < 200 || outcome.status >= 300 {
-		return fmt.Errorf("scheduler resize status %d", outcome.status)
-	}
-	common.SetContextKey(c, constant.ContextKeySchedulerEstimatedTokens, estimatedTokens)
-	return nil
-}
-
-// SchedulerReservationResizeRequired reports whether the selected channel has
-// a finite TPM gate. With unlimited TPM there is nothing for resize to change,
-// so Enforced requests avoid a second Scheduler round trip entirely.
-func SchedulerReservationResizeRequired(c *gin.Context) bool {
-	if c == nil || !SchedulerEnforcedForRequest(c) {
-		return false
-	}
-	channelID := common.GetContextKeyInt(c, constant.ContextKeyChannelId)
-	if channelID <= 0 {
-		return true
-	}
-	channel, err := model.CacheGetChannel(channelID)
-	if err != nil || channel == nil {
-		return true
-	}
-	return channel.TPM > 0
+	return candidates[0], true
 }
 
 // schedulerEffectivePolicy builds the Scheduler policy for the current request
@@ -1072,12 +861,8 @@ func schedulerEffectivePolicy(c *gin.Context) (map[string]any, error) {
 	// Default to the balanced routing policy so a request always carries a valid
 	// mode even when the token has no routing preference configured. The
 	// token-level preference (one per API key, model-agnostic) may only choose
-	// the sort mode; all other constraints remain platform defaults.
-	policy := map[string]any{
-		"mode":            schedulerDefaultMode,
-		"allow_fallbacks": true,
-		"max_attempts":    3,
-	}
+	// the sort mode. 重试次数由 new-api 自己定，不发给调度器。
+	policy := map[string]any{"mode": schedulerDefaultMode}
 	pref, ok := common.GetContextKeyType[*dto.RoutingPreference](c, constant.ContextKeyTokenRoutingPreference)
 	if !ok || pref == nil {
 		return policy, nil
@@ -1091,7 +876,7 @@ func schedulerEffectivePolicy(c *gin.Context) (map[string]any, error) {
 // RunSchedulerShadow is best-effort by design: errors never alter native
 // channel selection. A successful response is stored only as request metadata;
 // Enforced candidate consumption is a separate, explicitly gated phase.
-func RunSchedulerShadow(c *gin.Context, modelName, group string) error {
+func RunSchedulerShadow(c *gin.Context, modelName, group string) (err error) {
 	if SchedulerKillSwitchActive() {
 		return nil
 	}
@@ -1099,6 +884,26 @@ func RunSchedulerShadow(c *gin.Context, modelName, group string) error {
 	if !config.Enabled || len(config.URLs()) == 0 || config.Token == "" {
 		return nil
 	}
+	enforced := SchedulerEnforcedForRequest(c)
+	mode := "shadow"
+	if enforced {
+		mode = "enforced"
+	}
+	otelRuntime := observability.FromContext(c.Request.Context())
+	decideCtx, decideSpan := otelRuntime.StartSchedulerDecision(c.Request.Context())
+	decide := observability.Observation{Metadata: map[string]string{"mode": mode}}
+	defer func() {
+		if err != nil {
+			// A shadow decision never affects routing, so its failure is only
+			// a degradation; an enforced one fails the request.
+			if enforced {
+				decide.Err = err
+			} else {
+				decide.Warning = err.Error()
+			}
+		}
+		otelRuntime.FinishObservation(decideSpan, decide)
+	}()
 	if !schedulerCircuitAllows(time.Now()) {
 		return ErrSchedulerTemporarilyUnavailable
 	}
@@ -1115,20 +920,23 @@ func RunSchedulerShadow(c *gin.Context, modelName, group string) error {
 		requestID = common.NewRequestId()
 		c.Set(common.RequestIdKey, requestID)
 	}
-	estimatedInput := common.GetContextKeyInt(c, constant.ContextKeyEstimatedTokens)
-	maxOutput := schedulerMaxOutputTokens(c)
-	body := schedulerRequest{RequestID: requestID, UserID: int64(c.GetInt("id")), TokenID: int64(c.GetInt("token_id")), Group: group, Model: modelName, Workload: common.GetContextKeyString(c, constant.ContextKeySchedulerWorkload), Capabilities: schedulerCapabilities(c), Policy: policy, EstimatedInputTokens: estimatedInput, MaxOutputTokens: maxOutput, PreferredChannelID: common.GetContextKeyInt(c, constant.ContextKeySchedulerAffinityChannelID)}
+	// RoutingInputTokens 已限制在 int32 范围内，转 int 不会溢出。调度器拿它判断 TPM 加上这次会不会超额。
+	estimatedInput := int(RoutingInputTokens(c, modelName))
+	body := schedulerRequest{RequestID: requestID, UserID: int64(c.GetInt("id")), TokenID: int64(c.GetInt("token_id")), Group: group, Model: modelName, Workload: common.GetContextKeyString(c, constant.ContextKeySchedulerWorkload), Policy: policy, EstimatedInputTokens: estimatedInput, AllowedChannelIDs: []int{}, PreferredChannelID: common.GetContextKeyInt(c, constant.ContextKeySchedulerAffinityChannelID)}
 	if affinity, ok := GetChannelAffinityStatsContext(c); ok {
 		body.AffinityKeyFingerprint = affinity.KeyFingerprint
 	}
+	// 没有可用渠道时 distributor 存进来的可能是 nil 切片，追加到空数组上才能发成 []。
+	// 范围没登记（理论上不会发生）时也发 []，宁可无候选也不让调度器在全部渠道里选。
 	if allowed, ok := common.GetContextKeyType[[]int](c, constant.ContextKeySchedulerAllowedChannelIDs); ok {
-		body.AllowedChannelIDs = append([]int(nil), allowed...)
+		body.AllowedChannelIDs = append(body.AllowedChannelIDs, allowed...)
 	}
+	decide.Input = body
 	payload, err := common.Marshal(body)
 	if err != nil {
 		return err
 	}
-	outcome, err := schedulerDoRequestWithFallback(c.Request.Context(), config, http.MethodPost, "/v1/schedule", payload, true)
+	outcome, err := schedulerDoRequestWithFallback(decideCtx, config, http.MethodPost, "/v1/schedule", requestID, payload, true)
 	if err != nil {
 		return err
 	}
@@ -1142,12 +950,14 @@ func RunSchedulerShadow(c *gin.Context, modelName, group string) error {
 	if err := common.DecodeJson(bytes.NewReader(outcome.body), &scheduled); err != nil {
 		return err
 	}
+	decide.Output = scheduled
+	decide.Metadata["decision_id"] = scheduled.DecisionID
 	if scheduled.DecisionID == "" || scheduled.CatalogVersion == "" || len(scheduled.Candidates) == 0 {
 		return fmt.Errorf("scheduler returned incomplete response")
 	}
 	seen := make(map[string]struct{}, len(scheduled.Candidates))
 	for _, candidate := range scheduled.Candidates {
-		if candidate.EndpointID == "" || candidate.ChannelID < 0 || candidate.KeyIndex < 0 || candidate.Model == "" || len(candidate.Reason) == 0 {
+		if candidate.EndpointID == "" || candidate.ChannelID < 0 || candidate.Model == "" || len(candidate.Reason) == 0 {
 			return fmt.Errorf("scheduler returned invalid candidate")
 		}
 		if _, exists := seen[candidate.EndpointID]; exists {
@@ -1159,12 +969,6 @@ func RunSchedulerShadow(c *gin.Context, modelName, group string) error {
 	common.SetContextKey(c, constant.ContextKeySchedulerDecisionID, scheduled.DecisionID)
 	common.SetContextKey(c, constant.ContextKeySchedulerScoreVersion, scheduled.ScoreVersion)
 	common.SetContextKey(c, constant.ContextKeySchedulerPreferenceVersion, scheduled.PreferenceVersion)
-	if scheduled.Reservation != nil {
-		common.SetContextKey(c, constant.ContextKeySchedulerReservationID, scheduled.Reservation.ReservationID)
-		if scheduled.Reservation.EstimatedTokens > 0 {
-			common.SetContextKey(c, constant.ContextKeySchedulerEstimatedTokens, scheduled.Reservation.EstimatedTokens)
-		}
-	}
 	match := false
 	for _, candidate := range scheduled.Candidates {
 		if candidate.ChannelID == common.GetContextKeyInt(c, constant.ContextKeyChannelId) {
@@ -1173,289 +977,10 @@ func RunSchedulerShadow(c *gin.Context, modelName, group string) error {
 		}
 	}
 	common.SetContextKey(c, constant.ContextKeySchedulerShadowMatch, match)
+	if !enforced {
+		decide.Metadata["shadow_match"] = strconv.FormatBool(match)
+	}
 	schedulerCircuitSuccess(time.Now())
-	return nil
-}
-
-// schedulerCapabilities reads only the small capability envelope from the
-// already cached request body. The body is rewound on every path so Relay
-// handlers see the exact same payload. Non-JSON or unavailable bodies simply
-// retain conservative defaults.
-func schedulerCapabilities(c *gin.Context) map[string]any {
-	capabilities := map[string]any{"stream": false, "tools": false, "json_mode": false, "vision": false}
-	if c == nil || c.Request == nil {
-		return capabilities
-	}
-	storage, err := common.GetBodyStorage(c)
-	if err != nil || storage == nil {
-		return capabilities
-	}
-	if _, err := storage.Seek(0, io.SeekStart); err != nil {
-		return capabilities
-	}
-	var shape schedulerRequestShape
-	err = common.DecodeJson(storage, &shape)
-	_, _ = storage.Seek(0, io.SeekStart)
-	if err != nil {
-		return capabilities
-	}
-	capabilities["stream"] = shape.Stream
-	capabilities["tools"] = rawMessagePresent(shape.Tools)
-	capabilities["json_mode"] = shape.wantsJSONMode()
-	// vision is intentionally never reported here: the Catalog cannot yet prove
-	// per-model vision support, so it publishes vision=false for every endpoint.
-	// Emitting vision=true would make Supports() reject every image request. Keep
-	// vision unset until the Catalog carries authoritative per-model metadata.
-	return capabilities
-}
-
-// rawMessagePresent reports whether a JSON field carries a non-empty tools
-// payload across all relay protocols. OpenAI/Claude/Responses send an array,
-// Gemini may send a single object; both spellings of "empty" are excluded so a
-// request that merely includes an empty container is not treated as needing
-// tool support.
-func rawMessagePresent(raw json.RawMessage) bool {
-	trimmed := strings.TrimSpace(string(raw))
-	return trimmed != "" && trimmed != "null" && trimmed != "[]" && trimmed != "{}"
-}
-
-// wantsJSONMode detects structured-output requests across the OpenAI Chat
-// Completions, Anthropic Messages, Gemini native, and OpenAI Responses
-// envelopes. Any one signal is enough; the extraction stays permissive so it
-// never reports a capability the Relay would not actually honor.
-func (shape schedulerRequestShape) wantsJSONMode() bool {
-	if shape.ResponseFormat != nil {
-		if shape.ResponseFormat.Type == "json_object" || shape.ResponseFormat.Type == "json_schema" {
-			return true
-		}
-	}
-	if rawMessagePresent(shape.OutputFormat) {
-		return true
-	}
-	if cfg := shape.GenerationConfig; cfg != nil {
-		mime := cfg.ResponseMimeType
-		if mime == "" {
-			mime = cfg.ResponseMimeTypeSnake
-		}
-		if strings.Contains(mime, "json") {
-			return true
-		}
-		if rawMessagePresent(cfg.ResponseSchema) || rawMessagePresent(cfg.ResponseSchemaSnake) {
-			return true
-		}
-	}
-	if shape.Text != nil && shape.Text.Format != nil {
-		if shape.Text.Format.Type == "json_object" || shape.Text.Format.Type == "json_schema" {
-			return true
-		}
-	}
-	return false
-}
-
-func schedulerMaxOutputTokens(c *gin.Context) int {
-	if c == nil || c.Request == nil {
-		return 0
-	}
-	storage, err := common.GetBodyStorage(c)
-	if err != nil || storage == nil {
-		return 0
-	}
-	if _, err := storage.Seek(0, io.SeekStart); err != nil {
-		return 0
-	}
-	var shape schedulerRequestShape
-	err = common.DecodeJson(storage, &shape)
-	_, _ = storage.Seek(0, io.SeekStart)
-	if err != nil {
-		return 0
-	}
-	if shape.MaxCompletionTokens > 0 {
-		return shape.MaxCompletionTokens
-	}
-	return shape.MaxTokens
-}
-
-// SchedulerMaxOutputTokens exposes the request's output cap to the Relay
-// controller when it corrects the first Reservation estimate.
-func SchedulerMaxOutputTokens(c *gin.Context) int {
-	return schedulerMaxOutputTokens(c)
-}
-
-// ReportSchedulerShadowAttempt releases the Scheduler reservation without
-// affecting the response path. It is best-effort and should be called after
-// c.Next() so the final HTTP status is available.
-func ReportSchedulerShadowAttempt(c *gin.Context) error {
-	config := SchedulerClient()
-	if !config.Enabled || len(config.URLs()) == 0 || config.Token == "" {
-		return nil
-	}
-	decisionID := common.GetContextKeyString(c, constant.ContextKeySchedulerDecisionID)
-	if decisionID == "" {
-		return nil
-	}
-	candidates, ok := common.GetContextKeyType[[]SchedulerCandidate](c, constant.ContextKeySchedulerCandidates)
-	if !ok || len(candidates) == 0 {
-		return nil
-	}
-	// Shadow reserves only the first Scheduler candidate. The native channel
-	// may intentionally differ, but the Attempt identity must still match the
-	// Reservation endpoint so capacity settlement and audit reconciliation do
-	// not commit one Endpoint while reporting another.
-	endpoint := candidates[0]
-	requestID := c.GetString(common.RequestIdKey)
-	reservationID := common.GetContextKeyString(c, constant.ContextKeySchedulerReservationID)
-	status := c.Writer.Status()
-	if status == 0 {
-		status = http.StatusOK
-	}
-	start := common.GetContextKeyTime(c, constant.ContextKeyRequestStartTime)
-	latency := int64(0)
-	if !start.IsZero() {
-		latency = time.Since(start).Milliseconds()
-	}
-	inputTokens := common.GetContextKeyInt(c, constant.ContextKeySchedulerInputTokens)
-	outputTokens := common.GetContextKeyInt(c, constant.ContextKeySchedulerOutputTokens)
-	usageUnverified := common.GetContextKeyBool(c, constant.ContextKeySchedulerUsageUnverified)
-	if !usageUnverified && inputTokens == 0 && outputTokens == 0 && status >= 200 && status < 400 {
-		usageUnverified = true
-	}
-	attempt := schedulerAttempt{
-		RequestID: requestID, DecisionID: decisionID, AttemptNo: 1,
-		EndpointID: endpoint.EndpointID, ReservationID: reservationID,
-		StatusCode: status, Success: status >= 200 && status < 400,
-		StreamStarted:   common.GetContextKeyBool(c, constant.ContextKeySchedulerStreamStarted),
-		LatencyMS:       latency,
-		TTFTMS:          int64(common.GetContextKeyInt(c, constant.ContextKeySchedulerTTFTMS)),
-		InputTokens:     inputTokens,
-		OutputTokens:    outputTokens,
-		EstimatedTokens: schedulerEstimatedTokens(c),
-		UsageUnverified: usageUnverified,
-	}
-	return postSchedulerAttempt(c, config, attempt)
-}
-
-func ReportSchedulerAttempt(c *gin.Context, endpointID string, attemptNo, statusCode int, success, streamStarted bool, inputTokens, outputTokens int) error {
-	config := SchedulerClient()
-	// Shadow and non-selected Canary requests are settled by
-	// ReportSchedulerShadowAttempt, which reports the reserved first candidate
-	// rather than the native channel.
-	if !SchedulerEnforcedForRequest(c) || !config.Enabled || len(config.URLs()) == 0 || config.Token == "" {
-		return nil
-	}
-	decisionID := common.GetContextKeyString(c, constant.ContextKeySchedulerDecisionID)
-	if decisionID == "" || endpointID == "" {
-		return nil
-	}
-	if config.Timeout <= 0 {
-		config.Timeout = 100 * time.Millisecond
-	}
-	if statusCode == 0 {
-		statusCode = http.StatusOK
-	}
-	start := common.GetContextKeyTime(c, constant.ContextKeyRequestStartTime)
-	latency := int64(0)
-	if !start.IsZero() {
-		latency = time.Since(start).Milliseconds()
-	}
-	usageUnverified := common.GetContextKeyBool(c, constant.ContextKeySchedulerUsageUnverified)
-	if !usageUnverified && inputTokens == 0 && outputTokens == 0 && (success || streamStarted) {
-		usageUnverified = true
-	}
-	attempt := schedulerAttempt{RequestID: c.GetString(common.RequestIdKey), DecisionID: decisionID, AttemptNo: attemptNo, EndpointID: endpointID, ReservationID: common.GetContextKeyString(c, constant.ContextKeySchedulerReservationID), StatusCode: statusCode, Success: success, StreamStarted: streamStarted, LatencyMS: latency, TTFTMS: int64(common.GetContextKeyInt(c, constant.ContextKeySchedulerTTFTMS)), InputTokens: inputTokens, OutputTokens: outputTokens, EstimatedTokens: schedulerEstimatedTokens(c), UsageUnverified: usageUnverified}
-	err := postSchedulerAttempt(c, config, attempt)
-	if err == nil {
-		common.SetContextKey(c, constant.ContextKeySchedulerAttemptReported, true)
-	}
-	return err
-}
-
-// ReportSchedulerAttemptAsync queues an Enforced attempt report so upstream
-// response completion does not wait on Scheduler I/O. Queue saturation is
-// intentionally best-effort: routing correctness is already decided, while
-// the bounded queue prevents goroutine growth during a Scheduler outage.
-func ReportSchedulerAttemptAsync(c *gin.Context, endpointID string, attemptNo, statusCode int, success, streamStarted bool, inputTokens, outputTokens int) error {
-	config := SchedulerClient()
-	if !SchedulerEnforcedForRequest(c) || !config.Enabled || len(config.URLs()) == 0 || config.Token == "" {
-		return nil
-	}
-	decisionID := common.GetContextKeyString(c, constant.ContextKeySchedulerDecisionID)
-	if decisionID == "" || endpointID == "" {
-		return nil
-	}
-	if config.Timeout <= 0 {
-		config.Timeout = 100 * time.Millisecond
-	}
-	if statusCode == 0 {
-		statusCode = http.StatusOK
-	}
-	usageUnverified := common.GetContextKeyBool(c, constant.ContextKeySchedulerUsageUnverified)
-	if !usageUnverified && inputTokens == 0 && outputTokens == 0 && (success || streamStarted) {
-		usageUnverified = true
-	}
-	attempt := schedulerAttempt{RequestID: c.GetString(common.RequestIdKey), DecisionID: decisionID, AttemptNo: attemptNo, EndpointID: endpointID, ReservationID: common.GetContextKeyString(c, constant.ContextKeySchedulerReservationID), StatusCode: statusCode, Success: success, StreamStarted: streamStarted, LatencyMS: schedulerAttemptLatencyMS(c), TTFTMS: int64(common.GetContextKeyInt(c, constant.ContextKeySchedulerTTFTMS)), InputTokens: inputTokens, OutputTokens: outputTokens, EstimatedTokens: schedulerEstimatedTokens(c), UsageUnverified: usageUnverified}
-	if err := enqueueSchedulerAttempt(config, attempt); err != nil {
-		return err
-	}
-	common.SetContextKey(c, constant.ContextKeySchedulerAttemptReported, true)
-	return nil
-}
-
-func schedulerAttemptLatencyMS(c *gin.Context) int64 {
-	start := common.GetContextKeyTime(c, constant.ContextKeyRequestStartTime)
-	if start.IsZero() {
-		return 0
-	}
-	return time.Since(start).Milliseconds()
-}
-
-func enqueueSchedulerAttempt(config SchedulerClientConfig, attempt schedulerAttempt) error {
-	select {
-	case schedulerAttemptAsyncSlots <- struct{}{}:
-		go func() {
-			defer func() { <-schedulerAttemptAsyncSlots }()
-			if err := postSchedulerAttempt(nil, config, attempt); err != nil {
-				common.SysLog(fmt.Sprintf("scheduler async attempt report failed: %v", err))
-			}
-		}()
-		return nil
-	default:
-		// Preserve the lifecycle event under sustained pressure. The normal path
-		// is asynchronous; this bounded fallback avoids silently losing attempt
-		// diagnostics while preventing unbounded goroutine creation.
-		return postSchedulerAttempt(nil, config, attempt)
-	}
-}
-
-func schedulerEstimatedTokens(c *gin.Context) int {
-	if c == nil {
-		return 0
-	}
-	if estimate := common.GetContextKeyInt(c, constant.ContextKeySchedulerEstimatedTokens); estimate > 0 {
-		return estimate
-	}
-	return common.GetContextKeyInt(c, constant.ContextKeyEstimatedTokens)
-}
-
-func postSchedulerAttempt(c *gin.Context, config SchedulerClientConfig, attempt schedulerAttempt) error {
-	payload, err := common.Marshal(attempt)
-	if err != nil {
-		return err
-	}
-	// Attempt reporting happens after Relay may have completed or after the
-	// client has disconnected. Do not inherit the request context here: its
-	// cancellation must not strand the Scheduler Reservation. The bounded
-	// background context keeps this best-effort side effect independent while
-	// still enforcing the client timeout.
-	outcome, err := schedulerDoRequestWithFallback(context.Background(), config, http.MethodPost, "/v1/attempt", payload, true)
-	if err != nil {
-		return err
-	}
-	if outcome.err != nil {
-		return outcome.err
-	}
-	if outcome.status < 200 || outcome.status >= 300 {
-		return fmt.Errorf("scheduler attempt status %d", outcome.status)
-	}
 	return nil
 }
 

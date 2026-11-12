@@ -41,6 +41,147 @@ func TestTokenAllowUserQuotaQueryRoundTripsThroughRedisHashCache(t *testing.T) {
 	assert.Positive(t, server.TTL(getTokenCacheKey(token.Key)))
 }
 
+func TestTokenAutoPreferenceRoundTripsThroughRedisHashCache(t *testing.T) {
+	server := useUserCacheMiniRedis(t)
+	token := Token{Id: 44, UserId: 7, Key: "token-auto-preference-cache-key", Name: "auto-preference-cache", AutoPreference: "cost"}
+
+	initialized, err := cacheInitToken(token)
+	require.NoError(t, err)
+	require.Equal(t, 1, initialized)
+	cached, err := cacheGetTokenByKey(token.Key)
+	require.NoError(t, err)
+	assert.Equal(t, "cost", cached.AutoPreference)
+	assert.Positive(t, server.TTL(getTokenCacheKey(token.Key)), "新字段占了 ARGV 位置，过期时间的下标要跟着后移")
+
+	// 升级前写进缓存的哈希没有签名：完整性校验拒绝，调用方回落数据库并重建缓存。
+	legacyKey := "token-auto-preference-legacy-key"
+	server.HSet(getTokenCacheKey(legacyKey), "Id", "45", "UserId", "7", "Name", "legacy")
+	_, err = cacheGetTokenByKey(legacyKey)
+	require.Error(t, err)
+}
+
+func TestTokenSceneRoundTripsThroughRedisHashCache(t *testing.T) {
+	server := useUserCacheMiniRedis(t)
+	token := Token{Id: 44, UserId: 7, Key: "token-scene-cache-key", Name: "scene-cache", Scene: common.TokenSceneBusiness}
+
+	initialized, err := cacheInitToken(token)
+	require.NoError(t, err)
+	require.Equal(t, 1, initialized)
+	cached, err := cacheGetTokenByKey(token.Key)
+	require.NoError(t, err)
+	assert.Equal(t, common.TokenSceneBusiness, cached.Scene)
+	assert.Positive(t, server.TTL(getTokenCacheKey(token.Key)))
+}
+
+// RPM decides whether TokenRateLimit throttles a key, so losing it in the cache
+// is worse than losing a display field: RedisHGetObj leaves a field missing from
+// the hash at its Go zero value, and 0 means "inherit the platform default".
+// Dropping RPM from cacheInitToken would therefore silently ignore every key's
+// own limit without raising an error, and -1 would flip from "never throttled"
+// to "throttled at the platform rate".
+func TestTokenRPMRoundTripsThroughRedisHashCache(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		rpm  int
+	}{
+		{name: "own limit", rpm: 120},
+		{name: "opted out", rpm: -1},
+		{name: "inherits platform default", rpm: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := useUserCacheMiniRedis(t)
+			token := Token{
+				Id:     46,
+				UserId: 7,
+				Key:    "token-rpm-cache-key-" + tc.name,
+				Name:   "rpm-cache",
+				RPM:    tc.rpm,
+			}
+
+			initialized, err := cacheInitToken(token)
+			require.NoError(t, err)
+			require.Equal(t, 1, initialized)
+			cached, err := cacheGetTokenByKey(token.Key)
+			require.NoError(t, err)
+			assert.Equal(t, tc.rpm, cached.RPM)
+			assert.Positive(t, server.TTL(getTokenCacheKey(token.Key)), "新字段占了 ARGV 位置，过期时间的下标要跟着后移")
+
+			refreshed, err := cacheInitToken(token)
+			require.NoError(t, err)
+			require.Equal(t, 2, refreshed)
+			assert.Positive(t, server.TTL(getTokenCacheKey(token.Key)), "刷新分支不得把 TTL 设成 RPM")
+			cached, err = cacheGetTokenByKey(token.Key)
+			require.NoError(t, err, "刷新 TTL 不得删除哈希")
+			assert.Equal(t, tc.rpm, cached.RPM)
+		})
+	}
+}
+
+// RoutingMode decides whether a key's chat requests are moved to "auto". Redis is
+// read first, and a field missing from the hash comes back empty, which means
+// "locked to its models": without it in cacheInitToken a smart routing key would
+// silently stop routing as soon as its cached copy is used.
+func TestTokenRoutingModeRoundTripsThroughRedisHashCache(t *testing.T) {
+	server := useUserCacheMiniRedis(t)
+	token := Token{Id: 47, UserId: 7, Key: "token-routing-mode-cache-key", Name: "routing-mode-cache", Scene: common.TokenSceneOffice, RoutingMode: common.TokenRoutingModeSmart}
+
+	initialized, err := cacheInitToken(token)
+	require.NoError(t, err)
+	require.Equal(t, 1, initialized)
+	cached, err := cacheGetTokenByKey(token.Key)
+	require.NoError(t, err)
+	assert.Equal(t, common.TokenRoutingModeSmart, cached.RoutingMode)
+	assert.True(t, cached.UsesSmartRouting())
+	assert.Positive(t, server.TTL(getTokenCacheKey(token.Key)), "新字段占了 ARGV 位置，过期时间的下标要跟着后移")
+
+	// 升级前写进缓存的哈希没有签名：完整性校验拒绝，调用方回落数据库并重建缓存。
+	legacyKey := "token-routing-mode-legacy-key"
+	server.HSet(getTokenCacheKey(legacyKey), "Id", "48", "UserId", "7", "Name", "legacy")
+	_, err = cacheGetTokenByKey(legacyKey)
+	require.Error(t, err)
+}
+
+func TestTokenUsesSmartRoutingOnlyForAnOfficeKeySetToSmart(t *testing.T) {
+	for _, tc := range []struct {
+		scene common.TokenScene
+		mode  common.TokenRoutingMode
+		want  bool
+	}{
+		{scene: common.TokenSceneOffice, mode: common.TokenRoutingModeSmart, want: true},
+		{scene: "", mode: common.TokenRoutingModeSmart, want: true}, // 空 scene 按办公处理
+		{scene: common.TokenSceneOffice, mode: common.TokenRoutingModeFixed},
+		{scene: common.TokenSceneOffice, mode: ""}, // 升级前的旧令牌
+		{scene: common.TokenSceneBusiness, mode: common.TokenRoutingModeSmart},
+		{scene: common.TokenSceneBusiness, mode: common.TokenRoutingModeFixed},
+	} {
+		token := Token{Scene: tc.scene, RoutingMode: tc.mode}
+		assert.Equal(t, tc.want, token.UsesSmartRouting(), "scene=%q mode=%q", tc.scene, tc.mode)
+	}
+}
+
+func TestTokenUpdatePersistsScene(t *testing.T) {
+	truncateTables(t)
+	useUserCacheMiniRedis(t)
+	token := Token{
+		UserId:         7,
+		Key:            "token-scene-update-key",
+		Name:           "scene-update",
+		Status:         common.TokenStatusEnabled,
+		ExpiredTime:    -1,
+		UnlimitedQuota: true,
+		Scene:          common.TokenSceneOffice,
+	}
+	require.NoError(t, token.Insert())
+
+	token.Scene = common.TokenSceneBusiness
+	require.NoError(t, token.Update())
+
+	// Update 的 Select 是手工维护的白名单，漏列字段会静默不落库。
+	reloaded, err := GetTokenByKey(token.Key, false)
+	require.NoError(t, err)
+	assert.Equal(t, common.TokenSceneBusiness, reloaded.Scene)
+}
+
 func TestTokenUpdateSynchronouslyNarrowsPreheatedAutoGroupsCache(t *testing.T) {
 	truncateTables(t)
 	useUserCacheMiniRedis(t)

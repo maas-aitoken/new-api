@@ -209,3 +209,60 @@ describe('API key user quota query form mapping', () => {
     }
   )
 })
+
+describe('API key auto model preference form mapping', () => {
+  test('a new key follows the platform setting and submits an empty preference', () => {
+    const defaults = getApiKeyFormDefaultValues(false)
+
+    expect(defaults.auto_preference).toBe('default')
+    expect(transformFormDataToPayload(defaults).auto_preference).toBe('')
+  })
+
+  test.each(['capability', 'balanced', 'cost', 'adaptive'] as const)(
+    'submits the chosen preference %s unchanged',
+    (preference) => {
+      const defaults = getApiKeyFormDefaultValues(false)
+
+      expect(
+        transformFormDataToPayload({ ...defaults, auto_preference: preference })
+          .auto_preference
+      ).toBe(preference)
+    }
+  )
+
+  test.each(['capability', 'balanced', 'cost', 'adaptive'])(
+    'shows the stored preference %s when an existing key is edited',
+    (stored) => {
+      const defaults = transformApiKeyToFormDefaults({
+        ...baseApiKey,
+        auto_preference: stored,
+      })
+
+      expect(defaults.auto_preference).toBe(stored)
+      expect(transformFormDataToPayload(defaults).auto_preference).toBe(stored)
+    }
+  )
+
+  test.each([undefined, null, '', 'turbo'])(
+    'treats a stored preference of %j as following the platform setting',
+    (stored) => {
+      const defaults = transformApiKeyToFormDefaults({
+        ...baseApiKey,
+        auto_preference: stored,
+      })
+
+      expect(defaults.auto_preference).toBe('default')
+      expect(transformFormDataToPayload(defaults).auto_preference).toBe('')
+    }
+  )
+
+  test('rejects a preference the server does not know', () => {
+    const schema = getApiKeyFormSchema(t)
+    const values = { ...getApiKeyFormDefaultValues(false), name: 'k' }
+
+    expect(schema.safeParse(values).success).toBe(true)
+    expect(
+      schema.safeParse({ ...values, auto_preference: 'turbo' }).success
+    ).toBe(false)
+  })
+})

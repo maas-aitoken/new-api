@@ -42,13 +42,13 @@ func SetApiRouter(router *gin.Engine) {
 		{
 			modelSquareRoute.GET("", controller.GetModelSquare)
 			modelSquareRoute.GET("/:id", controller.GetModelSquareDetail)
-			modelSquareRoute.GET("/:id/providers/:provider", controller.GetModelSquareProviderDetail)
 		}
 		perfMetricsRoute := apiRouter.Group("/perf-metrics")
 		perfMetricsRoute.Use(middleware.HeaderNavModulePublicOrUserAuth("pricing"))
 		{
 			perfMetricsRoute.GET("/summary", controller.GetPerfMetricsSummary)
 			perfMetricsRoute.GET("/availability", middleware.UserAuth(), controller.GetModelAvailability)
+			perfMetricsRoute.GET("/health", middleware.UserAuth(), controller.GetModelHealth)
 			perfMetricsRoute.GET("", controller.GetPerfMetrics)
 		}
 		apiRouter.GET("/rankings", middleware.HeaderNavModuleAuth("rankings"), controller.GetRankings)
@@ -116,7 +116,7 @@ func SetApiRouter(router *gin.Engine) {
 				selfRoute.GET("/self/groups", controller.GetUserGroups)
 				selfRoute.GET("/self", controller.GetSelf)
 				selfRoute.GET("/models", controller.GetUserModels)
-				selfRoute.GET("/providers", controller.GetUserModelProviders)
+				selfRoute.GET("/models/meta", controller.GetUserModelsMeta)
 				selfRoute.PUT("/self", middleware.CriticalRateLimit(), middleware.DisableCache(), controller.UpdateSelf)
 				selfRoute.DELETE("/self", middleware.DisableCache(), controller.DeleteSelf)
 				accessTokenRoute := selfRoute.Group("/access_tokens")
@@ -135,6 +135,9 @@ func SetApiRouter(router *gin.Engine) {
 				selfRoute.POST("/passkey/register/finish", middleware.UserCriticalRateLimit("security-verification"), middleware.DisableCache(), controller.PasskeyRegisterFinish)
 				selfRoute.POST("/passkey/verify/begin", middleware.UserCriticalRateLimit("security-verification"), middleware.DisableCache(), controller.PasskeyVerifyBegin)
 				selfRoute.POST("/passkey/verify/finish", middleware.UserCriticalRateLimit("security-verification"), middleware.DisableCache(), controller.PasskeyVerifyFinish)
+				selfRoute.POST("/email/verify/start", middleware.CriticalRateLimit(), middleware.UserCriticalRateLimit("security-verification"), middleware.EmailVerificationRateLimit(), middleware.DisableCache(), controller.EmailVerifyStart)
+				selfRoute.POST("/email/verify/resend", middleware.CriticalRateLimit(), middleware.UserCriticalRateLimit("security-verification"), middleware.EmailVerificationRateLimit(), middleware.DisableCache(), controller.EmailVerifyResend)
+				selfRoute.POST("/email/verify/finish", middleware.CriticalRateLimit(), middleware.UserCriticalRateLimit("security-verification"), middleware.DisableCache(), controller.EmailVerifyFinish)
 				selfRoute.DELETE("/passkey", middleware.DisableCache(), controller.PasskeyDelete)
 				selfRoute.GET("/aff", controller.GetAffCode)
 				selfRoute.GET("/topup/info", controller.GetTopUpInfo)
@@ -175,7 +178,14 @@ func SetApiRouter(router *gin.Engine) {
 				adminRoute.GET("/topup", controller.GetAllTopUps)
 				adminRoute.POST("/topup/complete", controller.AdminCompleteTopUp)
 				adminRoute.GET("/search", controller.SearchUsers)
+				adminRoute.GET("/data-scopes/directory", controller.GetUserDataScopeDirectory)
+				adminRoute.GET("/data-scopes/sso-org", controller.GetUserDataScopeSsoOrg)
+				adminRoute.GET("/data-scopes", controller.ListUserDataScopes)
+				adminRoute.GET("/data-scopes/:manager_id", controller.GetUserDataScope)
+				adminRoute.PUT("/data-scopes/:manager_id", controller.UpdateUserDataScope)
+				adminRoute.DELETE("/data-scopes/:manager_id", controller.DeleteUserDataScope)
 				adminRoute.GET("/:id/oauth/bindings", controller.GetUserOAuthBindingsByAdmin)
+				adminRoute.GET("/:id/tokens", controller.ListUserTokens)
 				adminRoute.DELETE("/:id/oauth/bindings/:provider_id", controller.UnbindCustomOAuthByAdmin)
 				adminRoute.DELETE("/:id/bindings/:binding_type", controller.AdminClearUserBinding)
 				adminRoute.GET("/:id", controller.GetUser)
@@ -198,6 +208,7 @@ func SetApiRouter(router *gin.Engine) {
 			subscriptionRoute.GET("/plans", controller.GetSubscriptionPlans)
 			subscriptionRoute.GET("/self", controller.GetSubscriptionSelf)
 			subscriptionRoute.PUT("/self/preference", controller.UpdateSubscriptionPreference)
+			subscriptionRoute.POST("/self/quota-increase", middleware.CriticalRateLimit(), controller.RequestSubscriptionQuotaIncrease)
 			subscriptionRoute.POST("/balance/pay", middleware.CriticalRateLimit(), controller.SubscriptionRequestBalancePay)
 			subscriptionRoute.POST("/epay/pay", middleware.CriticalRateLimit(), controller.SubscriptionRequestEpay)
 			subscriptionRoute.POST("/stripe/pay", middleware.CriticalRateLimit(), controller.SubscriptionRequestStripePay)
@@ -218,6 +229,8 @@ func SetApiRouter(router *gin.Engine) {
 			subscriptionAdminRoute.GET("/users/:id/subscriptions", controller.AdminListUserSubscriptions)
 			subscriptionAdminRoute.POST("/users/:id/subscriptions", controller.AdminCreateUserSubscription)
 			subscriptionAdminRoute.POST("/users/:id/subscriptions/reset", controller.AdminResetUserSubscriptionsByPlan)
+			subscriptionAdminRoute.POST("/users/:id/subscriptions/change", controller.AdminChangeUserSubscriptionPlan)
+			subscriptionAdminRoute.GET("/current_subscriptions", controller.AdminListCurrentSubscriptions)
 			subscriptionAdminRoute.POST("/user_subscriptions/:id/invalidate", controller.AdminInvalidateUserSubscription)
 			subscriptionAdminRoute.DELETE("/user_subscriptions/:id", controller.AdminDeleteUserSubscription)
 		}
@@ -236,6 +249,7 @@ func SetApiRouter(router *gin.Engine) {
 			optionRoute.PUT("/", controller.UpdateOption)
 			optionRoute.PUT("/passkey/domains", controller.UpdatePasskeyDomains)
 			optionRoute.GET("/model_pricing", controller.GetModelPricingConfig)
+			optionRoute.GET("/model_pricing/issues", controller.GetModelPricingIssues)
 			optionRoute.PATCH("/model_pricing", controller.UpdateModelPricingConfig)
 			optionRoute.POST("/model_pricing/convert", controller.PreviewModelPricingConversion)
 			optionRoute.POST("/model_pricing/preview", controller.PreviewModelPricing)
@@ -311,6 +325,8 @@ func SetApiRouter(router *gin.Engine) {
 		{
 			tokenRoute.GET("/", controller.GetAllTokens)
 			tokenRoute.GET("/search", middleware.SearchRateLimit(), controller.SearchTokens)
+			tokenRoute.GET("/view-scope", controller.GetKeyViewScope)
+			tokenRoute.GET("/member-candidates", middleware.SearchRateLimit(), controller.SearchTokenMemberCandidates)
 			tokenRoute.GET("/auto-groups", controller.GetTokenAutoGroups)
 			tokenRoute.GET("/:id", controller.GetToken)
 			tokenRoute.GET("/:id/routing-preference", controller.GetTokenRoutingPreference)
@@ -321,6 +337,16 @@ func SetApiRouter(router *gin.Engine) {
 			tokenRoute.DELETE("/:id", controller.DeleteToken)
 			tokenRoute.POST("/batch", controller.DeleteTokenBatch)
 			tokenRoute.POST("/batch/keys", middleware.CriticalRateLimit(), middleware.DisableCache(), controller.GetTokenKeysBatch)
+		}
+
+		tokenAdminRoute := apiRouter.Group("/token/admin")
+		tokenAdminRoute.Use(middleware.RootAuth())
+		tokenAdminRoute.Use(middleware.TokenOperationAudit())
+		{
+			tokenAdminRoute.GET("", controller.AdminListTokens)
+			tokenAdminRoute.PATCH("/:id/status", controller.AdminUpdateTokenStatus)
+			tokenAdminRoute.PATCH("/:id/rate-limit", controller.AdminUpdateTokenRateLimit)
+			tokenAdminRoute.DELETE("/:id", controller.AdminDeleteToken)
 		}
 
 		usageRoute := apiRouter.Group("/usage")
@@ -377,11 +403,16 @@ func SetApiRouter(router *gin.Engine) {
 
 		dataRoute := apiRouter.Group("/data")
 		dataRoute.GET("/", middleware.AdminAuth(), controller.GetAllQuotaDates)
-		dataRoute.GET("/analytics", middleware.AdminAuth(), controller.GetAdminUsageAnalytics)
+		// Cross-user analytics: the handlers limit non-administrators to the people they may see.
+		dataRoute.GET("/scope", middleware.UserAuth(), controller.GetUsageDataScope)
+		dataRoute.GET("/platforms", middleware.UserAuth(), controller.GetUsagePlatforms)
+		dataRoute.GET("/analytics", middleware.UserAuth(), controller.GetUsageAnalytics)
 		dataRoute.GET("/analytics/self", middleware.UserAuth(), controller.GetSelfUsageAnalytics)
+		dataRoute.GET("/org-options", middleware.UserAuth(), controller.GetUsageOrgOptions)
 		dataRoute.GET("/iself", middleware.AdminAuth(), controller.GetAdminIselfUsageAnalytics)
 		dataRoute.GET("/iself/self", middleware.UserAuth(), controller.GetSelfIselfUsageAnalytics)
-		dataRoute.GET("/peak-tpm", middleware.AdminAuth(), controller.GetPeakTPM)
+		dataRoute.GET("/peak-tpm", middleware.UserAuth(), controller.GetPeakTPM)
+		dataRoute.GET("/peak-tpm/self", middleware.UserAuth(), controller.GetSelfPeakTPM)
 		dataRoute.GET("/users", middleware.AdminAuth(), controller.GetQuotaDatesByUser)
 		dataRoute.GET("/self", middleware.UserAuth(), controller.GetUserQuotaDates)
 		dataRoute.GET("/flow", middleware.AdminAuth(), controller.GetAllFlowQuotaDates)
@@ -430,26 +461,6 @@ func SetApiRouter(router *gin.Engine) {
 			vendorRoute.DELETE("/:id", controller.DeleteVendorMeta)
 		}
 
-		providerRoute := apiRouter.Group("/providers")
-		providerRoute.Use(middleware.AdminAuth())
-		{
-			providerRoute.GET("/", controller.ListProvider)
-			providerRoute.GET("/:id", controller.GetProvider)
-			providerRoute.POST("/", controller.CreateProvider)
-			providerRoute.PUT("/", controller.UpdateProvider)
-			providerRoute.DELETE("/:id", controller.DeleteProvider)
-		}
-
-		modelProviderPriceRoute := apiRouter.Group("/model-provider-prices")
-		modelProviderPriceRoute.Use(middleware.AdminAuth())
-		{
-			modelProviderPriceRoute.GET("/providers/:provider_slug/models", controller.ListProviderModels)
-			modelProviderPriceRoute.GET("/", controller.ListModelProviderPrice)
-			modelProviderPriceRoute.POST("/", controller.CreateModelProviderPrice)
-			modelProviderPriceRoute.PUT("/", controller.UpdateModelProviderPrice)
-			modelProviderPriceRoute.DELETE("/:id", controller.DeleteModelProviderPrice)
-		}
-
 		modelsRoute := apiRouter.Group("/models")
 		modelsRoute.Use(middleware.AdminAuth())
 		{
@@ -459,10 +470,46 @@ func SetApiRouter(router *gin.Engine) {
 			modelsRoute.GET("/missing", controller.GetMissingModels)
 			modelsRoute.GET("/", controller.GetAllModelsMeta)
 			modelsRoute.GET("/search", controller.SearchModelsMeta)
+			modelsRoute.GET("/capability-targets", controller.GetModelCapabilityTargets)
 			modelsRoute.GET("/:id", controller.GetModelMeta)
 			modelsRoute.POST("/", controller.CreateModelMeta)
 			modelsRoute.PUT("/", controller.UpdateModelMeta)
 			modelsRoute.DELETE("/:id", controller.DeleteModelMeta)
+		}
+
+		channelModelCapabilityRoute := apiRouter.Group("/channel-model-capabilities")
+		channelModelCapabilityRoute.Use(middleware.AdminAuth())
+		{
+			channelModelCapabilityRoute.GET("/", controller.GetChannelModelCapability)
+			channelModelCapabilityRoute.PUT("/", controller.SaveChannelModelCapability)
+			channelModelCapabilityRoute.PUT("/cost-multiplier", controller.SaveChannelModelCostMultiplier)
+			channelModelCapabilityRoute.PUT("/limit", controller.SaveChannelModelLimit)
+			channelModelCapabilityRoute.GET("/capacity", controller.GetChannelModelCapacity)
+			channelModelCapabilityRoute.DELETE("/", controller.DeleteChannelModelCapability)
+		}
+
+		capabilityGateRoute := apiRouter.Group("/capability-gate")
+		capabilityGateRoute.Use(middleware.AdminAuth())
+		{
+			capabilityGateRoute.GET("/events", controller.GetCapabilityGateEvents)
+		}
+
+		autoRouterRoute := apiRouter.Group("/autorouter")
+		autoRouterRoute.Use(middleware.RootAuth())
+		{
+			autoRouterRoute.GET("/status", controller.GetAutoRouterStatus)
+			autoRouterRoute.GET("/ranking", controller.GetAutoRouterRanking)
+			autoRouterRoute.PUT("/ranking", controller.UpdateAutoRouterRanking)
+			autoRouterRoute.POST("/ranking/refresh", controller.RefreshAutoRouterRanking)
+			autoRouterRoute.POST("/ranking/restore", controller.RestoreAutoRouterRanking)
+		}
+
+		// 选路日志只读，和使用日志一样管理员可看。
+		autoRouteLogRoute := apiRouter.Group("/auto-route-logs")
+		autoRouteLogRoute.Use(middleware.AdminAuth())
+		{
+			autoRouteLogRoute.GET("/", controller.GetAutoRouteLogs)
+			autoRouteLogRoute.GET("/:request_id", controller.GetAutoRouteLog)
 		}
 
 		// Deployments (model deployment management)

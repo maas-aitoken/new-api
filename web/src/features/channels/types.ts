@@ -42,11 +42,7 @@ export const channelSchema = z.object({
   test_model: z.string().nullish(),
   status: z.number(), // 1: enabled, 0: manual disabled, 2: auto disabled
   name: z.string(),
-  provider_slug: z.string().nullish(),
   weight: z.number().nullish(),
-  rpm: z.number().nullish(),
-  tpm: z.number().nullish(),
-  max_concurrency: z.number().nullish(),
   created_time: z.number(),
   test_time: z.number(),
   response_time: z.number(), // in milliseconds
@@ -98,6 +94,13 @@ export interface ChannelSettings {
   http_protocol?: 'auto' | 'http1' | string
   http2_connection_shards?: number
   cost_multiplier?: Record<string, number>
+  /** <渠道, 上游模型> 的 RPM / TPM / 并发额度，在能力设置页编辑。 */
+  model_limits?: Record<
+    string,
+    { rpm?: number; tpm?: number; max_concurrency?: number }
+  >
+  /** 上游模型 → 容量池 id，在资源池页编辑。 */
+  capacity_pools?: Record<string, number>
   tls_insecure_skip_verify?: boolean
 }
 
@@ -105,6 +108,7 @@ export interface ChannelOtherSettings {
   azure_responses_version?: string
   vertex_key_type?: 'json' | 'api_key'
   vertex_project_id?: string
+  vertex_api_version?: 'v1' | 'v1beta1'
   openrouter_enterprise?: boolean
   aws_key_type?: 'ak_sk' | 'api_key'
   aws_api_type?: 'invoke_model' | 'mantle'
@@ -397,9 +401,6 @@ export interface ChannelFormData {
   model_mapping?: string
   priority?: number
   weight?: number
-  rpm?: number
-  tpm?: number
-  max_concurrency?: number
   test_model?: string
   auto_ban?: number
   status: number

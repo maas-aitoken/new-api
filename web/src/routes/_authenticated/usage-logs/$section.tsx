@@ -61,6 +61,7 @@ const usageLogsSearchSchema = z.object({
   requestId: z.string().optional().catch(''),
   upstreamRequestId: z.string().optional().catch(''),
   iselfEmail: z.string().optional().catch(''),
+  autoRouted: z.enum(['only', 'exclude']).optional().catch(undefined),
   startTime: z.number().optional(),
   endTime: z.number().optional(),
 })

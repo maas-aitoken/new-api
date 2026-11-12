@@ -107,3 +107,14 @@ export function replaceModelInPath(path: string, modelName: string): string {
 export function isTokenBasedModel(model: PricingModel): boolean {
   return model.quota_type === QUOTA_TYPE_VALUES.TOKEN
 }
+
+/**
+ * Display value of a channel-model cost multiplier. Unset or invalid values
+ * fall back to 1; at most four decimals are shown.
+ */
+export function formatCostMultiplier(value?: number): string {
+  if (value == null || !Number.isFinite(value) || value <= 0) {
+    return '1'
+  }
+  return String(Number(value.toFixed(4)))
+}
