@@ -165,6 +165,65 @@ func TestGetUsageAnalyticsGroupByModel(t *testing.T) {
 	}, result.Rows)
 }
 
+func TestGetUsageAnalyticsForExternalPlatform(t *testing.T) {
+	resetUsageAnalyticsState(t)
+	require.NoError(t, DB.AutoMigrate(&ExternalQuotaData{}))
+	require.NoError(t, DB.Exec("DELETE FROM external_quota_data").Error)
+	t.Cleanup(func() { DB.Exec("DELETE FROM external_quota_data") })
+	// users also has quota and created_at columns.
+	require.NoError(t, DB.Create(&User{Id: 11, Username: "alice", Password: "password-1", AffCode: "aff-alice", Quota: 777,
+		SecondaryOrganization: "BU-A", TertiaryOrganization: "Core", Team: "Core"}).Error)
+	require.NoError(t, DB.Create(&User{Id: 12, Username: "bob", Password: "password-2", AffCode: "aff-bob", Quota: 888,
+		SecondaryOrganization: "BU-B", TertiaryOrganization: "Core", Team: "Web"}).Error)
+	rows := []ExternalQuotaData{
+		{Platform: "us", LocalUserID: 11, RemoteUsername: "alice", ModelName: "model-a", RemoteChannelID: 1, CreatedAt: analyticsH1, Count: 2, Quota: 100},
+		{Platform: "us", LocalUserID: 11, RemoteUsername: "alice", ModelName: "model-b", RemoteChannelID: 2, CreatedAt: analyticsH2, Count: 1, Quota: 50},
+		{Platform: "us", LocalUserID: 12, RemoteUsername: "bob", ModelName: "model-a", RemoteChannelID: 1, CreatedAt: analyticsH2, Count: 3, Quota: 200},
+		{Platform: "jp", LocalUserID: 11, RemoteUsername: "alice", ModelName: "model-a", CreatedAt: analyticsH1, Count: 9, Quota: 999},
+		{Platform: "us", LocalUserID: 11, RemoteUsername: "alice", ModelName: "model-a", CreatedAt: analyticsH3 + 3600, Count: 9, Quota: 999},
+	}
+	require.NoError(t, DB.Create(&rows).Error)
+
+	for _, tt := range []struct {
+		groupBy string
+		rows    int
+	}{
+		{UsageAnalyticsGroupModel, 2}, {UsageAnalyticsGroupUser, 2}, {UsageAnalyticsGroupUserModel, 3},
+		{UsageAnalyticsGroupModelChannel, 2}, {UsageAnalyticsGroupBusinessUnit, 2},
+		{UsageAnalyticsGroupDepartment, 2}, {UsageAnalyticsGroupTeam, 2},
+	} {
+		result, err := GetUsageAnalytics(UsageAnalyticsParams{Start: analyticsH1, End: analyticsH3, GroupBy: tt.groupBy, Platform: "us"})
+		require.NoError(t, err, tt.groupBy)
+		require.Len(t, result.Rows, tt.rows, tt.groupBy)
+		total := int64(0)
+		for _, row := range result.Rows {
+			total += row.Quota
+		}
+		assert.Equal(t, int64(350), total, tt.groupBy)
+		assert.GreaterOrEqual(t, result.Rows[0].Quota, result.Rows[len(result.Rows)-1].Quota, tt.groupBy)
+	}
+
+	for _, tt := range []struct {
+		name            string
+		params          UsageAnalyticsParams
+		requests, quota int64
+	}{
+		{"all", UsageAnalyticsParams{}, 6, 350},
+		{"self", UsageAnalyticsParams{UserID: 11}, 3, 150},
+		{"managed people", UsageAnalyticsParams{UserIDs: []int{12}}, 3, 200},
+		{"model", UsageAnalyticsParams{ModelName: "model-b"}, 1, 50},
+		{"business unit", UsageAnalyticsParams{Org: UsageOrgFilter{BusinessUnit: "BU-B"}}, 3, 200},
+	} {
+		params := tt.params
+		params.Start, params.End, params.GroupBy, params.Platform = analyticsH1, analyticsH3, UsageAnalyticsGroupSummary, "us"
+		result, err := GetUsageAnalytics(params)
+		require.NoError(t, err, tt.name)
+		require.NotNil(t, result.Summary, tt.name)
+		assert.Equal(t, tt.requests, result.Summary.RequestCount, tt.name)
+		assert.Equal(t, tt.quota, result.Summary.Quota, tt.name)
+	}
+}
+
 func TestGetUsageAnalyticsGroupByUserJoinsUserAttributes(t *testing.T) {
 	resetUsageAnalyticsState(t)
 	seedUsageAnalyticsFixture(t)

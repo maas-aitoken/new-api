@@ -23,19 +23,20 @@ type externalUsageAnalyticsRow struct {
 	OrgPath      string `gorm:"column:org_path"`
 }
 
-const externalUsageMetricsSelect = "COALESCE(SUM(count), 0) AS request_count, " +
-	"COALESCE(SUM(quota), 0) AS quota, " +
-	"COALESCE(SUM(token_used), 0) AS token_used, " +
-	"COALESCE(SUM(input_tokens), 0) AS input_tokens, " +
-	"COALESCE(SUM(completion_tokens), 0) AS completion_tokens, " +
-	"COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens, " +
-	"COALESCE(SUM(cache_write_tokens), 0) AS cache_write_tokens, " +
-	"COALESCE(SUM(use_time_total), 0) AS use_time_total, " +
-	"COALESCE(SUM(use_time_count), 0) AS use_time_count, " +
-	"COALESCE(SUM(stream_error_count), 0) AS stream_error_count, " +
-	"COALESCE(SUM(failed_count), 0) AS failed_count, " +
-	"COALESCE(SUM(tracked_count), 0) AS tracked_count, " +
-	"COALESCE(MAX(last_called_at), 0) AS last_called_at"
+// Columns are qualified because users is joined.
+const externalUsageMetricsSelect = "COALESCE(SUM(external_quota_data.count), 0) AS request_count, " +
+	"COALESCE(SUM(external_quota_data.quota), 0) AS quota, " +
+	"COALESCE(SUM(external_quota_data.token_used), 0) AS token_used, " +
+	"COALESCE(SUM(external_quota_data.input_tokens), 0) AS input_tokens, " +
+	"COALESCE(SUM(external_quota_data.completion_tokens), 0) AS completion_tokens, " +
+	"COALESCE(SUM(external_quota_data.cache_read_tokens), 0) AS cache_read_tokens, " +
+	"COALESCE(SUM(external_quota_data.cache_write_tokens), 0) AS cache_write_tokens, " +
+	"COALESCE(SUM(external_quota_data.use_time_total), 0) AS use_time_total, " +
+	"COALESCE(SUM(external_quota_data.use_time_count), 0) AS use_time_count, " +
+	"COALESCE(SUM(external_quota_data.stream_error_count), 0) AS stream_error_count, " +
+	"COALESCE(SUM(external_quota_data.failed_count), 0) AS failed_count, " +
+	"COALESCE(SUM(external_quota_data.tracked_count), 0) AS tracked_count, " +
+	"COALESCE(MAX(external_quota_data.last_called_at), 0) AS last_called_at"
 
 const externalUsageUserAttributesSelect = "COALESCE(MAX(users.display_name), '') AS display_name, " +
 	"COALESCE(MAX(users.avatar), '') AS avatar, COALESCE(MAX(users.email), '') AS email, " +
@@ -47,16 +48,16 @@ func getExternalUsageAnalytics(params UsageAnalyticsParams) (*UsageAnalyticsResu
 		return nil, fmt.Errorf("external usage query requires a platform")
 	}
 	query := DB.Table("external_quota_data").
-		Where("platform = ? AND created_at >= ? AND created_at <= ?", platform, params.Start, params.End)
+		Where("external_quota_data.platform = ? AND external_quota_data.created_at >= ? AND external_quota_data.created_at <= ?", platform, params.Start, params.End)
 	query = query.Joins("LEFT JOIN users ON users.id = external_quota_data.local_user_id AND users.deleted_at IS NULL")
 	if params.UserID > 0 {
-		query = query.Where("local_user_id = ?", params.UserID)
+		query = query.Where("external_quota_data.local_user_id = ?", params.UserID)
 	}
 	if params.UserIDs != nil {
-		query = query.Where("local_user_id IN ?", params.UserIDs)
+		query = query.Where("external_quota_data.local_user_id IN ?", params.UserIDs)
 	}
 	if params.ModelName = strings.TrimSpace(params.ModelName); params.ModelName != "" {
-		query = query.Where("model_name = ?", params.ModelName)
+		query = query.Where("external_quota_data.model_name = ?", params.ModelName)
 	}
 	if !params.Org.IsZero() {
 		query = params.Org.apply(query)
@@ -75,25 +76,25 @@ func getExternalUsageAnalytics(params UsageAnalyticsParams) (*UsageAnalyticsResu
 	groupBy := ""
 	switch params.GroupBy {
 	case UsageAnalyticsGroupModel:
-		selects = "model_name, COUNT(DISTINCT local_user_id) AS user_count, " + selects
-		groupBy = "model_name"
+		selects = "external_quota_data.model_name AS model_name, COUNT(DISTINCT external_quota_data.local_user_id) AS user_count, " + selects
+		groupBy = "external_quota_data.model_name"
 	case UsageAnalyticsGroupUser:
-		selects = "local_user_id AS user_id, MAX(remote_username) AS username, " + externalUsageUserAttributesSelect + ", " + selects
-		groupBy = "local_user_id"
+		selects = "external_quota_data.local_user_id AS user_id, MAX(external_quota_data.remote_username) AS username, " + externalUsageUserAttributesSelect + ", " + selects
+		groupBy = "external_quota_data.local_user_id"
 	case UsageAnalyticsGroupUserModel:
-		selects = "local_user_id AS user_id, MAX(remote_username) AS username, model_name, " + externalUsageUserAttributesSelect + ", " + selects
-		groupBy = "local_user_id, model_name"
+		selects = "external_quota_data.local_user_id AS user_id, MAX(external_quota_data.remote_username) AS username, external_quota_data.model_name AS model_name, " + externalUsageUserAttributesSelect + ", " + selects
+		groupBy = "external_quota_data.local_user_id, external_quota_data.model_name"
 	case UsageAnalyticsGroupModelChannel:
-		selects = "model_name, remote_channel_id AS channel_id, MAX(remote_channel_name) AS channel_name, " + selects
-		groupBy = "model_name, remote_channel_id"
+		selects = "external_quota_data.model_name AS model_name, external_quota_data.remote_channel_id AS channel_id, MAX(external_quota_data.remote_channel_name) AS channel_name, " + selects
+		groupBy = "external_quota_data.model_name, external_quota_data.remote_channel_id"
 	case UsageAnalyticsGroupBusinessUnit:
-		selects = "COALESCE(MAX(users.secondary_organization), '') AS business_unit, COUNT(DISTINCT local_user_id) AS user_count, " + selects
+		selects = "COALESCE(MAX(users.secondary_organization), '') AS business_unit, COUNT(DISTINCT external_quota_data.local_user_id) AS user_count, " + selects
 		groupBy = "users.secondary_organization"
 	case UsageAnalyticsGroupDepartment:
-		selects = "COALESCE(MAX(users.secondary_organization), '') AS business_unit, COALESCE(MAX(users.tertiary_organization), '') AS department, COUNT(DISTINCT local_user_id) AS user_count, " + selects
+		selects = "COALESCE(MAX(users.secondary_organization), '') AS business_unit, COALESCE(MAX(users.tertiary_organization), '') AS department, COUNT(DISTINCT external_quota_data.local_user_id) AS user_count, " + selects
 		groupBy = "users.secondary_organization, users.tertiary_organization"
 	case UsageAnalyticsGroupTeam:
-		selects = "COALESCE(MAX(users.secondary_organization), '') AS business_unit, COALESCE(MAX(users.tertiary_organization), '') AS department, COALESCE(MAX(users.team), '') AS team, COUNT(DISTINCT local_user_id) AS user_count, " + selects
+		selects = "COALESCE(MAX(users.secondary_organization), '') AS business_unit, COALESCE(MAX(users.tertiary_organization), '') AS department, COALESCE(MAX(users.team), '') AS team, COUNT(DISTINCT external_quota_data.local_user_id) AS user_count, " + selects
 		groupBy = "users.secondary_organization, users.tertiary_organization, users.team"
 	default:
 		return nil, fmt.Errorf("unsupported external group_by: %s", params.GroupBy)
