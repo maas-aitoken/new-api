@@ -84,6 +84,7 @@ func runUsageAnalyticsDialectSuite(t *testing.T, dbType common.DatabaseType, mai
 		"iself usage":                TestGetIselfUsageAnalytics,
 		"iself cache tokens":         TestGetIselfUsageAnalyticsCacheTokens,
 		"iself attribution":          TestIselfUsageIsAttributedToTheEmailAccount,
+		"external platform":          TestGetUsageAnalyticsForExternalPlatform,
 	} {
 		t.Run(name, run)
 	}
