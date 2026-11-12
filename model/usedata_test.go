@@ -173,7 +173,7 @@ func TestLegacyQuotaDataReadersSkipFailureOnlyRows(t *testing.T) {
 	resetUsageAnalyticsState(t)
 	hour := int64(36000)
 	rows := []QuotaData{
-		{UserID: 1, Username: "alice", ModelName: "gpt-a", UseGroup: "default", CreatedAt: hour, Count: 2, Quota: 100, TokenUsed: 50, CacheReadTokens: 12, CacheCreationTokens: 7, LastCalledAt: hour + 1},
+		{UserID: 1, Username: "alice", ModelName: "gpt-a", UseGroup: "default", CreatedAt: hour, Count: 2, Quota: 100, TokenUsed: 50, InputTokens: 30, CompletionTokens: 20, CacheReadTokens: 12, CacheWriteTokens: 7, CacheCreationTokens: 7, UseTimeTotal: 9, UseTimeCount: 2, LastCalledAt: hour + 1},
 		{UserID: 1, Username: "alice", ModelName: "gpt-broken", UseGroup: "default", CreatedAt: hour, FailedCount: 3, LastCalledAt: hour + 2},
 		{UserID: 2, Username: "bob", ModelName: "gpt-a", UseGroup: "default", CreatedAt: hour, FailedCount: 1, LastCalledAt: hour + 3},
 	}
@@ -192,6 +192,17 @@ func TestLegacyQuotaDataReadersSkipFailureOnlyRows(t *testing.T) {
 	byUsername, err := GetAllQuotaDates(hour, hour+3600, "bob", UsageOrgFilter{})
 	require.NoError(t, err)
 	assert.Empty(t, byUsername)
+
+	alice, err := GetAllQuotaDates(hour, hour+3600, "alice", UsageOrgFilter{})
+	require.NoError(t, err)
+	require.Len(t, alice, 1)
+	assert.Equal(t, 30, alice[0].InputTokens)
+	assert.Equal(t, 20, alice[0].CompletionTokens)
+	assert.Equal(t, 7, alice[0].CacheWriteTokens)
+	assert.Equal(t, int64(9), alice[0].UseTimeTotal)
+	assert.Equal(t, int64(2), alice[0].UseTimeCount)
+	assert.Equal(t, int64(hour+1), alice[0].LastCalledAt)
+	assert.Zero(t, alice[0].FailedCount)
 
 	byUserID, err := GetQuotaDataByUserId(1, hour, hour+3600)
 	require.NoError(t, err)
