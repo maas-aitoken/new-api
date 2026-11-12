@@ -32,6 +32,7 @@ func setupModelSquareControllerTest(t *testing.T) *gorm.DB {
 	))
 	model.DB = db
 	model.InvalidatePricingCache()
+	model.InvalidateCapabilityCache()
 	t.Cleanup(func() {
 		model.DB = previousDB
 		model.InvalidatePricingCache()
@@ -120,7 +121,7 @@ func TestGetModelSquareDetailExposesCapabilityDerivedFields(t *testing.T) {
 		require.NoError(t, db.Create(&model.Option{Key: key, Value: value}).Error)
 	}
 	model.InvalidatePricingCache()
-	model.InvalidateCapabilityCache()
+	require.NoError(t, model.InitCapabilityCache())
 
 	gin.SetMode(gin.TestMode)
 	recorder := httptest.NewRecorder()
