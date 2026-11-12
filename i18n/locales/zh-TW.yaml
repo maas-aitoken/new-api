@@ -85,9 +85,10 @@ notify.quota_low_gotify: "{{.Prompt}}，目前剩餘額度為 {{.Quota}}，請�
 notify.quota_low_email: "{{.Prompt}}，目前剩餘額度為 {{.Quota}}，為了不影響您的使用，請及時儲值。<br/>儲值連結：<a href='{{.Link}}'>{{.Link}}</a>"
 
 # Quota increase notices sent to the cloud platform
-notify.quota_increased: "【{{.SystemName}}】{{.Name}}（{{.Email}}）申請提額，額度已由 {{.From}} 提升至 {{.To}}"
-notify.quota_increased_first: "【{{.SystemName}}】{{.Name}}（{{.Email}}）申請提額，額度已提升至 {{.To}}"
+notify.quota_increased: "【Maas平台使用者提額通知】{{.Name}}申請提額，額度已由 {{.From}} 提升至 {{.To}}"
+notify.quota_increased_first: "【Maas平台使用者提額通知】{{.Name}}申請提額，額度已提升至 {{.To}}"
 notify.quota_unlimited: "不限"
+notify.quota_usage_alert: "【Maas平台提額使用提醒】目前使用額度已超過{{.Percent}}%，已使用 {{.Used}}，還剩餘 {{.Remaining}}。超額後只能使用智慧路由模型（只用智慧路由可忽略本提醒；需要繼續使用其他模型，請到Maas平台申請提額）"
 
 # Channel notices sent to administrators who receive them and to model update watchers
 channel.notify_disabled_subject: "管道「{{.Name}}」（#{{.Id}}）已被停用"

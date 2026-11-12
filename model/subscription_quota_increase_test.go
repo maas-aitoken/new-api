@@ -45,7 +45,7 @@ func TestIncreaseUserSubscriptionQuota(t *testing.T) {
 				db = openDialectAnalyticsDB(t, dialect.dbType, dsn)
 			}
 			useDialectAnalyticsDB(t, db, db, dialect.dbType)
-			require.NoError(t, db.AutoMigrate(&SubscriptionPlan{}, &UserSubscription{}, &SubscriptionPreConsumeRecord{}))
+			require.NoError(t, db.AutoMigrate(&SubscriptionPlan{}, &UserSubscription{}, &SubscriptionPreConsumeRecord{}, &SubscriptionUsageAlert{}))
 			operation_setting.SetQuotaTierEnabled(true)
 			t.Cleanup(func() { operation_setting.SetQuotaTierEnabled(false) })
 			for name, run := range map[string]func(*testing.T){
@@ -55,10 +55,11 @@ func TestIncreaseUserSubscriptionQuota(t *testing.T) {
 				"does not assign legacy users":    testQuotaTierSkipsLegacyUser,
 				"serves only auto past the quota": testQuotaTierServesOnlyAutoPastQuota,
 				"admin changes the plan in place": testAdminChangesSubscriptionPlanInPlace,
+				"usage alert once per crossing":   testSubscriptionUsageAlertOncePerCrossing,
 			} {
 				operation_setting.SetQuotaTierEnabled(true)
 				// Plans of one case would join the tier ladder of the next.
-				for _, table := range []string{"users", "tokens", "logs", "quota_data", "subscription_plans", "user_subscriptions", "subscription_pre_consume_records"} {
+				for _, table := range []string{"users", "tokens", "logs", "quota_data", "subscription_plans", "user_subscriptions", "subscription_pre_consume_records", "subscription_usage_alerts"} {
 					require.NoError(t, db.Exec("DELETE FROM "+table).Error)
 				}
 				t.Run(name, run)
@@ -376,4 +377,56 @@ func testAdminChangesSubscriptionPlanInPlace(t *testing.T) {
 		assert.EqualValues(t, 800, subs[0].AmountUsed)
 		assert.Equal(t, first.EndTime, subs[0].EndTime)
 	}
+}
+
+func testSubscriptionUsageAlertOncePerCrossing(t *testing.T) {
+	now := GetDBTimestamp()
+	seed := func(name string, total, used int64, mutate func(*UserSubscription)) UserSubscription {
+		user := User{Username: name, Password: "unused-password-hash", AffCode: "aff-" + name, Status: common.UserStatusEnabled, Group: "default"}
+		require.NoError(t, DB.Create(&user).Error)
+		sub := UserSubscription{UserId: user.Id, PlanId: 1, AmountTotal: total, AmountUsed: used, Status: "active",
+			StartTime: now - 3600, EndTime: now + 86400, Source: SubscriptionSourceQuotaTier}
+		if mutate != nil {
+			mutate(&sub)
+		}
+		require.NoError(t, DB.Create(&sub).Error)
+		return sub
+	}
+	heavy := seed("usage-heavy", 1000, 950, nil)
+	seed("usage-at-ninety", 1000, 900, nil)
+	seed("usage-unlimited", 0, 5000, nil)
+	seed("usage-due-reset", 1000, 990, func(s *UserSubscription) { s.NextResetTime = now - 60 })
+	seed("usage-expired", 1000, 990, func(s *UserSubscription) { s.EndTime = now - 60 })
+	due := func() []int {
+		subs, err := DueSubscriptionUsageAlerts(90)
+		require.NoError(t, err)
+		ids := []int{}
+		for _, sub := range subs {
+			ids = append(ids, sub.Id)
+		}
+		return ids
+	}
+	alerts := func() int64 {
+		var count int64
+		require.NoError(t, DB.Model(&SubscriptionUsageAlert{}).Count(&count).Error)
+		return count
+	}
+
+	require.Equal(t, []int{heavy.Id}, due())
+	require.NoError(t, RecordSubscriptionUsageAlert(&heavy))
+	assert.Empty(t, due())
+
+	// A raised quota still past 90% is a new crossing.
+	require.NoError(t, DB.Model(&heavy).Update("amount_total", 1050).Error)
+	heavy.AmountTotal = 1050
+	require.Equal(t, []int{heavy.Id}, due())
+	require.NoError(t, RecordSubscriptionUsageAlert(&heavy))
+	assert.Empty(t, due())
+
+	// Back under 90% drops the record; the next crossing notifies again.
+	require.NoError(t, DB.Model(&heavy).Update("amount_used", 0).Error)
+	assert.Empty(t, due())
+	assert.Zero(t, alerts())
+	require.NoError(t, DB.Model(&heavy).Update("amount_used", 1000).Error)
+	assert.Equal(t, []int{heavy.Id}, due())
 }

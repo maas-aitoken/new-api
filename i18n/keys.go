@@ -109,6 +109,7 @@ const (
 	MsgNotifyQuotaIncreased      = "notify.quota_increased"
 	MsgNotifyQuotaIncreasedFirst = "notify.quota_increased_first"
 	MsgNotifyQuotaUnlimited      = "notify.quota_unlimited"
+	MsgNotifyQuotaUsageAlert     = "notify.quota_usage_alert"
 )
 
 // Channel notices sent to administrators who receive them and to model update

@@ -38,6 +38,28 @@ func RegisterScheduledSystemTasks() {
 	service.RegisterSystemTaskHandler(autoRouterRankHandler{})
 	service.RegisterSystemTaskHandler(ssoUserSyncHandler{})
 	service.RegisterSystemTaskHandler(externalUsageSyncHandler{})
+	service.RegisterSystemTaskHandler(subscriptionUsageAlertHandler{})
+}
+
+type subscriptionUsageAlertHandler struct{}
+
+func (subscriptionUsageAlertHandler) Type() string { return model.SystemTaskTypeSubscriptionUsage }
+
+func (subscriptionUsageAlertHandler) Enabled() bool {
+	return operation_setting.IsQuotaTierEnabled() && common.QuotaIncreaseNotifyUrl != ""
+}
+
+func (subscriptionUsageAlertHandler) Interval() time.Duration { return 10 * time.Minute }
+
+func (subscriptionUsageAlertHandler) NewPayload() any { return nil }
+
+func (subscriptionUsageAlertHandler) Run(ctx context.Context, task *model.SystemTask, runnerID string) {
+	result, err := service.NotifySubscriptionUsage(ctx)
+	status := model.SystemTaskStatusSucceeded
+	if err != nil {
+		status = model.SystemTaskStatusFailed
+	}
+	finishSystemTaskHandler(task, runnerID, status, result, err)
 }
 
 type externalUsageSyncHandler struct{}

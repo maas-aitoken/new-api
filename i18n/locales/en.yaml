@@ -84,9 +84,10 @@ notify.quota_low_gotify: "{{.Prompt}}. Your remaining quota is {{.Quota}}. Pleas
 notify.quota_low_email: "{{.Prompt}}. Your remaining quota is {{.Quota}}. Top up soon to keep using the service.<br/>Top-up link: <a href='{{.Link}}'>{{.Link}}</a>"
 
 # Quota increase notices sent to the cloud platform
-notify.quota_increased: "[{{.SystemName}}] {{.Name}} ({{.Email}}) requested a quota increase. The quota has been raised from {{.From}} to {{.To}}"
-notify.quota_increased_first: "[{{.SystemName}}] {{.Name}} ({{.Email}}) requested a quota increase. The quota has been raised to {{.To}}"
+notify.quota_increased: "[Maas quota increase notice] {{.Name}} requested a quota increase. The quota has been raised from {{.From}} to {{.To}}"
+notify.quota_increased_first: "[Maas quota increase notice] {{.Name}} requested a quota increase. The quota has been raised to {{.To}}"
 notify.quota_unlimited: "Unlimited"
+notify.quota_usage_alert: "[Maas quota usage reminder] More than {{.Percent}}% of the quota is used: {{.Used}} used, {{.Remaining}} left. Past the quota only smart routing models are available (ignore this if smart routing is enough; to keep using other models, request a quota increase on the Maas platform)"
 
 # Channel notices sent to administrators who receive them and to model update watchers
 channel.notify_disabled_subject: "Channel \"{{.Name}}\" (#{{.Id}}) has been disabled"
