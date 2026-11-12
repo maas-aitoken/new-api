@@ -48,7 +48,12 @@ type tokenProjectPageResponse struct {
 func setupProjectViewDB(t *testing.T) *gorm.DB {
 	t.Helper()
 	db := setupTokenControllerTestDB(t)
-	require.NoError(t, db.AutoMigrate(&model.User{}, &model.UserLeader{}))
+	// 业务视图的可见范围要查这四张表：用户、汇报链，以及
+	// users/permissions 配的两种授权。
+	require.NoError(t, db.AutoMigrate(
+		&model.User{}, &model.UserLeader{},
+		&model.UserDataScope{}, &model.UserDataScopeOrg{},
+	))
 
 	for id, name := range map[int]string{
 		ownerID: "owner", memberID: "member", leaderID: "leader", strangerD: "stranger",
@@ -143,6 +148,40 @@ func TestTokenViewScopes(t *testing.T) {
 			assert.ElementsMatch(t, tc.want, names)
 			assert.Equal(t, len(tc.want), page.Total, "total 要和过滤后的行数一致")
 		})
+	}
+}
+
+// TestBusinessViewHonorsGrantedScope 锁住 users/permissions 配的授权在业务视图里生效。
+// 只认 SSO 汇报链的话，管理员配了「能管某个部门」的人在密钥页看不到那些 Key，
+// 而在用量分析里看得到 —— 同一个「我管哪些人」在两个页面给出不同答案。
+func TestBusinessViewHonorsGrantedScope(t *testing.T) {
+	db := setupProjectViewDB(t)
+	// strangerD 和 ownerID 之间没有任何汇报关系。
+	seedViewToken(t, db, "owner-business", ownerID, common.TokenSceneBusiness, nil)
+	seedViewToken(t, db, "owner-office", ownerID, common.TokenSceneOffice, nil)
+
+	// 授权前：看不到。
+	page := listTokensAs(t, strangerD, "&view=business")
+	assert.Empty(t, page.Items, "没有授权时看不到别人的 Key")
+
+	// 管理员在 users/permissions 里把 ownerID 指派给 strangerD。
+	require.NoError(t, db.Create(&model.UserDataScope{
+		ManagerId: strangerD, MemberId: ownerID, CreatedAt: 1,
+	}).Error)
+
+	page = listTokensAs(t, strangerD, "&view=business")
+	require.Len(t, page.Items, 1, "授权后业务 Key 可见")
+	assert.Equal(t, "owner-business", page.Items[0].Name)
+	assert.Equal(t, common.TokenRoleLeader, page.Items[0].MyRole)
+
+	// 可见范围和可操作范围必须一致：能看到就该能启停、能取明文。
+	response := callAs(t, strangerD, http.MethodPut, "/api/token/?status_only=true",
+		map[string]any{"id": page.Items[0].ID, "status": common.TokenStatusDisabled}, UpdateToken)
+	assert.True(t, response.Success, "列表里看得见的行必须能操作: %s", response.Message)
+
+	// 但办公 Key 仍然不可见 —— 它花的是持有人的个人配额。
+	for _, item := range page.Items {
+		assert.NotEqual(t, "owner-office", item.Name, "授权不把办公 Key 带进业务视图")
 	}
 }
 

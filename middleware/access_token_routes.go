@@ -255,6 +255,10 @@ var accessTokenRouteRules = map[string]accessTokenRouteRule{
 	"DELETE /api/token/:id":                 accessTokenScopeRule("api_key:write"),
 	"POST /api/token/batch":                 accessTokenScopeRule("api_key:write"),
 	"POST /api/token/batch/keys":            accessTokenScopeRule("api_key:reveal"),
+	"GET /api/token/admin":                  accessTokenSessionRule,
+	"PATCH /api/token/admin/:id/status":     accessTokenSessionRule,
+	"PATCH /api/token/admin/:id/rate-limit": accessTokenSessionRule,
+	"DELETE /api/token/admin/:id":           accessTokenSessionRule,
 
 	// router/api-router.go: /api/redemption
 	"GET /api/redemption/":           accessTokenScopeRule("redemption:read"),
