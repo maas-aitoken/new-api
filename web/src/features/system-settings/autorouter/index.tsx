@@ -34,6 +34,7 @@ const defaultAutoRouterSettings: AutoRouterSettings = {
   'autorouter_setting.cache_ttl_seconds': 7200,
   'autorouter_setting.default_preference': 'balanced',
   'autorouter_setting.cost_weights': '{}',
+  'autorouter_setting.capacity_pricing': '{}',
   'autorouter_setting.continuation_task_change': 0.5,
   'autorouter_setting.upgrade_benefit': 0.5,
   'autorouter_setting.default_effort': 'medium',
