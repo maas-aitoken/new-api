@@ -159,6 +159,13 @@ export type RouteTraceValidity = {
   profiles?: string[]
 }
 
+export type RoutePreviousPressure = {
+  model: string
+  pressure: number
+  knee: number
+  reused: boolean
+}
+
 export type RouteTraceContinuation = {
   previous: string
   task_change: number
@@ -206,6 +213,8 @@ export type RouteTrace = {
   validity?: RouteTraceValidity
   mode?: RouteTraceMode
   continuation?: RouteTraceContinuation
+  /** 沿用上一轮模型前的池压力检查；reused 为 false 表示超过膝点，改为重新比较。 */
+  previous_pressure?: RoutePreviousPressure
   effort?: RouteTraceEffort
   ladder?: RouteTraceStep[]
 }

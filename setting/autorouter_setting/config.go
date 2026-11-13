@@ -241,6 +241,7 @@ func (s *AutoRouterSetting) Policy(preference string) autorouter.Policy {
 		Balanced:   s.costWeight(autorouter.PreferenceBalanced),
 		Cost:       s.costWeight(autorouter.PreferenceCost),
 	}
+	pricing := s.CapacityPricing.Sanitized()
 	return autorouter.Policy{
 		TaskModels:             ranking.TaskModels,
 		DefaultModels:          ranking.DefaultModels,
@@ -252,6 +253,8 @@ func (s *AutoRouterSetting) Policy(preference string) autorouter.Policy {
 		Preference:             preference,
 		CostWeight:             tiers.Of(preference),
 		Tiers:                  tiers,
+		CapacityPricing:        pricing.Enabled,
+		CapacityKnee:           pricing.Knee,
 	}
 }
 

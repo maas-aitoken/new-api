@@ -36,7 +36,12 @@ import {
   skipReasonLabel,
 } from './labels'
 import { StepFrame, ToneBadge } from './route-process-parts'
-import type { RoutePick, RoutePickCandidate, RouteTraceStep } from './types'
+import type {
+  RoutePick,
+  RoutePickCandidate,
+  RoutePreviousPressure,
+  RouteTraceStep,
+} from './types'
 
 const priceFormat = { digitsLarge: 4, digitsSmall: 6, abbreviate: false }
 
@@ -247,6 +252,7 @@ function StepSummary(props: { step: RouteTraceStep }) {
 export function SelectionStep(props: {
   ladder: RouteTraceStep[]
   pick?: RoutePick
+  pressure?: RoutePreviousPressure
 }) {
   const { t } = useTranslation()
   // A ranking that compares successfully ends the walk, so at most one step did.
@@ -264,6 +270,25 @@ export function SelectionStep(props: {
 
   return (
     <StepFrame icon={ListOrdered} title={t('Model selection')}>
+      {props.pressure && !props.pressure.reused && (
+        <p className='text-muted-foreground text-xs'>
+          {t(
+            'Previous model {{model}} was not reused: pool pressure {{value}} exceeds the knee {{knee}}.',
+            {
+              model: props.pressure.model,
+              value: formatScore(props.pressure.pressure),
+              knee: formatScore(props.pressure.knee),
+            }
+          )}
+        </p>
+      )}
+      {props.pressure?.reused && (
+        <p className='text-muted-foreground text-xs'>
+          {t('Previous model {{model}} is within the no-premium knee.', {
+            model: props.pressure.model,
+          })}
+        </p>
+      )}
       {rows.map((row) => (
         <div key={row.key} className='space-y-2'>
           <StepSummary step={row.step} />

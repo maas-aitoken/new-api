@@ -93,7 +93,11 @@ type Candidates struct {
 	// ignoreClientReasoning 与判定可用时的口径一致，主机据此找出真正服务请求的模型名和渠道。
 	// 结果里没有的模型按 Price 比较；为 nil 时只比较 Price。费用倍率不参与计费，只影响这里的选择。
 	// preview 是这次问调度器预览的结果（问没问、为什么没拿到回答），记进 Pick；没配调度器时为 nil。
-	Costs func(models []string, effort string, ignoreClientReasoning bool) (costs map[string]Cost, preview *PreviewOutcome)
+	// CapacityPressure 只读地返回一个模型首次会落到的池子的压力，用于沿用上一轮模型前
+	// 判断要不要改为重新比较。known 为 false 表示没有容量信号（没配额度或功能关闭），
+	// 调用方照旧沿用。它不走调度器预览，也不报价，比 Costs 便宜。
+	CapacityPressure func(model string, effort string, ignoreClientReasoning bool) (pressure float64, known bool)
+	Costs            func(models []string, effort string, ignoreClientReasoning bool) (costs map[string]Cost, preview *PreviewOutcome)
 }
 
 // Cost 是一个候选模型的比较成本。只要有这一项，Price 就以它为准。

@@ -69,8 +69,11 @@ type Trace struct {
 	Validity     *Validity     `json:"validity,omitempty"`
 	Mode         *ModeTrace    `json:"mode,omitempty"`
 	Continuation *Continuation `json:"continuation,omitempty"`
-	Effort       *EffortTrace  `json:"effort,omitempty"`
-	Ladder       []LadderStep  `json:"ladder,omitempty"`
+	// PreviousPressure 是上一轮模型的池压力检查，只在有容量信号时记录：
+	// 超过膝点就不沿用，改为重新比较。延续与继承（jev 失败、只定档位）都记在这里。
+	PreviousPressure *PreviousPressure `json:"previous_pressure,omitempty"`
+	Effort           *EffortTrace      `json:"effort,omitempty"`
+	Ladder           []LadderStep      `json:"ladder,omitempty"`
 }
 
 // ModeTrace is how an adaptive request got its cost weight. It is set only for an
@@ -125,6 +128,15 @@ type Validity struct {
 }
 
 // Continuation is the check whether the request carries on the previous task.
+// PreviousPressure 是沿用上一轮模型前的池压力检查。
+type PreviousPressure struct {
+	Model    string  `json:"model"`
+	Pressure float64 `json:"pressure"`
+	Knee     float64 `json:"knee"`
+	// Reused 为 false 表示压力超过膝点，本次没有沿用上一轮模型，改为重新比较。
+	Reused bool `json:"reused"`
+}
+
 type Continuation struct {
 	Previous   string  `json:"previous"`
 	TaskChange float64 `json:"task_change"`

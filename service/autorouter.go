@@ -144,6 +144,9 @@ type AutoCandidates struct {
 	// Costs 给候选带里的模型估算比较成本（用户价 × 首次会落到的渠道的费用倍率），连同这次问调度器
 	// 预览的结果，见 autorouter.Candidates.Costs。为 nil 时只比较用户价。
 	Costs func(names []string, effort string, ignoreClientReasoning bool) (map[string]autorouter.Cost, *autorouter.PreviewOutcome)
+	// CapacityPressure 只读地返回一个模型首次会落到的池子的压力，沿用上一轮模型前用它
+	// 判断要不要改为重新比较，见 autorouter.Candidates.CapacityPressure。为 nil 时照旧沿用。
+	CapacityPressure func(name string, effort string, ignoreClientReasoning bool) (pressure float64, known bool)
 }
 
 // ResolveAutoModel picks the model and reasoning effort for an "auto" request.
@@ -158,7 +161,7 @@ func ResolveAutoModel(c *gin.Context, candidates AutoCandidates) (*autorouter.Re
 	result := &autorouter.Result{Source: autorouter.SourceDefault, Preference: policy.Preference}
 	available := func(name string) bool { return candidates.Serves(name, false) }
 	overridable := func(name string) bool { return candidates.Serves(name, true) }
-	routing := autorouter.Candidates{Available: available, Overridable: overridable, Price: candidates.Price, Why: candidates.Why, Costs: candidates.Costs}
+	routing := autorouter.Candidates{Available: available, Overridable: overridable, Price: candidates.Price, Why: candidates.Why, Costs: candidates.Costs, CapacityPressure: candidates.CapacityPressure}
 	trace := &autorouter.Trace{Judgment: autorouter.JudgmentNoInstruction}
 	result.Trace = trace
 

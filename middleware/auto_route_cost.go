@@ -58,10 +58,7 @@ type autoCostTarget struct {
 
 func (a autoRouteCost) estimate(names []string, effort string, ignoreClientReasoning bool) (map[string]autorouter.Cost, *autorouter.PreviewOutcome) {
 	serves := func(name string) bool { return a.serves(name, ignoreClientReasoning) }
-	groups := []string{a.usingGroup}
-	if a.usingGroup == "auto" {
-		groups = service.GetRequestAutoGroups(a.c, common.GetContextKeyString(a.c, constant.ContextKeyUserGroup))
-	}
+	groups := a.billingGroups()
 	targets := make([]autoCostTarget, 0, len(names))
 	for _, name := range names {
 		serving, _, ok := service.AutoServingModel(name, effort, serves)
@@ -147,6 +144,40 @@ func (a autoRouteCost) estimate(names []string, effort string, ignoreClientReaso
 
 func (a autoRouteCost) perToken(name, group string) bool {
 	return a.quoteAt(name, group).Kind == helper.RoutingPerToken
+}
+
+func (a autoRouteCost) billingGroups() []string {
+	if a.usingGroup == "auto" {
+		return service.GetRequestAutoGroups(a.c, common.GetContextKeyString(a.c, constant.ContextKeyUserGroup))
+	}
+	return []string{a.usingGroup}
+}
+
+// pressure 只读地估一个模型首次会落到的池子有多忙，给"要不要继续沿用上一轮模型"用。
+// 它按原生选渠道的规则估，不问调度器预览、不报价；没有容量信号时 known 为 false。
+func (a autoRouteCost) pressure(name, effort string, ignoreClientReasoning bool) (float64, bool) {
+	serving, _, ok := service.AutoServingModel(name, effort, func(candidate string) bool {
+		return a.serves(candidate, ignoreClientReasoning)
+	})
+	if !ok {
+		return 0, false
+	}
+	filters := service.GetChannelConstraints(a.c).Filters
+	channelIDs := a.channelsOf(serving)
+	kept := a.gate.KeptChannels(serving, channelIDs, ignoreClientReasoning)
+	if len(kept) != len(channelIDs) {
+		filters = append(slices.Clone(filters), taskdto.ChannelFilter{Kind: taskdto.FilterCapability, AllowedChannelIDs: kept})
+	}
+	plan, ok := a.nativePlan(a.billingGroups(), autoCostTarget{name: name, serving: serving, allowed: kept, filters: filters})
+	if !ok || len(plan.shares) == 0 {
+		return 0, false
+	}
+	factors := service.CapacityCostFactors([]service.CapacityCostRequest{{Shares: plan.shares, Serving: serving}},
+		func(*model.Channel, string) float64 { return 1 })
+	if !factors[0].Known {
+		return 0, false
+	}
+	return factors[0].Pressure, true
 }
 
 // previewUnusableChannel 是调度器给了渠道、new-api 却没法按它报价时记的原因（渠道不在缓存里、

@@ -803,3 +803,35 @@ test('with no request selected the drawer stays closed and asks for nothing', ()
   expect(screen.queryByText('Routing process')).not.toBeInTheDocument()
   expect(get).not.toHaveBeenCalled()
 })
+
+test('a continuation dropped because the pool is busy shows the pressure against the knee', async () => {
+  const baseTrace = routed.detail?.trace
+  if (!baseTrace) throw new Error('the fixture has no trace')
+  mockLog({
+    ...routed,
+    detail: {
+      ...routed.detail,
+      trace: {
+        ...baseTrace,
+        continuation: {
+          previous: 'opus',
+          task_change: 0.3,
+          threshold: 0.5,
+          continued: false,
+        },
+        previous_pressure: {
+          model: 'opus',
+          pressure: 0.8,
+          knee: 0.5,
+          reused: false,
+        },
+      },
+    },
+  })
+  renderDrawer({})
+
+  expect(
+    await screen.findByText('Compared again because the pool is busy')
+  ).toBeVisible()
+  expect(screen.getByText('0.8000 against a knee of 0.5000')).toBeVisible()
+})

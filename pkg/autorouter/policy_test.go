@@ -922,3 +922,93 @@ func TestPickByQualityCostCapacityPremium(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, "top", only.Chosen)
 }
+
+// 沿用上一轮模型也要看池压力：超过膝点就改为重新比较，而不是等池子打满。
+func TestSelectRoutePreviousPressure(t *testing.T) {
+	scores := map[string]float64{"top": 0.93, "cheap": 0.87}
+	prices := map[string]float64{"top": 0.6, "cheap": 0.3}
+	policy := Policy{
+		TaskModels:             map[string][]string{"code.build": {"top", "cheap"}},
+		DefaultModels:          []string{"top", "cheap"},
+		DifficultyEfforts:      []string{"low", "medium", "high", "xhigh"},
+		DefaultEffort:          "medium",
+		ContinuationTaskChange: 0.5,
+		TaskScores: map[string]map[string]float64{
+			"code.build":   scores,
+			DefaultProfile: scores,
+		},
+		CostWeight:      0.07,
+		CapacityPricing: true,
+		CapacityKnee:    0.5,
+	}
+	candidates := Candidates{
+		Available:   func(string) bool { return true },
+		Overridable: func(string) bool { return true },
+		Price:       func(model string) (float64, bool) { return prices[model], true },
+	}
+	withPressure := func(pressure float64, known bool) Candidates {
+		view := candidates
+		view.CapacityPressure = func(model, effort string, ignoreClientReasoning bool) (float64, bool) {
+			return pressure, known
+		}
+		return view
+	}
+	previous := &Route{Profile: "code.build", Model: "top", Effort: "medium"}
+	taskChange := 0.3
+	decision := &Decision{TaskType: "code.build", TaskTypeProbability: 0.9, Difficulty: 2, TaskChange: &taskChange}
+
+	t.Run("below the knee the previous model is kept", func(t *testing.T) {
+		trace := &Trace{}
+		route, _, ok, _ := SelectRoute(decision, previous, policy, withPressure(0.4, true), trace)
+		require.True(t, ok)
+		assert.Equal(t, "top", route.Model)
+		assert.True(t, trace.Continuation.Continued)
+		assert.Equal(t, &PreviousPressure{Model: "top", Pressure: 0.4, Knee: 0.5, Reused: true}, trace.PreviousPressure)
+	})
+
+	t.Run("above the knee the request is compared again", func(t *testing.T) {
+		trace := &Trace{}
+		route, _, ok, pick := SelectRoute(decision, previous, policy, withPressure(0.8, true), trace)
+		require.True(t, ok)
+		assert.Equal(t, "cheap", route.Model)
+		assert.False(t, trace.Continuation.Continued)
+		assert.Equal(t, &PreviousPressure{Model: "top", Pressure: 0.8, Knee: 0.5, Reused: false}, trace.PreviousPressure)
+		require.NotNil(t, pick, "不延续就回到质量/价格比较")
+	})
+
+	t.Run("unknown pressure keeps the previous model", func(t *testing.T) {
+		trace := &Trace{}
+		route, _, ok, _ := SelectRoute(decision, previous, policy, withPressure(0, false), trace)
+		require.True(t, ok)
+		assert.Equal(t, "top", route.Model)
+		assert.Nil(t, trace.PreviousPressure)
+	})
+
+	t.Run("disabled pricing keeps the previous model even when busy", func(t *testing.T) {
+		disabled := policy
+		disabled.CapacityPricing = false
+		trace := &Trace{}
+		route, _, ok, _ := SelectRoute(decision, previous, disabled, withPressure(0.9, true), trace)
+		require.True(t, ok)
+		assert.Equal(t, "top", route.Model)
+		assert.Nil(t, trace.PreviousPressure)
+	})
+
+	t.Run("an inherited route is also dropped when the pool is busy", func(t *testing.T) {
+		trace := &Trace{}
+		// 没有可用判断时沿用上一轮的模型，这一路径同样受膝点约束。
+		route, inherited, ok, _ := SelectRoute(nil, previous, policy, withPressure(0.8, true), trace)
+		require.True(t, ok)
+		// inherited 表示"没有可用判断"，不代表沿用了上一轮的模型；池子忙时照样重新比较。
+		assert.True(t, inherited)
+		assert.Equal(t, "cheap", route.Model)
+		assert.Equal(t, &PreviousPressure{Model: "top", Pressure: 0.8, Knee: 0.5, Reused: false}, trace.PreviousPressure)
+
+		trace = &Trace{}
+		route, inherited, ok, _ = SelectRoute(nil, previous, policy, withPressure(0.2, true), trace)
+		require.True(t, ok)
+		assert.True(t, inherited)
+		assert.Equal(t, "top", route.Model)
+		assert.Equal(t, &PreviousPressure{Model: "top", Pressure: 0.2, Knee: 0.5, Reused: true}, trace.PreviousPressure)
+	})
+}
