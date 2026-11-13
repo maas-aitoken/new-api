@@ -93,7 +93,11 @@ type Candidates struct {
 	// ignoreClientReasoning 与判定可用时的口径一致，主机据此找出真正服务请求的模型名和渠道。
 	// 结果里没有的模型按 Price 比较；为 nil 时只比较 Price。费用倍率不参与计费，只影响这里的选择。
 	// preview 是这次问调度器预览的结果（问没问、为什么没拿到回答），记进 Pick；没配调度器时为 nil。
-	Costs func(models []string, effort string, ignoreClientReasoning bool) (costs map[string]Cost, preview *PreviewOutcome)
+	// CapacityPressure 只读地返回一个模型首次会落到的池子的压力，用于沿用上一轮模型前
+	// 判断要不要改为重新比较。known 为 false 表示没有容量信号（没配额度或功能关闭），
+	// 调用方照旧沿用。它不走调度器预览，也不报价，比 Costs 便宜。
+	CapacityPressure func(model string, effort string, ignoreClientReasoning bool) (pressure float64, known bool)
+	Costs            func(models []string, effort string, ignoreClientReasoning bool) (costs map[string]Cost, preview *PreviewOutcome)
 }
 
 // Cost 是一个候选模型的比较成本。只要有这一项，Price 就以它为准。
@@ -102,6 +106,11 @@ type Cost struct {
 	Price float64
 	// Multiplier 是会落到的渠道的费用倍率，几个渠道时是按命中概率的期望，没配按 1。
 	Multiplier float64
+	// Premium 是会落到的计数池的容量溢价，几个渠道时按 Σ 概率×倍率×溢价 折算回倍率之外。
+	// 0 表示没有容量信号（没配额度、计数不可用或功能关闭），比较时按 1。
+	Premium float64
+	// Pressure 是参与加权的池子里最大的压力，只用于留痕。
+	Pressure float64
 	// ChannelID 是确定会落到的那个渠道（调度器预览、会话亲和，或只有一个可能的渠道），否则为 0。
 	ChannelID int
 	// Channels 是参与期望的渠道个数。
@@ -139,13 +148,18 @@ type Candidate struct {
 	Score float64 `json:"score"`
 	// Price 是用户侧混合价（美元/百万 token）。
 	Price float64 `json:"price"`
-	// CostMultiplier 不为 0 时，比较用的是 Cost = Price × CostMultiplier（平台成本，与
-	// relay_attempts.cost_actual 同一口径）；为 0 表示没有估算，按 Price 比较。
+	// CostMultiplier 不为 0 时，比较用的是 Cost = Price × CostMultiplier × CapacityPremium
+	// （平台成本加容量溢价，费用倍率部分与 relay_attempts.cost_actual 同一口径）；
+	// 为 0 表示没有估算，按 Price 比较。
 	CostMultiplier float64 `json:"cost_multiplier,omitempty"`
-	Cost           float64 `json:"cost,omitempty"`
-	ChannelID      int     `json:"channel_id,omitempty"`
-	Channels       int     `json:"channels,omitempty"`
-	CostSource     string  `json:"cost_source,omitempty"`
+	// CapacityPremium 是会落到的计数池的容量溢价，0 表示没有容量信号（没配额度或功能关闭）。
+	// 只影响这里的比较，不参与计费。CapacityPressure 是池子压力，供留痕解释溢价来源。
+	CapacityPremium  float64 `json:"capacity_premium,omitempty"`
+	CapacityPressure float64 `json:"capacity_pressure,omitempty"`
+	Cost             float64 `json:"cost,omitempty"`
+	ChannelID        int     `json:"channel_id,omitempty"`
+	Channels         int     `json:"channels,omitempty"`
+	CostSource       string  `json:"cost_source,omitempty"`
 	// Preview 是调度器回答了预览、却没用上它给这个模型的答案时的原因，见 Cost.Preview。
 	Preview string `json:"preview,omitempty"`
 	// Discount 是价格折扣，Utility 是分数减去折扣，排名按 Utility。
@@ -266,8 +280,13 @@ func pickByQualityCost(models []string, scores map[string]float64, weight float6
 			if multiplier <= 0 {
 				multiplier = 1
 			}
+			premium := cost.Premium
+			if premium <= 0 {
+				premium = 1
+			}
 			candidate.Price = cost.Price
-			candidate.CostMultiplier, candidate.Cost = multiplier, cost.Price*multiplier
+			candidate.CostMultiplier, candidate.Cost = multiplier, cost.Price*multiplier*premium
+			candidate.CapacityPremium, candidate.CapacityPressure = cost.Premium, cost.Pressure
 			candidate.ChannelID, candidate.Channels, candidate.CostSource = cost.ChannelID, cost.Channels, cost.Source
 			candidate.Preview = cost.Preview
 			kept = append(kept, candidate)

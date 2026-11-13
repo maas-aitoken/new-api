@@ -238,6 +238,15 @@ w 既是候选带的宽度，也是折扣的上限，所以选中的模型比参
 
 **费用倍率**：在模型管理 → 能力设置的渠道卡上配，按用户请求的模型名（映射之前）存，和计费同侧：同一渠道里映射到同一上游的两个别名各配各的倍率。RPM/TPM/并发额度则按映射后发给上游的名字存，几个别名共用。没配倍率按 1。费用倍率不参与计费，只乘 `cost_actual` 和这里的比较成本；所有候选的倍率都一样时在对数归一化里抵消，选择与只比用户价相同。
 
+**容量溢价**：在费用倍率之外再乘一个由实时容量决定的系数，比较成本 = 用户价 × 费用倍率 × 容量溢价。配置在 `autorouter_setting.capacity_pricing`，默认开启，只影响选模型，不参与计费、不写 `cost_actual`。界面在系统设置 → Auto 路由 → 容量溢价：开关、膝点、曲线指数、溢价封顶、饱和溢价、快照缓存秒数和压力平滑秒数都能直接改，保存即生效；也可以走 `/api/option` 写同一个选项。
+
+- 压力 `q = max(有上限维度的 用量 / 额度)`，用量来自 `<渠道, 上游模型>` 计数池最近 60 秒的 RPM、TPM 与在途数（见容量计数一节）。额度优先用容量池发布的动态额度：配速已经把"订阅还剩多少预算、离重置还有多久"折算成每分钟速率，所以月付订阅池和签死 RPM/TPM 的合同池共用一条曲线，消耗一快配速额度就缩、q 就升。动态额度没发布时退回渠道自己配的静态额度。**订阅池必须开配速**，否则只能看到突发上限，长周期预算耗尽不会提前反映在价格里。
+- 三项都不限的池子是弹性资源，没有压力也没有溢价（纯按量付费的上游忙了多花的是钱不是容量）。容量池 `exhausted`（没有可用账号）是"没有了"而不是"不限"，按饱和处理。
+- 曲线：`q ≤ knee`（默认 0.5）时溢价 1；以上是 `((1-knee)/(1-q))^gamma`（默认 1），封顶 `max_multiplier`（默认 20）。即 q=0.8 → 2.5 倍、0.9 → 5 倍、0.95 → 10 倍。q ≥ 1 或池子耗尽时取 `saturated_multiplier`（默认 100）。曲线要陡才有用：带内是按价格对数位置打折、折扣上限为 w，价格跨 10 倍时大约要 5 倍溢价才能把候选人从带内最便宜推到最贵。
+- 饱和溢价的效果接近排除但不等于排除：饱和候选成为带内最高比价后对数位置为 1、折扣吃满 w，带内其它候选必然赢它。仍有三种情况会选中忙模型——带内只有它一个候选、带内全部饱和、以及 w=0 的能力优先 key 在原生路径下根本不比价。Scheduler 决定渠道时预览返回 `no_candidate` 的模型仍会被直接排除，与权重无关。
+- 沿用上一轮模型之前会读它首次会落到的池子压力：超过膝点就不再沿用，改为重新比较（jev 失败、只定档位的继承路径也一样）。压力在膝点以内、或没有容量信号时照旧沿用，提示缓存得以保留。所以长会话不是完全不看容量，而是"还没变贵就继续用，开始变贵就换"。留痕里 `trace.previous_pressure` 记下压力、膝点和是否沿用。
+- 稳定性：`smoothing_seconds`（默认 30）对压力做指数平滑，饱和与离开饱和立即生效；`cache_seconds`（默认 5）是节点本地池快照的有效期，避免每个请求都为候选带批量读计数。没配 Redis 时计数只反映本节点，压力会偏低。计数读取失败按未知处理，不影响请求。
+
 **不做比较的情况**：
 
 - 同任务延续，沿用上一次的模型。所以对话中途换偏好，要到下一个新任务才生效。
@@ -415,7 +424,7 @@ w 从 0.07 调到 0.075，下限降低，`mimo-v2.6-pro`（0.9288 分，0.54 美
 - `source` 是 `jev`（本次调用）、`cache`（判断缓存命中）、`inherit`（沿用上一轮）或 `default`（没有可用信号）。
 - `preference` 是这次请求用的偏好：令牌自己设的，没设则是平台的 `default_preference`。
 - `pick` 只在做过质量/价格比较时出现。`weight` 是这次用的 w，`band` 是候选带，`discount` 是价格折扣，`utility` 是折后分，`chosen` 是选中的。沿用上一轮模型和按列表顺序取第一个时没有 `pick`。线上日志里的数值是完整精度，不是示例里的四位小数。
-- 估算过渠道时，`band` 的每一项还有 `cost_multiplier`（首次会落到的渠道的费用倍率）、`cost`（比较成本 = `price` × 倍率，`discount` 按它算）、`cost_source`（`scheduler` 调度器预览、`affinity` 会话亲和、`expected` 按命中概率的期望）、`channel_id`（确定会落到的渠道）和 `channels`（参与期望的渠道个数）。`price` 仍是用户侧价格。`channel_id` 来自预览时，和使用日志里实际落到的渠道对照，就能看出预览和正式调度有没有选得不一样。
+- 估算过渠道时，`band` 的每一项还有 `cost_multiplier`（首次会落到的渠道的费用倍率）、`capacity_premium` 与 `capacity_pressure`（会落到的计数池的容量溢价与压力，没有容量信号时不出现在 JSON 里）、`cost`（比较成本 = `price` × 倍率 × 溢价，`discount` 按它算）、`cost_source`（`scheduler` 调度器预览、`affinity` 会话亲和、`expected` 按命中概率的期望）、`channel_id`（确定会落到的渠道）和 `channels`（参与期望的渠道个数）。`price` 仍是用户侧价格。`channel_id` 来自预览时，和使用日志里实际落到的渠道对照，就能看出预览和正式调度有没有选得不一样。
 - 配了 Scheduler 时，`pick.preview` 记这次比价问预览的结果：`status` 为 `answered` 表示 Scheduler 回答了；其余是没拿到回答的原因，`not_scheduler_decided`（这次不由 Scheduler 定渠道：影子模式、金丝雀没命中或紧急停用）、`not_configured`、`circuit_open`、`unsupported`（地址都回 404）、`timeout`、`failed`（带 `http_status`，连不上时没有）、`bad_response`。回答了、某个模型却没用上它的答案时，`band` 里那一项的 `preview` 写原因：`not_cached`（还没加载）、`error`、`unusable_channel`（给的渠道在 new-api 这边没法报价）、`over_limit`（超过 64 个）。选路过程里，整次的原因写在候选表上方，单个模型的原因写在它的“费用倍率”下面。
 - `effort` 是第 7.2 节定出的期望档位，`applied_effort` 是按模型的渠道声明收敛后真正写进请求体的档位，`effort_action` 是 `set`（写入）、`keep`（不碰客户端字段）或 `strip`（模型不支持推理，去掉客户端字段）。`effort_override` 为 true 表示档位由这次判断定下（`leaf` 是二级类，或 `unknown` 但收益达到提档阈值），覆盖了客户端的推理字段。`effort_in_body` 为 true 表示档位写进请求体、模型名保持裸名；为 false 时档位拼在模型名后缀上（如 `gpt-5-high`）。
 
@@ -522,7 +531,8 @@ w 从 0.07 调到 0.075，下限降低，`mimo-v2.6-pro`（0.9288 分，0.54 美
 | `service/scheduler_preview.go` | 调 Scheduler 的 `/v1/preview`：整次一个截止时间，只读熔断状态、失败不计入熔断；回 404 的地址一分钟内跳过、接着问下一个；一次最多问 64 个（不能比 Scheduler 的上限大，调大时先升级 Scheduler）；结果带状态写进选路留痕，问过没拿到回答时记 WARN |
 | `pkg/autorouter/select.go`、`policy.go`、`trace.go` | `Candidates.Costs`：带定下来之后一次取齐比较成本，折扣与同分取舍都按比较成本；`Excluded` 的模型离开带；跳过原因 `scheduler_no_candidate`；`band` 多出成本相关字段 |
 | `middleware/auto_route_cost.go`、`middleware/distributor.go` | 实现 `Costs`：调度器预览或原生规则定渠道、按首次命中的分组报价、乘渠道费用倍率；预览说没有渠道的模型记进这次请求的拒绝原因 |
-| `web/src/features/system-settings/autorouter/route-log/` | 候选表在估算过渠道时多“费用倍率”“比较成本”两列，跳过原因多一项；没用上调度器预览时在表上方说明原因，单个模型没用上时写在它的倍率下面 |
+| `web/src/features/system-settings/autorouter/route-log/` | 候选表在估算过渠道时多“费用倍率”“比较成本”两列，有容量溢价时再多“容量溢价”一列（下面标池压力），跳过原因多一项；没用上调度器预览时在表上方说明原因，单个模型没用上时写在它的倍率下面 |
+| `pkg/autorouter/capacity.go`、`service/capacity_price.go`、`setting/autorouter_setting/config.go`、`validate.go` | 容量溢价：曲线与 `autorouter_setting.capacity_pricing` 选项及校验；按首次会落到的渠道批量读出计数池压力（动态额度优先、静态保底、三项不限不溢价、耗尽按饱和），节点本地快照缓存加指数平滑，按 Σ 概率×倍率×溢价 合成 |
 | `pkg/autorouter/jev.go`、`setting/autorouter_setting/ranking_edit.go`、`config.go` | 第 8.1 节：`RankingProfiles()` 列出全部画像；`EditedRanking` 校验整份手工榜单、与当前榜单比出改动，返回要写的四项榜单和关掉的定时刷新；`Ranking.Profiles()` 是读写共用的画像列表；`encodeOptions` 与恢复内置共用 |
 | `controller/autorouter.go`、`controller/audit.go`、`router/api-router.go`、`middleware/access_token_routes.go` | `PUT /api/autorouter/ranking`（刷新进行中拒绝、审计 `autorouter.rank_edit`、访问令牌作用域 `option:write`）；`GET /api/autorouter/ranking` 按全部画像列出并给每个模型加 `served` |
 | `web/src/features/system-settings/autorouter/` | 榜单编辑（`ranking-viewer.tsx`、`ranking-table.tsx`、`ranking-add-dialog.tsx`，纯逻辑在 `ranking-draft.ts`）；状态卡标出手工编辑过的榜单，立即刷新前确认 |

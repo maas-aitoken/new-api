@@ -286,7 +286,8 @@ func Distribute() func(c *gin.Context) {
 							quote := quoteOf(candidate)
 							return quote.PricePerMillion, quote.Kind == helper.RoutingPerToken
 						},
-						Costs: costs.estimate,
+						Costs:            costs.estimate,
+						CapacityPressure: costs.pressure,
 					})
 					if capabilityGate != nil {
 						capabilityGate.LogSummary(c)
