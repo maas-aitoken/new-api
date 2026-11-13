@@ -91,6 +91,9 @@ type AutoRouterSetting struct {
 	// database expires them through the table TTL instead.
 	RouteLogMode          string `json:"route_log_mode"`
 	RouteLogRetentionDays int    `json:"route_log_retention_days"`
+	// CapacityPricing 把候选模型会落到的计数池的繁忙程度折算成比较成本的倍数，
+	// 见 autorouter.CapacityPricing。只影响 auto 选模型，不参与计费。
+	CapacityPricing autorouter.CapacityPricing `json:"capacity_pricing"`
 }
 
 // The values of RouteLogMode.
@@ -141,6 +144,7 @@ var autoRouterSetting = AutoRouterSetting{
 	CostWeights:              maps.Clone(defaultCostWeights),
 	RouteLogMode:             RouteLogDecisions,
 	RouteLogRetentionDays:    DefaultRouteLogRetentionDays,
+	CapacityPricing:          autorouter.DefaultCapacityPricing(),
 }
 
 func init() {
