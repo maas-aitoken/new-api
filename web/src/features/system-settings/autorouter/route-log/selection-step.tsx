@@ -62,6 +62,10 @@ export function PickTable(props: { pick: RoutePick }) {
   const comparesCost = props.pick.band.some(
     (row) => (row.cost_multiplier ?? 0) > 0
   )
+  // 有容量溢价时多一列：池子越接近额度上限，比较成本越贵。
+  const hasCapacityPremium = props.pick.band.some(
+    (row) => (row.capacity_premium ?? 0) > 0
+  )
   // 这次没拿到调度器预览的回答时说明原因，所有倍率都按原生规则算。
   const previewOutcome = previewOutcomeLabel(t, props.pick.preview)
   const costColumns: StaticDataTableColumn<RoutePickCandidate>[] = [
@@ -87,6 +91,28 @@ export function PickTable(props: { pick: RoutePick }) {
           '-'
         ),
     },
+    ...(hasCapacityPremium
+      ? [
+          {
+            id: 'capacity_premium',
+            header: t('Capacity premium'),
+            className: 'h-9 text-right',
+            cellClassName: tableStyles.topNumericCell,
+            cell: (row: RoutePickCandidate) =>
+              row.capacity_premium ? (
+                <div className='flex flex-col items-end'>
+                  <span>× {formatScore(row.capacity_premium)}</span>
+                  <span className='text-muted-foreground text-xs font-normal'>
+                    {t('Pool pressure')}{' '}
+                    {Math.round((row.capacity_pressure ?? 0) * 100)}%
+                  </span>
+                </div>
+              ) : (
+                '-'
+              ),
+          },
+        ]
+      : []),
     {
       id: 'cost',
       header: t('Compared cost'),
@@ -155,6 +181,9 @@ export function PickTable(props: { pick: RoutePick }) {
         {comparesCost
           ? ` ${t('The discount uses the compared cost: the user price times the cost multiplier of the channel the first attempt lands on. The multiplier never changes what the user is billed.')}`
           : null}
+        {hasCapacityPremium
+          ? ` ${t('The capacity premium raises the compared cost when the pool is close to its RPM, TPM or in-flight limit, so traffic shifts to models with headroom. Pools without a limit have no premium, and it never changes what the user is billed.')}`
+          : null}
       </p>
       {previewOutcome && (
         <p className='text-muted-foreground text-xs'>{previewOutcome}</p>
@@ -200,8 +229,8 @@ function StepSummary(props: { step: RouteTraceStep }) {
         <ul className='text-muted-foreground space-y-0.5 ps-3 text-xs'>
           {step.skipped.map((skipped) => (
             <li key={skipped.model}>
-              <span className='font-mono'>{skipped.model}</span>{' '}
-              ({formatScore(skipped.score)}):{' '}
+              <span className='font-mono'>{skipped.model}</span> (
+              {formatScore(skipped.score)}):{' '}
               {skipReasonLabel(t, skipped.reason)}
             </li>
           ))}

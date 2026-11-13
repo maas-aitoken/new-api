@@ -79,6 +79,12 @@ export type RoutePickCandidate = {
    * （平台成本，不参与计费）；没有表示没估算，按 price 比较。
    */
   cost_multiplier?: number
+  /**
+   * 会落到的计数池的容量溢价与压力。有溢价时 cost = price × 倍率 × 溢价；
+   * 没有表示这个池子没配额度或功能关闭，按 1 算。都不参与计费。
+   */
+  capacity_premium?: number
+  capacity_pressure?: number
   cost?: number
   channel_id?: number
   channels?: number

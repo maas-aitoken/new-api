@@ -67,7 +67,13 @@ const routed: RouteLog = {
         chosen: 'sonnet',
         weight: 0.07,
         band: [
-          { model: 'sonnet', score: 0.95, price: 4, discount: 0, utility: 0.95 },
+          {
+            model: 'sonnet',
+            score: 0.95,
+            price: 4,
+            discount: 0,
+            utility: 0.95,
+          },
           { model: 'haiku', score: 0.93, price: 1, discount: 0, utility: 0.93 },
         ],
       },
@@ -97,7 +103,9 @@ function renderDrawer(props: {
   summary?: RouteResult
   onClose?: () => void
 }) {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  })
   render(
     <QueryClientProvider client={client}>
       <RouteProcessDrawer
@@ -110,7 +118,9 @@ function renderDrawer(props: {
 }
 
 function mockLog(data: RouteLog | null) {
-  return vi.spyOn(api, 'get').mockResolvedValue({ data: { success: true, data } })
+  return vi
+    .spyOn(api, 'get')
+    .mockResolvedValue({ data: { success: true, data } })
 }
 
 test('a recorded log shows its steps in order, from the request to the result', async () => {
@@ -168,7 +178,9 @@ test('a comparison by platform cost shows the multiplier of each candidate, wher
               score: 0.95,
               price: 4,
               cost_multiplier: 0.25,
-              cost: 1,
+              capacity_premium: 5,
+              capacity_pressure: 0.9,
+              cost: 5,
               channel_id: 12,
               channels: 1,
               cost_source: 'scheduler',
@@ -203,6 +215,13 @@ test('a comparison by platform cost shows the multiplier of each candidate, wher
   ).toBeVisible()
   const chosenRow = screen.getByText('Chosen').closest('tr') as HTMLElement
   expect(within(chosenRow).getByText('× 0.2500')).toBeVisible()
+  // 池子接近额度上限时的容量溢价与压力也展示出来，且不算进用户计费。
+  expect(
+    screen.getByRole('columnheader', { name: 'Capacity premium' })
+  ).toBeVisible()
+  expect(within(chosenRow).getByText('× 5.0000')).toBeVisible()
+  expect(chosenRow.textContent).toContain('Pool pressure')
+  expect(chosenRow.textContent).toContain('90%')
   expect(
     within(chosenRow).getByText('Scheduler picks channel #12')
   ).toBeVisible()
@@ -333,7 +352,9 @@ test('a request no model could serve shows the failure and the reasons by count'
 
   expect(await screen.findByText('No model available')).toBeVisible()
   expect(
-    screen.getByText('auto router found no available model for this token and group')
+    screen.getByText(
+      'auto router found no available model for this token and group'
+    )
   ).toBeVisible()
   expect(screen.getByText('No enabled channel serves it')).toBeVisible()
   expect(screen.getByText('× 7')).toBeVisible()
@@ -352,7 +373,9 @@ test('without a recorded log the summary of the usage log is shown, with a notic
   })
 
   expect(
-    await screen.findByText(/No detailed routing log was recorded for this request/)
+    await screen.findByText(
+      /No detailed routing log was recorded for this request/
+    )
   ).toBeVisible()
   expect(screen.getByText('sonnet-high')).toBeVisible()
   expect(screen.queryByText('Classification')).not.toBeInTheDocument()
@@ -373,7 +396,9 @@ test('a failed request for the log offers a retry instead of an empty drawer', a
   vi.spyOn(api, 'get').mockRejectedValue(new Error('network down'))
   renderDrawer({})
 
-  expect(await screen.findByText('Failed to load the routing process')).toBeVisible()
+  expect(
+    await screen.findByText('Failed to load the routing process')
+  ).toBeVisible()
   expect(screen.getByText('network down')).toBeVisible()
 })
 
@@ -381,13 +406,34 @@ test('a continued request names the previous model and says its effort was held'
   mockLog({
     ...logItem,
     detail: {
-      result: { resolved_model: 'coder', model: 'coder', effort: 'high', source: 'inherit' },
+      result: {
+        resolved_model: 'coder',
+        model: 'coder',
+        effort: 'high',
+        source: 'inherit',
+      },
       trace: {
-        request: { human_turns: 3, text_runes: 20, previous_runes: 30, truncated: true },
+        request: {
+          human_turns: 3,
+          text_runes: 20,
+          previous_runes: 30,
+          truncated: true,
+        },
         judgment: 'cache',
         validity: { profiles: ['code.build'] },
-        continuation: { previous: 'coder', task_change: 0.2, threshold: 0.5, continued: true },
-        effort: { difficulty: 1, base: 'low', threshold: 0.5, floored: true, benefit: 0.1 },
+        continuation: {
+          previous: 'coder',
+          task_change: 0.2,
+          threshold: 0.5,
+          continued: true,
+        },
+        effort: {
+          difficulty: 1,
+          base: 'low',
+          threshold: 0.5,
+          floored: true,
+          benefit: 0.1,
+        },
       },
     },
   })
@@ -413,7 +459,12 @@ test.each([
         trace: {
           request: { human_turns: 2, text_runes: 20 },
           judgment: 'live',
-          continuation: { previous: 'coder', task_change: taskChange, threshold: 0.5, continued: false },
+          continuation: {
+            previous: 'coder',
+            task_change: taskChange,
+            threshold: 0.5,
+            continued: false,
+          },
         },
       },
     })
@@ -424,8 +475,16 @@ test.each([
 )
 
 test.each([
-  ['set', 'high', "Written into the request, replacing the client's own setting."],
-  ['strip', '', "The model does not support reasoning, so the client's reasoning settings were removed."],
+  [
+    'set',
+    'high',
+    "Written into the request, replacing the client's own setting.",
+  ],
+  [
+    'strip',
+    '',
+    "The model does not support reasoning, so the client's reasoning settings were removed.",
+  ],
   ['keep', '', "The client's own reasoning settings were left untouched."],
 ] as const)(
   'effort written into the body with action %s says what became of the client’s settings',
@@ -433,25 +492,44 @@ test.each([
     mockLog({
       ...logItem,
       detail: {
-        result: { model: 'reasoner', effort: 'high', effort_in_body: true, effort_action: action, applied_effort: applied },
+        result: {
+          model: 'reasoner',
+          effort: 'high',
+          effort_in_body: true,
+          effort_action: action,
+          applied_effort: applied,
+        },
         trace: {
           request: { human_turns: 1, text_runes: 5 },
           judgment: 'live',
-          effort: { difficulty: 2, base: 'medium', threshold: 0.5, benefit: 0.7, upgraded: true },
+          effort: {
+            difficulty: 2,
+            base: 'medium',
+            threshold: 0.5,
+            benefit: 0.7,
+            upgraded: true,
+          },
         },
       },
     })
     renderDrawer({})
 
     expect(await screen.findByText(note)).toBeVisible()
-    expect(screen.getByText('Raised one step by the larger-model benefit')).toBeVisible()
-    expect(screen.getByText('Effort sent').nextElementSibling).toHaveTextContent(applied || 'None')
+    expect(
+      screen.getByText('Raised one step by the larger-model benefit')
+    ).toBeVisible()
+    expect(
+      screen.getByText('Effort sent').nextElementSibling
+    ).toHaveTextContent(applied || 'None')
   }
 )
 
 test.each([
   ['sonnet-high', 'Sent as part of the model name.'],
-  ['sonnet', 'No model variant carries this effort, so the provider default applies.'],
+  [
+    'sonnet',
+    'No model variant carries this effort, so the provider default applies.',
+  ],
 ])(
   'a model without a reasoning declaration that ran as %s says how the effort reached it',
   async (resolved, note) => {
@@ -480,13 +558,24 @@ test('a classifier failure says there was no decision and that the default model
       result: {
         resolved_model: 'general',
         model: 'general',
-        jev: { endpoint: 'https://jev.example', latency_ms: 5000, error: 'jev failed: timeout' },
+        jev: {
+          endpoint: 'https://jev.example',
+          latency_ms: 5000,
+          error: 'jev failed: timeout',
+        },
       },
       trace: {
         request: { human_turns: 1, text_runes: 9 },
         judgment: 'live_failed',
         validity: { error: 'no_decision' },
-        ladder: [{ profile: 'general', models: 2, outcome: 'first_available', model: 'general' }],
+        ladder: [
+          {
+            profile: 'general',
+            models: 2,
+            outcome: 'first_available',
+            model: 'general',
+          },
+        ],
       },
     },
   })
@@ -510,7 +599,14 @@ test.each([
         request: { human_turns: 1, text_runes: 9 },
         judgment: 'live',
         validity: { error },
-        ladder: [{ profile: 'general', models: 2, outcome: 'first_available', model: 'general' }],
+        ladder: [
+          {
+            profile: 'general',
+            models: 2,
+            outcome: 'first_available',
+            model: 'general',
+          },
+        ],
       },
     },
   })
@@ -526,19 +622,28 @@ test('an unknown task type is a valid answer with no ranking, and the previous r
     task_type: 'unknown',
     source: 'inherit',
     detail: {
-      result: { resolved_model: 'coder', model: 'coder', effort: 'high', source: 'inherit' },
+      result: {
+        resolved_model: 'coder',
+        model: 'coder',
+        effort: 'high',
+        source: 'inherit',
+      },
       trace: {
         request: { human_turns: 2, text_runes: 2, previous_runes: 30 },
         judgment: 'live',
         validity: {},
-        ladder: [{ profile: 'code.build', outcome: 'inherited', model: 'coder' }],
+        ladder: [
+          { profile: 'code.build', outcome: 'inherited', model: 'coder' },
+        ],
       },
     },
   })
   renderDrawer({})
 
   expect(await screen.findByText('Valid')).toBeVisible()
-  expect(screen.queryByText('Rankings to try, most specific first')).not.toBeInTheDocument()
+  expect(
+    screen.queryByText('Rankings to try, most specific first')
+  ).not.toBeInTheDocument()
   expect(screen.getByText('Kept the previous route')).toBeVisible()
 })
 
@@ -548,13 +653,28 @@ test('an effort held at the previous one and then raised by the benefit lists th
     task_type: 'unknown',
     effort: 'xhigh',
     detail: {
-      result: { resolved_model: 'coder', model: 'coder', effort: 'xhigh', source: 'jev', effort_override: true },
+      result: {
+        resolved_model: 'coder',
+        model: 'coder',
+        effort: 'xhigh',
+        source: 'jev',
+        effort_override: true,
+      },
       trace: {
         request: { human_turns: 2, text_runes: 40, previous_runes: 30 },
         judgment: 'live',
         validity: {},
-        effort: { difficulty: 1, base: 'low', threshold: 0.5, benefit: 0.7, floored: true, upgraded: true },
-        ladder: [{ profile: 'code.build', outcome: 'inherited', model: 'coder' }],
+        effort: {
+          difficulty: 1,
+          base: 'low',
+          threshold: 0.5,
+          benefit: 0.7,
+          floored: true,
+          upgraded: true,
+        },
+        ladder: [
+          { profile: 'code.build', outcome: 'inherited', model: 'coder' },
+        ],
       },
     },
   })
@@ -562,7 +682,9 @@ test('an effort held at the previous one and then raised by the benefit lists th
 
   const held = await screen.findByText('Held at the previous effort')
   const raised = screen.getByText('Raised one step by the larger-model benefit')
-  expect(held.compareDocumentPosition(raised) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  expect(
+    held.compareDocumentPosition(raised) & Node.DOCUMENT_POSITION_FOLLOWING
+  ).toBeTruthy()
 })
 
 const tiers = { capability: 0, balanced: 0.07, cost: 0.3 }
@@ -582,8 +704,20 @@ function adaptiveLog(mode: RouteTraceMode): RouteLog {
           chosen: 'haiku',
           weight: 0.1275,
           band: [
-            { model: 'sonnet', score: 0.95, price: 4, discount: 0.1275, utility: 0.8225 },
-            { model: 'haiku', score: 0.93, price: 1, discount: 0, utility: 0.93 },
+            {
+              model: 'sonnet',
+              score: 0.95,
+              price: 4,
+              discount: 0.1275,
+              utility: 0.8225,
+            },
+            {
+              model: 'haiku',
+              score: 0.93,
+              price: 1,
+              discount: 0,
+              utility: 0.93,
+            },
           ],
         },
       },
@@ -592,7 +726,14 @@ function adaptiveLog(mode: RouteTraceMode): RouteLog {
         judgment: 'live',
         validity: { profiles: ['code.build'] },
         mode,
-        ladder: [{ profile: 'code.build', models: 2, outcome: 'compared', model: 'haiku' }],
+        ladder: [
+          {
+            profile: 'code.build',
+            models: 2,
+            outcome: 'compared',
+            model: 'haiku',
+          },
+        ],
       },
     },
   }
@@ -613,7 +754,9 @@ test('an adaptive request shows how its cost weight was judged, between the vali
   const titles = ['Validity check', 'Cost preference', 'Model selection']
   titles.slice(1).forEach((title, index) => {
     expect(
-      screen.getByText(titles[index]).compareDocumentPosition(screen.getByText(title)) &
+      screen
+        .getByText(titles[index])
+        .compareDocumentPosition(screen.getByText(title)) &
         Node.DOCUMENT_POSITION_FOLLOWING,
       `${title} comes after ${titles[index]}`
     ).toBeTruthy()
@@ -621,22 +764,36 @@ test('an adaptive request shows how its cost weight was judged, between the vali
   expect(screen.getByText('Balanced 0.5500')).toBeVisible()
   expect(screen.getByText('Cost first 0.3500')).toBeVisible()
   expect(screen.getByText('Cost first 0.3000')).toBeVisible()
-  expect(screen.getByText('Expected position').nextElementSibling).toHaveTextContent('1.2500')
-  expect(screen.getByText('Cost weight').nextElementSibling).toHaveTextContent('0.1275')
-  expect(screen.getByText('Preference').nextElementSibling).toHaveTextContent('Decide per request')
+  expect(
+    screen.getByText('Expected position').nextElementSibling
+  ).toHaveTextContent('1.2500')
+  expect(screen.getByText('Cost weight').nextElementSibling).toHaveTextContent(
+    '0.1275'
+  )
+  expect(screen.getByText('Preference').nextElementSibling).toHaveTextContent(
+    'Decide per request'
+  )
 })
 
 test('an adaptive request with no usable judgment says the balanced weight applied', async () => {
-  mockLog(adaptiveLog({ reason: 'no_answer', position: 1, weight: 0.07, tiers }))
+  mockLog(
+    adaptiveLog({ reason: 'no_answer', position: 1, weight: 0.07, tiers })
+  )
   renderDrawer({})
 
   expect(await screen.findByText('No usable judgment')).toBeVisible()
   expect(
-    screen.getByText('The classifier gave no usable answer on cost, so the balanced weight applies.')
+    screen.getByText(
+      'The classifier gave no usable answer on cost, so the balanced weight applies.'
+    )
   ).toBeVisible()
-  expect(screen.getByText('Cost weight').nextElementSibling).toHaveTextContent('0.0700')
+  expect(screen.getByText('Cost weight').nextElementSibling).toHaveTextContent(
+    '0.0700'
+  )
   expect(screen.queryByText('Expected position')).not.toBeInTheDocument()
-  expect(screen.queryByText('Probability of each preference')).not.toBeInTheDocument()
+  expect(
+    screen.queryByText('Probability of each preference')
+  ).not.toBeInTheDocument()
 })
 
 test('with no request selected the drawer stays closed and asks for nothing', () => {
