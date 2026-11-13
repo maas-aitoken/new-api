@@ -858,3 +858,67 @@ func TestResolveVariant(t *testing.T) {
 		})
 	}
 }
+
+func TestCapacityPremiumCurve(t *testing.T) {
+	pricing := DefaultCapacityPricing()
+	assert.Equal(t, 1.0, pricing.Premium(-1), "没配额度是弹性资源")
+	assert.Equal(t, 1.0, pricing.Premium(0.5), "膝点以下不溢价")
+	assert.InDelta(t, 2.5, pricing.Premium(0.8), 1e-9)
+	assert.InDelta(t, 5.0, pricing.Premium(0.9), 1e-9)
+	assert.InDelta(t, 10.0, pricing.Premium(0.95), 1e-9)
+	assert.Equal(t, pricing.MaxMultiplier, pricing.Premium(0.999), "连续段封顶")
+	assert.Equal(t, pricing.SaturatedMultiplier, pricing.Premium(1))
+	assert.Equal(t, pricing.SaturatedMultiplier, pricing.Premium(1.4), "用量可以超过额度，网关只统计不拦")
+	disabled := pricing
+	disabled.Enabled = false
+	assert.Equal(t, 1.0, disabled.Premium(1.4))
+	broken := CapacityPricing{Enabled: true, Knee: 2, Gamma: -1, MaxMultiplier: -3}
+	assert.InDelta(t, 2.5, broken.Premium(0.8), 1e-9, "非法参数回退默认曲线")
+}
+
+// 容量溢价只改比较成本，不动候选带和质量分：忙到一定程度的模型在带内自然输掉，
+// 不需要额外的排除规则。
+func TestPickByQualityCostCapacityPremium(t *testing.T) {
+	models := []string{"top", "mid", "cheap"}
+	scores := map[string]float64{"top": 0.93, "mid": 0.90, "cheap": 0.87}
+	prices := map[string]float64{"top": 0.6, "mid": 1.2, "cheap": 0.3}
+	compare := func(premium float64) Pick {
+		costs := func(names []string) (map[string]Cost, *PreviewOutcome) {
+			result := make(map[string]Cost, len(names))
+			for _, name := range names {
+				result[name] = Cost{Price: prices[name], Multiplier: 1}
+			}
+			busy := result["top"]
+			busy.Premium, busy.Pressure = premium, 0.9
+			result["top"] = busy
+			return result, nil
+		}
+		pick, ok := pickByQualityCost(models, scores, 0.07, func(string) bool { return true },
+			func(name string) (float64, bool) { return prices[name], true }, costs, nil)
+		require.True(t, ok)
+		return pick
+	}
+	idle := compare(0)
+	assert.Equal(t, "top", idle.Chosen, "没有溢价时榜单分最高的赢")
+	assert.Zero(t, idle.Band[0].CapacityPremium)
+	assert.InDelta(t, 0.895, idle.Band[0].Utility, 1e-3)
+
+	busy := compare(5)
+	assert.Equal(t, "cheap", busy.Chosen, "忙的模型溢价后变成带内最贵，折扣吃满")
+	for _, candidate := range busy.Band {
+		if candidate.Model == "top" {
+			assert.Equal(t, 5.0, candidate.CapacityPremium)
+			assert.Equal(t, 0.9, candidate.CapacityPressure)
+			assert.InDelta(t, 3.0, candidate.Cost, 1e-9)
+			assert.InDelta(t, 0.86, candidate.Utility, 1e-9)
+		}
+	}
+	// 带内只剩它自己时溢价救不了场，这是"不新增排除"的已知边界。
+	only, ok := pickByQualityCost([]string{"top"}, scores, 0.07, func(string) bool { return true },
+		func(name string) (float64, bool) { return prices[name], true },
+		func(names []string) (map[string]Cost, *PreviewOutcome) {
+			return map[string]Cost{"top": {Price: 0.6, Multiplier: 1, Premium: 100}}, nil
+		}, nil)
+	require.True(t, ok)
+	assert.Equal(t, "top", only.Chosen)
+}
