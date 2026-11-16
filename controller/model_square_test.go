@@ -96,6 +96,8 @@ func TestGetModelSquareSupportsPagination(t *testing.T) {
 	require.Len(t, response.Data.Items, 1)
 	assert.Equal(t, 2, response.Data.Items[0].ID)
 	assert.Equal(t, "catalog-model-2", response.Data.Items[0].ModelName)
+	require.NotNil(t, response.Data.Items[0].BasePricing)
+	assert.Equal(t, "catalog-model-2", response.Data.Items[0].BasePricing.SourceModel)
 	assert.Equal(t, int64(3), response.Data.Total)
 	assert.Equal(t, 1, response.Data.Offset)
 	assert.Equal(t, 1, response.Data.Limit)
@@ -282,4 +284,10 @@ func TestModelSquarePricingFromPricing(t *testing.T) {
 			assert.JSONEq(t, tt.want, string(got))
 		})
 	}
+	previousQuotaPerUnit := common.QuotaPerUnit
+	t.Cleanup(func() { common.QuotaPerUnit = previousQuotaPerUnit })
+	common.QuotaPerUnit = 1_000_000
+	got, err := common.Marshal(modelSquarePricingFromPricing(model.Pricing{ModelRatio: 1.5, CompletionRatio: 2}))
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"input_price":1.5,"output_price":3}`, string(got))
 }
