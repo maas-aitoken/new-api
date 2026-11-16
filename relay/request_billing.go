@@ -65,12 +65,6 @@ func PrepareRequestBilling(c *gin.Context, info *relaycommon.RelayInfo) *types.N
 		logger.LogInfo(c, common.LogText("model %s is free, skipping pre-consume", info.OriginModelName))
 		return nil
 	}
-	if info.TieredBillingSnapshot != nil {
-		return nil
-	}
-	if _, ok := common.GetContextKeyType[float64](c, constant.ContextKeyChannelCostMultiplier); !ok {
-		return nil
-	}
 	return service.PrepareChannelBilling(c, info, priceData.QuotaToPreConsume)
 }
 
