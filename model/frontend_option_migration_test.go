@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -224,4 +225,30 @@ func TestRetiredThemeOptionIsPersistedButNotPublished(t *testing.T) {
 	assert.Equal(t, "default", requireOptionValue(t, db, retiredThemeOptionKey))
 	_, published := common.OptionMap[retiredThemeOptionKey]
 	assert.False(t, published)
+}
+
+func TestModernQuotaDisplayTypeOverridesLegacyCurrencySwitch(t *testing.T) {
+	db := useFrontendOptionMigrationDB(t)
+	previousSettings := *operation_setting.GetGeneralSetting()
+	previousMap := common.OptionMap
+	previousConfigured := quotaDisplayTypeConfigured
+	t.Cleanup(func() {
+		*operation_setting.GetGeneralSetting() = previousSettings
+		common.OptionMap = previousMap
+		quotaDisplayTypeConfigured = previousConfigured
+	})
+	common.OptionMap = map[string]string{}
+	require.NoError(t, db.Create(&[]Option{
+		{Key: quotaDisplayTypeOptionKey, Value: "CNY"},
+		{Key: "DisplayInCurrencyEnabled", Value: "true"},
+	}).Error)
+
+	loadOptionsFromDatabase()
+	assert.Equal(t, "CNY", operation_setting.GetQuotaDisplayType())
+	require.NoError(t, UpdateOption("DisplayInCurrencyEnabled", "false"))
+	assert.Equal(t, "CNY", operation_setting.GetQuotaDisplayType())
+
+	require.NoError(t, db.Delete(&Option{}, "key = ?", quotaDisplayTypeOptionKey).Error)
+	loadOptionsFromDatabase()
+	assert.Equal(t, "TOKENS", operation_setting.GetQuotaDisplayType())
 }
