@@ -40,8 +40,7 @@ type ChannelSettings struct {
 	// （relay_attempts.cost_actual = 计费额 × 倍率），计费按用户请求的模型名算，
 	// 所以倍率和计费站在用户调用这一侧：同一渠道里 gpt-4o 和 gpt-4o-latest 即使
 	// 映射到同一个上游模型，也各配各的倍率。
-	// 它只是属性，不参与计费：只乘 relay_attempts 记录的成本，以及 auto 选模型时
-	// 比较的成本。
+	// 用户的每笔扣费都乘这个倍率。
 	CostMultiplierMap map[string]float64 `json:"cost_multiplier,omitempty"`
 
 	// ModelLimits 是 <渠道, 上游模型> 的容量额度，键是请求走完 model_mapping
@@ -119,8 +118,7 @@ func (s *ChannelSettings) ValidateHTTPTransport() error {
 // CostMultiplierForModel returns the cost multiplier configured for the model
 // on this channel, or 1 when the model is not listed. model is the
 // request-side name (see CostMultiplierMap), never the mapped upstream name.
-// It never affects billing; callers use it to scale the cost recorded in
-// relay_attempts.
+// The host scales every charge by it and records it in relay_attempts.
 func (s *ChannelSettings) CostMultiplierForModel(model string) float64 {
 	if s == nil || len(s.CostMultiplierMap) == 0 {
 		return 1

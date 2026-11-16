@@ -77,6 +77,7 @@ func LogTaskConsumption(c *gin.Context, info *relaycommon.RelayInfo, task *model
 		setTaskImageCount(other, info.PriceData.OtherRatios()["image_count"])
 	}
 	appendTaskLogInfo(task, other)
+	RecordChannelBillingMultiplier(c, info, other)
 	attachQuotaSaturation(c, info, other)
 	model.RecordConsumeLog(c, info.UserId, model.RecordConsumeLogParams{
 		ChannelId: info.ChannelId,
@@ -177,6 +178,7 @@ func taskBillingOther(task *model.Task) *model.LogOther {
 		} else if priceData := taskBillingContextPriceData(bc); priceData != nil {
 			setTaskImageCount(other, priceData.OtherRatios()["image_count"])
 		}
+		recordChannelBillingMultiplier(other, TaskBillingMultiplier(bc))
 	}
 	props := task.Properties
 	if props.UpstreamModelName != "" && props.UpstreamModelName != props.OriginModelName {
@@ -389,8 +391,7 @@ func scaleTaskBillingQuota(task *model.Task, quota int) (int, *common.QuotaClamp
 	if task == nil || quota <= 0 {
 		return quota, nil
 	}
-	multiplier := ChannelBillingMultiplierForChannel(task.ChannelId, taskModelName(task))
-	return common.QuotaFromFloatChecked(float64(quota) * multiplier)
+	return common.QuotaFromFloatChecked(float64(quota) * TaskBillingMultiplier(task.PrivateData.BillingContext))
 }
 
 // RecalculateTaskQuotaByTokens 根据实际 token 消耗重新计费（异步差额结算）。

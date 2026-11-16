@@ -62,7 +62,7 @@ const (
 	ContextKeyChannelMultiKeyIndex     ContextKey = "channel_multi_key_index"
 	ContextKeyChannelKey               ContextKey = "channel_key"
 	// ContextKeyChannelCostMultiplier 是本次尝试的 <渠道, 模型> 费用倍率（float64，未配置为 1），
-	// 选定渠道时按用户请求一侧的模型名算好，结束时乘进 relay_attempts.cost_actual。
+	// 选定渠道时按用户请求一侧的模型名算好，预扣、结算和 relay_attempts.cost_actual 都乘它。
 	ContextKeyChannelCostMultiplier ContextKey = "channel_cost_multiplier"
 
 	// ContextKeyChannelCapacityModel 是请求在所选渠道上算额度和计数用的公开名

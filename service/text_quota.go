@@ -512,7 +512,7 @@ func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, us
 		}
 	}
 	baseQuota := summary.Quota
-	billingMultiplier := ChannelBillingMultiplier(ctx)
+	billingMultiplier := ChannelBillingMultiplier(ctx, relayInfo)
 	if billingMultiplier != 1 {
 		factor := decimal.NewFromFloat(billingMultiplier)
 		summary.Quota = ScaleChannelBillingQuota(ctx, relayInfo, summary.Quota)
@@ -580,6 +580,7 @@ func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, us
 	} else {
 		other = GenerateTextOtherInfo(ctx, relayInfo, summary.ModelRatio, summary.GroupRatio, summary.CompletionRatio, summary.CacheTokens, summary.CacheRatio, summary.ModelPrice, relayInfo.PriceData.GroupRatioInfo.GroupSpecialRatio)
 	}
+	recordChannelBillingMultiplier(other, billingMultiplier)
 	appendUsageBillingPathForLog(other, common.GetContextKeyBool(ctx, constant.ContextKeyLocalCountTokens), originUsage)
 	if adminRejectReason != "" {
 		other.SetAdmin("reject_reason", adminRejectReason)
