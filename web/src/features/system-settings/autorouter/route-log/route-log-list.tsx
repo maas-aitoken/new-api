@@ -99,7 +99,11 @@ export function RouteLogList() {
 
   const search = () => {
     setPageIndex(0)
-    setFilters({ ...draft, request_id: draft.request_id.trim() })
+    setFilters({
+      ...draft,
+      request_id: draft.request_id.trim(),
+      request_params: draft.request_params.trim(),
+    })
   }
   const reset = () => {
     setDraft(EMPTY_ROUTE_LOG_FILTERS)
@@ -167,6 +171,7 @@ export function RouteLogList() {
               }
             />
             {field('request_id', t('Request ID'))}
+            {field('request_params', t('Request parameters'))}
             {field('user_id', t('User ID'))}
             {field('model', t('Model'))}
             {field('task_type', t('Task type'))}

@@ -5913,6 +5913,7 @@
     "Request names your users call": "使用者呼叫的請求模型名稱",
     "Request overrides, routing behavior, and upstream model automation": "請求覆蓋、路由行為和上游模型自動化",
     "Request Path": "請求路徑",
+    "Request parameters": "請求參數",
     "Request policies": "請求策略",
     "Request policy decisions": "請求策略決策",
     "Request processing": "請求處理",

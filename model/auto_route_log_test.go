@@ -2,6 +2,7 @@ package model
 
 import (
 	"context"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -58,9 +59,9 @@ func TestAutoRouteLogsCanBeFilteredOrderedAndFetchedByRequestId(t *testing.T) {
 	require.NoError(t, LOG_DB.Exec("DELETE FROM auto_route_logs").Error)
 	t.Cleanup(func() { LOG_DB.Exec("DELETE FROM auto_route_logs") })
 	require.NoError(t, BatchInsertAutoRouteLogs([]*AutoRouteLog{
-		{CreatedAt: 100, RequestId: "req-1", UserId: 1, Model: "model-a", Outcome: AutoRouteOutcomeRouted, Judgment: "live", TaskType: "code.build", Detail: `{"n":1}`},
-		{CreatedAt: 200, RequestId: "req-2", UserId: 2, Model: "model-a", Outcome: AutoRouteOutcomeFailed, Judgment: "unroutable", Detail: `{"n":2}`},
-		{CreatedAt: 300, RequestId: "req-3", UserId: 1, Model: "model-b", Outcome: AutoRouteOutcomeRouted, Judgment: "cache", TaskType: "general.chat", Detail: `{"n":3}`},
+		{CreatedAt: 100, RequestId: "req-1", RequestParams: `{"experiment_id":"exp-a","n":1}`, UserId: 1, Model: "model-a", Outcome: AutoRouteOutcomeRouted, Judgment: "live", TaskType: "code.build", Detail: `{"n":1}`},
+		{CreatedAt: 200, RequestId: "req-2", RequestParams: `{"experiment_id":"exp-b","n":"100%"}`, UserId: 2, Model: "model-a", Outcome: AutoRouteOutcomeFailed, Judgment: "unroutable", Detail: `{"n":2}`},
+		{CreatedAt: 300, RequestId: "req-3", RequestParams: `{"experiment_id":"exp-a","n":1}`, UserId: 1, Model: "model-b", Outcome: AutoRouteOutcomeRouted, Judgment: "cache", TaskType: "general.chat", Detail: `{"n":3}`},
 	}))
 
 	all, total, err := GetAutoRouteLogs(AutoRouteLogQuery{})
@@ -76,17 +77,23 @@ func TestAutoRouteLogsCanBeFilteredOrderedAndFetchedByRequestId(t *testing.T) {
 		query AutoRouteLogQuery
 		want  []string
 	}{
-		"by user":             {AutoRouteLogQuery{UserId: 1}, []string{"req-3", "req-1"}},
-		"by model":            {AutoRouteLogQuery{Model: "model-a"}, []string{"req-2", "req-1"}},
-		"by outcome":          {AutoRouteLogQuery{Outcome: AutoRouteOutcomeFailed}, []string{"req-2"}},
-		"by judgment":         {AutoRouteLogQuery{Judgment: "cache"}, []string{"req-3"}},
-		"by task type":        {AutoRouteLogQuery{TaskType: "code.build"}, []string{"req-1"}},
-		"by request id":       {AutoRouteLogQuery{RequestId: " req-2 "}, []string{"req-2"}},
-		"from a time":         {AutoRouteLogQuery{StartTime: 150}, []string{"req-3", "req-2"}},
-		"until a time":        {AutoRouteLogQuery{EndTime: 250}, []string{"req-2", "req-1"}},
-		"filters combine":     {AutoRouteLogQuery{UserId: 1, Model: "model-a"}, []string{"req-1"}},
-		"nothing matches":     {AutoRouteLogQuery{Model: "model-z"}, nil},
-		"a page past the end": {AutoRouteLogQuery{Offset: 5}, nil},
+		"by user":                   {AutoRouteLogQuery{UserId: 1}, []string{"req-3", "req-1"}},
+		"by model":                  {AutoRouteLogQuery{Model: "model-a"}, []string{"req-2", "req-1"}},
+		"by outcome":                {AutoRouteLogQuery{Outcome: AutoRouteOutcomeFailed}, []string{"req-2"}},
+		"by judgment":               {AutoRouteLogQuery{Judgment: "cache"}, []string{"req-3"}},
+		"by task type":              {AutoRouteLogQuery{TaskType: "code.build"}, []string{"req-1"}},
+		"by request id":             {AutoRouteLogQuery{RequestId: " req-2 "}, []string{"req-2"}},
+		"by request params":         {AutoRouteLogQuery{RequestParams: ` "experiment_id":"exp-a" `}, []string{"req-3", "req-1"}},
+		"by a nested value":         {AutoRouteLogQuery{RequestParams: "exp-b"}, []string{"req-2"}},
+		"a literal percent":         {AutoRouteLogQuery{RequestParams: `100%"`}, []string{"req-2"}},
+		"percent is no wildcard":    {AutoRouteLogQuery{RequestParams: `1%"`}, nil},
+		"underscore is no wildcard": {AutoRouteLogQuery{RequestParams: "exp_a"}, nil},
+		"params and user":           {AutoRouteLogQuery{RequestParams: "exp-b", UserId: 1}, nil},
+		"from a time":               {AutoRouteLogQuery{StartTime: 150}, []string{"req-3", "req-2"}},
+		"until a time":              {AutoRouteLogQuery{EndTime: 250}, []string{"req-2", "req-1"}},
+		"filters combine":           {AutoRouteLogQuery{UserId: 1, Model: "model-a"}, []string{"req-1"}},
+		"nothing matches":           {AutoRouteLogQuery{Model: "model-z"}, nil},
+		"a page past the end":       {AutoRouteLogQuery{Offset: 5}, nil},
 	} {
 		got, count, err := GetAutoRouteLogs(tt.query)
 		require.NoError(t, err, name)
@@ -99,6 +106,9 @@ func TestAutoRouteLogsCanBeFilteredOrderedAndFetchedByRequestId(t *testing.T) {
 			assert.Equal(t, int64(len(tt.want)), count, name)
 		}
 	}
+
+	_, _, err = GetAutoRouteLogs(AutoRouteLogQuery{RequestParams: "e"})
+	assert.Error(t, err, "a one-character keyword would match nearly every row")
 
 	page, total, err := GetAutoRouteLogs(AutoRouteLogQuery{Offset: 1, Limit: 1})
 	require.NoError(t, err)
@@ -169,23 +179,59 @@ func TestBatchInsertAutoRouteLogsKeepsEveryStatementUnderThePostgresParameterLim
 	assert.LessOrEqual(t, widest.Load(), int64(65535))
 }
 
-// 这张表是新增的，没有旧结构要升级；迁移连跑两次证明幂等，列表要用的索引都在。
+// 迁移连跑两次证明幂等，列表要用的索引都在；已经有数据的旧表（没有 request_params 列）
+// 升级后旧行保留，新列为空串。
 func TestAutoRouteLogTableMigrationIsIdempotent(t *testing.T) {
-	db, err := gorm.Open(sqlite.Open("file:"+t.Name()+"?mode=memory&cache=shared"), &gorm.Config{})
-	require.NoError(t, err)
-	sqlDB, err := db.DB()
-	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, sqlDB.Close()) })
-
-	for range 2 {
-		require.NoError(t, db.AutoMigrate(&AutoRouteLog{}))
+	openDB := func(t *testing.T) *gorm.DB {
+		db, err := gorm.Open(sqlite.Open("file:"+strings.ReplaceAll(t.Name(), "/", "_")+"?mode=memory&cache=shared"), &gorm.Config{})
+		require.NoError(t, err)
+		sqlDB, err := db.DB()
+		require.NoError(t, err)
+		t.Cleanup(func() { require.NoError(t, sqlDB.Close()) })
+		return db
 	}
+	indexed := []string{"created_at", "request_id", "user_id", "outcome", "model"}
 
-	for _, column := range []string{"created_at", "request_id", "user_id", "outcome", "model"} {
-		assert.True(t, db.Migrator().HasIndex(&AutoRouteLog{}, "idx_auto_route_logs_"+column), "index on %s", column)
-	}
-	require.NoError(t, db.Create(&AutoRouteLog{CreatedAt: 1, RequestId: "req", Detail: "{}"}).Error)
-	var total int64
-	require.NoError(t, db.Model(&AutoRouteLog{}).Count(&total).Error)
-	assert.Equal(t, int64(1), total)
+	t.Run("fresh database", func(t *testing.T) {
+		db := openDB(t)
+		for range 2 {
+			require.NoError(t, db.AutoMigrate(&AutoRouteLog{}))
+		}
+
+		for _, column := range indexed {
+			assert.True(t, db.Migrator().HasIndex(&AutoRouteLog{}, "idx_auto_route_logs_"+column), "index on %s", column)
+		}
+		require.NoError(t, db.Create(&AutoRouteLog{CreatedAt: 1, RequestId: "req", Detail: "{}"}).Error)
+		var total int64
+		require.NoError(t, db.Model(&AutoRouteLog{}).Count(&total).Error)
+		assert.Equal(t, int64(1), total)
+	})
+
+	t.Run("table created before request_params existed", func(t *testing.T) {
+		db := openDB(t)
+		// 与 GORM 在 SQLite 上为旧结构生成的 DDL 一致：列类型不同会让迁移器改走重建表的分支。
+		require.NoError(t, db.Exec("CREATE TABLE `auto_route_logs` (`id` integer PRIMARY KEY AUTOINCREMENT,`created_at` integer,"+
+			"`request_id` varchar(64),`user_id` integer,`token_id` integer,`using_group` varchar(64),`outcome` varchar(16),"+
+			"`judgment` varchar(32),`source` varchar(16),`task_type` varchar(64),`model` varchar(255),`effort` varchar(16),"+
+			"`preference` varchar(16),`jev_latency_ms` integer,`detail` text)").Error)
+		for _, column := range []string{"created_at", "request_id", "user_id", "outcome", "model"} {
+			require.NoError(t, db.Exec("CREATE INDEX `idx_auto_route_logs_"+column+"` ON `auto_route_logs`(`"+column+"`)").Error)
+		}
+		require.NoError(t, db.Exec(`INSERT INTO auto_route_logs (created_at, request_id, outcome, detail) VALUES (1, 'old-req', 'routed', '{}')`).Error)
+		assert.False(t, db.Migrator().HasColumn(&AutoRouteLog{}, "request_params"))
+
+		for range 2 {
+			require.NoError(t, db.AutoMigrate(&AutoRouteLog{}))
+		}
+
+		assert.True(t, db.Migrator().HasColumn(&AutoRouteLog{}, "request_params"))
+		var kept AutoRouteLog
+		require.NoError(t, db.Where("request_id = ?", "old-req").First(&kept).Error)
+		assert.Equal(t, int64(1), kept.CreatedAt)
+		assert.Empty(t, kept.RequestParams)
+		require.NoError(t, db.Create(&AutoRouteLog{CreatedAt: 2, RequestId: "new-req", RequestParams: `{"experiment_id":"exp-a","n":1}`, Detail: "{}"}).Error)
+		var found AutoRouteLog
+		require.NoError(t, db.Where("request_params LIKE ?", "%exp-a%").First(&found).Error)
+		assert.Equal(t, "new-req", found.RequestId)
+	})
 }

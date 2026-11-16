@@ -5937,6 +5937,7 @@
     "Request names your users call": "用户调用的请求模型名",
     "Request overrides, routing behavior, and upstream model automation": "请求覆盖、路由行为和上游模型自动化",
     "Request Path": "请求路径",
+    "Request parameters": "请求参数",
     "Request policies": "请求策略",
     "Request policy decisions": "请求策略决策",
     "Request processing": "请求处理",

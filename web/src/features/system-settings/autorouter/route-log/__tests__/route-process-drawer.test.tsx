@@ -29,6 +29,7 @@ const logItem = {
   id: 1,
   created_at: 1_760_000_000,
   request_id: 'req-1',
+  request_params: '',
   user_id: 42,
   token_id: 7,
   using_group: 'vip',

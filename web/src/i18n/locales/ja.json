@@ -5913,6 +5913,7 @@
     "Request names your users call": "ユーザーが呼び出すリクエストモデル名",
     "Request overrides, routing behavior, and upstream model automation": "リクエスト上書き、ルーティング動作、上流モデル自動化",
     "Request Path": "リクエストパス",
+    "Request parameters": "リクエストパラメータ",
     "Request policies": "リクエストポリシー",
     "Request policy decisions": "リクエストポリシーの判断",
     "Request processing": "リクエスト処理",

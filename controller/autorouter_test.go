@@ -310,9 +310,19 @@ func TestAutoRouteLogEndpointsListWithoutDetailAndReturnTheProcessByRequestId(t 
 	setupAutoRouterControllerTest(t)
 	require.NoError(t, model.BatchInsertAutoRouteLogs([]*model.AutoRouteLog{
 		{CreatedAt: 100, RequestId: "req-ok", UserId: 1, Model: "coder", Outcome: model.AutoRouteOutcomeRouted, Detail: `{"result":{"resolved_model":"coder-high"},"trace":{"judgment":"live"}}`},
-		{CreatedAt: 200, RequestId: "req-failed", UserId: 2, Outcome: model.AutoRouteOutcomeFailed, Detail: `{"error":"no model"}`},
+		{CreatedAt: 200, RequestId: "req-failed", RequestParams: `{"experiment_id":"exp-1"}`, UserId: 2, Outcome: model.AutoRouteOutcomeFailed, Detail: `{"error":"no model"}`},
 		{CreatedAt: 300, RequestId: "req-broken", UserId: 2, Outcome: model.AutoRouteOutcomeRouted, Detail: `not json`},
 	}))
+
+	byParams := callAutoRouteLogHandler(t, GetAutoRouteLogs, "/api/auto-route-logs/?request_params=exp-1", nil)
+	require.True(t, byParams.Success, byParams.Message)
+	var paramsPage struct {
+		Items []map[string]any `json:"items"`
+	}
+	require.NoError(t, common.Unmarshal(byParams.Data, &paramsPage))
+	require.Len(t, paramsPage.Items, 1)
+	assert.Equal(t, "req-failed", paramsPage.Items[0]["request_id"])
+	assert.Equal(t, `{"experiment_id":"exp-1"}`, paramsPage.Items[0]["request_params"])
 
 	list := callAutoRouteLogHandler(t, GetAutoRouteLogs, "/api/auto-route-logs/?user_id=2&page_size=10", nil)
 	require.True(t, list.Success, list.Message)

@@ -5913,6 +5913,7 @@
     "Request names your users call": "Имена запроса, которые вызывают пользователи",
     "Request overrides, routing behavior, and upstream model automation": "Переопределения запросов, маршрутизация и автоматизация upstream-моделей",
     "Request Path": "Путь запроса",
+    "Request parameters": "Параметры запроса",
     "Request policies": "Политики запросов",
     "Request policy decisions": "Решения политики запросов",
     "Request processing": "Обработка запросов",

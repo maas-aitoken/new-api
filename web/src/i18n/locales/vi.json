@@ -5913,6 +5913,7 @@
     "Request names your users call": "Tên yêu cầu mà người dùng gọi",
     "Request overrides, routing behavior, and upstream model automation": "Ghi đè yêu cầu, hành vi định tuyến và tự động hóa mô hình upstream",
     "Request Path": "Đường dẫn yêu cầu",
+    "Request parameters": "Tham số yêu cầu",
     "Request policies": "Chính sách yêu cầu",
     "Request policy decisions": "Quyết định chính sách yêu cầu",
     "Request processing": "Xử lý yêu cầu",
