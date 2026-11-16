@@ -27,6 +27,10 @@ type Option struct {
 	Value string `json:"value"`
 }
 
+const quotaDisplayTypeOptionKey = "general_setting.quota_display_type"
+
+var quotaDisplayTypeConfigured bool
+
 func AllOption() ([]*Option, error) {
 	var options []*Option
 	var err error
@@ -37,6 +41,7 @@ func AllOption() ([]*Option, error) {
 func InitOptionMap() {
 	common.OptionMapRWMutex.Lock()
 	common.OptionMap = make(map[string]string)
+	quotaDisplayTypeConfigured = false
 
 	// 添加原有的系统配置
 	common.OptionMap["FileUploadPermission"] = strconv.Itoa(common.FileUploadPermission)
@@ -261,6 +266,15 @@ func loadOptionsFromDatabase() {
 	passkeyOptionMutex.Lock()
 	defer passkeyOptionMutex.Unlock()
 	options, _ := AllOption()
+	common.OptionMapRWMutex.Lock()
+	quotaDisplayTypeConfigured = false
+	for _, option := range options {
+		if option.Key == quotaDisplayTypeOptionKey {
+			quotaDisplayTypeConfigured = true
+			break
+		}
+	}
+	common.OptionMapRWMutex.Unlock()
 	passkeyOptions := make(map[string]string)
 	for _, option := range options {
 		if IsPasskeyDomainOption(option.Key) {
@@ -475,6 +489,9 @@ func updateOptionMap(key string, value string) (err error) {
 	common.OptionMapRWMutex.Lock()
 	defer common.OptionMapRWMutex.Unlock()
 	common.OptionMap[key] = value
+	if key == quotaDisplayTypeOptionKey {
+		quotaDisplayTypeConfigured = true
+	}
 
 	// 检查是否是模型配置 - 使用更规范的方式处理
 	if handleConfigUpdate(key, value) {
@@ -529,8 +546,10 @@ func updateOptionMap(key string, value string) (err error) {
 		case "LogConsumeEnabled":
 			common.LogConsumeEnabled = boolValue
 		case "DisplayInCurrencyEnabled":
-			// 兼容旧字段：同步到新配置 general_setting.quota_display_type（运行时生效）
-			// true -> USD, false -> TOKENS
+			if quotaDisplayTypeConfigured {
+				break
+			}
+			// Apply the legacy switch only when the modern display type is not configured.
 			newVal := "USD"
 			if !boolValue {
 				newVal = "TOKENS"

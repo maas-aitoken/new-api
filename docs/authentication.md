@@ -63,6 +63,10 @@
 | `DELETE /api/user/sessions/:sid` | Bearer | 撤销指定登录会话，包括当前会话 |
 | `POST /api/user/sessions/revoke-others` | Bearer | 保留当前会话并撤销其他会话 |
 
+控制台的 `/password-login` 是独立的账号密码入口，复用原 `POST /api/user/login`，继续遵守密码登录总开关和 `HOIDC_ENFORCE_SSO` 策略。启用 HOIDC 后，普通入口未登录会自动跳转 SSO。
+
+点击注销时，前端先等待正在进行的会话刷新完成，再调用原 `POST /api/user/auth/logout` 撤销 MaaS 会话并清除 Refresh Cookie，同时清除本地身份和未完成的登录流程；随后访问原 SSO 跳转接口并携带 `isLoginOut=1`。后端只将这个标记透传给 SSO 登录页，由 SSO 页面调用自身 `/auth/login-out` 并清除其站点登录状态，再显示登录界面。注销过程中不接受迟到的刷新结果恢复本地身份。SSO 站点的存储和 Cookie 由 SSO 自身处理，MaaS 前端不直接操作其他站点的会话。
+
 客户端内存中已有会话时，应在 refresh/logout 请求中发送 `X-Auth-Session: <sid>`。Refresh Cookie 与该 SID 不一致时，两个端点都返回 `409 AUTH_SESSION_MISMATCH`，且不会轮换、撤销或清除任何会话；客户端先通过 refresh 清除本标签页的旧 SID、恢复 Cookie 当前对应的会话，再重试 logout。冷启动尚无内存会话时可以省略该请求头。
 
 并发使用同一个 Refresh Token 时，服务端通过确定性轮换恢复同一个后继 Token，多个浏览器标签页不会因丢失“胜者”响应而被迫退出。最近一代 Refresh Token 在短暂容错窗口结束后再次出现会撤销对应会话；无法识别的更早代或随机 Token 只会被拒绝，不会允许攻击者凭猜测踢掉会话。

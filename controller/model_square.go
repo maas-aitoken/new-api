@@ -115,13 +115,13 @@ type modelSquareRoute struct {
 	Setting   *string
 }
 
-// modelSquarePricingFromPricing 把倍率换算成美元/百万 token 的单价：倍率 1 对应输入 2 美元，
-// 与前端 calculateTokenPrice 的换算一致。
+// modelSquarePricingFromPricing converts legacy ratios to USD per million tokens
+// using the configured quota unit.
 func modelSquarePricingFromPricing(pricing model.Pricing) *modelSquarePricing {
 	if pricing.QuotaType == 1 {
 		return &modelSquarePricing{InputPrice: pricing.ModelPrice, OutputPrice: pricing.ModelPrice}
 	}
-	inputPrice := pricing.ModelRatio * 2
+	inputPrice := pricing.ModelRatio * 1_000_000 / common.QuotaPerUnit
 	result := &modelSquarePricing{
 		InputPrice:  inputPrice,
 		OutputPrice: inputPrice * pricing.CompletionRatio,
@@ -249,6 +249,25 @@ func buildModelSquareItems(
 	for _, pricing := range model.GetPricing() {
 		pricingByName[pricing.ModelName] = pricing
 	}
+	snapshot, err := model.GetModelPricingSnapshot(append([]string(nil), names...))
+	if err != nil {
+		return nil, err
+	}
+	basePricingByName := make(map[string]*modelSquareBasePricing, len(snapshot.Entries))
+	for _, entry := range snapshot.Entries {
+		values := make(model.PricingValues)
+		for _, key := range []string{"ModelPrice", "ModelRatio", "CompletionRatio", "CacheRatio", "CreateCacheRatio", "ImageRatio", "AudioRatio", "AudioCompletionRatio", "billing_setting.billing_mode", "billing_setting.billing_expr"} {
+			if value, ok := entry.Effective[key]; ok {
+				values[key] = value
+			}
+		}
+		basePricingByName[entry.ModelName] = &modelSquareBasePricing{
+			SourceModel:    entry.ModelName,
+			Effective:      values,
+			CacheWriteMode: entry.CacheWriteMode,
+			BillingDetails: entry.BillingDetails,
+		}
+	}
 	var vendorRows []model.Vendor
 	if err := model.DB.Find(&vendorRows).Error; err != nil {
 		return nil, err
@@ -270,6 +289,7 @@ func buildModelSquareItems(
 		}
 		item := modelSquareItemFromModel(meta, name, pricingByName, vendors)
 		item.Channels = channelsByName[name]
+		item.BasePricing = basePricingByName[name]
 		items = append(items, item)
 	}
 	return items, nil
@@ -378,25 +398,6 @@ func getModelSquareItemByCatalogKey(key string) (*modelSquareItem, error) {
 		return nil, errors.New("model not found")
 	}
 	items[0].EndpointMap = getModelSquareEndpointMap(items[0].SupportedEndpointTypes)
-	snapshot, err := model.GetModelPricingSnapshot([]string{modelName})
-	if err != nil {
-		return nil, err
-	}
-	if len(snapshot.Entries) == 1 {
-		entry := snapshot.Entries[0]
-		values := make(model.PricingValues)
-		for _, key := range []string{"ModelPrice", "ModelRatio", "CompletionRatio", "CacheRatio", "CreateCacheRatio", "ImageRatio", "AudioRatio", "AudioCompletionRatio", "billing_setting.billing_mode", "billing_setting.billing_expr"} {
-			if value, ok := entry.Effective[key]; ok {
-				values[key] = value
-			}
-		}
-		items[0].BasePricing = &modelSquareBasePricing{
-			SourceModel:    modelName,
-			Effective:      values,
-			CacheWriteMode: entry.CacheWriteMode,
-			BillingDetails: entry.BillingDetails,
-		}
-	}
 	return &items[0], nil
 }
 

@@ -49,6 +49,32 @@ var hoidcRedirectCases = []struct{ name, redirect, want string }{
 	{"script url", "javascript:alert(1)", "/"},
 }
 
+func TestSsoHoidcLoginForwardsNativeLogout(t *testing.T) {
+	configureHoidcTest(t, "https://sso.example.com/api")
+	for _, test := range []struct{ input, want string }{{"", ""}, {"1", "1"}, {"0", ""}, {"unexpected", ""}} {
+		t.Run("logout="+test.input, func(t *testing.T) {
+			response := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(response)
+			c.Request = httptest.NewRequest(http.MethodGet, "/api/sso/hoidc/login?isLoginOut="+url.QueryEscape(test.input)+"&redirect=%2Fsso-callback", nil)
+			SsoHoidcLogin(c)
+			require.Equal(t, http.StatusFound, response.Code)
+			login, err := url.Parse(response.Header().Get("Location"))
+			require.NoError(t, err)
+			assert.Equal(t, test.want, login.Query().Get("isLoginOut"))
+			assert.Equal(t, "maas", login.Query().Get("platform_id"))
+			wantPath := "/login"
+			if test.want == "1" {
+				wantPath = "/"
+			}
+			assert.Equal(t, wantPath, login.Path)
+			callback, err := url.Parse(login.Query().Get("redirect"))
+			require.NoError(t, err)
+			assert.Equal(t, "/api/sso/hoidc/callback", callback.Path)
+			assert.Equal(t, "/sso-callback", callback.Query().Get("redirect"))
+		})
+	}
+}
+
 func TestSsoHoidcLoginKeepsRedirectOnSite(t *testing.T) {
 	configureHoidcTest(t, "https://sso.example.com/api")
 	for _, test := range hoidcRedirectCases {
