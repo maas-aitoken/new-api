@@ -283,6 +283,11 @@ func (s *responsesWSSession) runCall(c *gin.Context, state *responsesWSCallState
 		if apiErr = PrepareRequestBilling(c, info); apiErr != nil {
 			return apiErr
 		}
+		if info.TieredBillingSnapshot == nil {
+			if apiErr = service.PrepareChannelBilling(c, info, info.PriceData.QuotaToPreConsume); apiErr != nil {
+				return apiErr
+			}
+		}
 		billingPrepared = true
 		var payload []byte
 		payload, apiErr = buildResponsesWSCreatePayload(c, info, create.Request, create.Generate, create.StreamID)
@@ -313,6 +318,11 @@ func (s *responsesWSSession) runCall(c *gin.Context, state *responsesWSCallState
 			} else {
 				info.PriceData.GroupRatioInfo = helper.HandleGroupRatio(c, info)
 				if apiErr = service.PrepareTieredBillingForSelectedGroup(c, info); apiErr != nil {
+					return apiErr
+				}
+			}
+			if info.TieredBillingSnapshot == nil {
+				if apiErr = service.PrepareChannelBilling(c, info, info.PriceData.QuotaToPreConsume); apiErr != nil {
 					return apiErr
 				}
 			}
@@ -603,7 +613,10 @@ func (s *responsesWSSession) restoreConnectionContext(c *gin.Context, model stri
 	for key, value := range s.lockedContext {
 		c.Set(string(key), value)
 	}
-	common.SetContextKey(c, appconstant.ContextKeyChannelSetting, channel.GetSetting())
+	channelSetting := channel.GetSetting()
+	common.SetContextKey(c, appconstant.ContextKeyChannelSetting, channelSetting)
+	common.SetContextKey(c, appconstant.ContextKeyChannelCostMultiplier,
+		channelSetting.CostMultiplierForModel(appmodel.CostMultiplierModel(channel.GetModels(), model)))
 	common.SetContextKey(c, appconstant.ContextKeyChannelOtherSetting, channel.GetOtherSettings())
 	common.SetContextKey(c, appconstant.ContextKeyChannelParamOverride, channel.GetParamOverride())
 	common.SetContextKey(c, appconstant.ContextKeyChannelModelMapping, channel.GetModelMapping())

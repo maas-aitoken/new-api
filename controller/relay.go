@@ -231,6 +231,12 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			newAPIError = billingErr
 			break
 		}
+		if relayInfo.TieredBillingSnapshot == nil {
+			if billingErr := service.PrepareChannelBilling(c, relayInfo, relayInfo.PriceData.QuotaToPreConsume); billingErr != nil {
+				newAPIError = billingErr
+				break
+			}
+		}
 
 		bodyStorage, bodyErr := common.GetBodyStorage(c)
 		if bodyErr != nil {
@@ -452,7 +458,7 @@ func finishInputFor(c *gin.Context, info *relaycommon.RelayInfo, apiErr *types.N
 	// 费用倍率在选定渠道时（SetupContextForSelectedChannel，每次尝试都会经过）按用户请求
 	// 一侧的模型名算好放在上下文里。这里不按 UpstreamModelName 查：那是映射后的上游名，
 	// 流式响应还会把它改成上游回报的模型名（比如带日期的快照名），会查不到。
-	// 倍率不参与计费，只乘 relay_attempts.cost_actual。
+	// 计费已按同一倍率扣过（service.ChannelBillingMultiplier），这里只把它记进 relay_attempts。
 	if multiplier, ok := common.GetContextKeyType[float64](c, constant.ContextKeyChannelCostMultiplier); ok && multiplier > 0 {
 		in.CostMultiplier = multiplier
 	}
@@ -848,6 +854,7 @@ func executeTaskSubmissionWith(
 		OriginModelName: relayInfo.OriginModelName,
 		PerCallBilling:  common.StringsContains(constant.TaskPricePatches, relayInfo.OriginModelName) || relayInfo.PriceData.UsePrice,
 		TieredSnapshot:  relayInfo.TieredBillingSnapshot,
+		CostMultiplier:  service.ChannelBillingMultiplier(c, relayInfo),
 	}
 	task.Quota = result.Quota
 	task.Data = result.TaskData
