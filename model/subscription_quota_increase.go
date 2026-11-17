@@ -171,7 +171,5 @@ func IncreaseUserSubscriptionQuota(userId int) (*SubscriptionPlan, int64, error)
 	if groupChanged {
 		refreshSubscriptionUserGroupCache(userId, common.LogText("subscription quota increase"))
 	}
-	// amount (0 = unlimited) is for the console notice.
-	RecordLog(userId, LogTypeSystem, common.NewMessage("Subscription quota increased, plan: {{plan}}", map[string]any{"plan": next.Title, "amount": next.TotalAmount}))
 	return &next, previousTotal, nil
 }
