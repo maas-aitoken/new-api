@@ -7147,7 +7147,7 @@
     "Theme Settings": "主题设置",
     "There are both add and remove models pending, but you only selected one type. Confirm submitting only the selected items?": "当前有新增和删除两类待处理模型，但您只勾选了其中一类。确认仅提交已勾选的部分吗？",
     "There is a rule for vip billed as premium → use its ratio 0.3": "存在「vip 按 premium 计费」的规则 → 用规则里的 0.3",
-    "These controls apply to all GPT requests sent through supported GPT channels.": "这些控制项会应用于所有通过受支持 GPT 渠道发送的请求。",
+    "These controls apply to GPT and o-series model requests sent through supported GPT channels.": "这些控制项仅应用于通过受支持 GPT 渠道发送的 GPT 与 o 系列模型请求。",
     "These controls apply to GPT requests sent through channels whose tags match any configured tag. Individual channel overrides can be added later.": "这些控制项会应用于通过标签匹配渠道发送的 GPT 请求，后续可以增加单个渠道的覆盖设置。",
     "These models are still in your selection but were not returned by the upstream listing. Entries that are only model_mapping source aliases are omitted. Toggle to adjust before saving.": "这些模型仍然在您的勾选列表中，但上游已不再返回该名称；仅作为 model_mapping 来源键而不会出现在 upstream 列表的别名已从本视图排除，请在保存前调整勾选。",
     "These models match this rule and have no metadata row of their own.": "这些模型匹配该规则，但没有自己的元数据行。",

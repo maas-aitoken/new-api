@@ -4,18 +4,37 @@ import (
 	rootcommon "github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/relaykit/dto"
+	kitreasoning "github.com/QuantumNous/new-api/relaykit/relayconvert/reasoning"
 	"github.com/QuantumNous/new-api/setting/model_setting"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
 
 // IsGPTRequestPolicyChannel reports whether the global GPT request policy
-// applies to this channel. Both direct OpenAI API channels and ChatGPT
-// Subscription (Codex) channels expose the GPT service tier and reasoning
-// controls used by this policy.
+// applies to this request. The policy speaks the GPT service tier and
+// reasoning-effort vocabulary, so it must only reach models that accept it.
 func IsGPTRequestPolicyChannel(info *RelayInfo) bool {
-	return info != nil && info.ChannelMeta != nil &&
-		(info.ChannelType == constant.ChannelTypeOpenAI || info.ChannelType == constant.ChannelTypeCodex)
+	if info == nil || info.ChannelMeta == nil {
+		return false
+	}
+	switch info.ChannelType {
+	case constant.ChannelTypeCodex:
+		// ChatGPT Subscription channels only serve the GPT and o-series
+		// models, including names such as codex-mini-latest that the model
+		// family pattern does not cover.
+		return true
+	case constant.ChannelTypeOpenAI:
+		// The OpenAI channel type is also how every other OpenAI-compatible
+		// upstream is reached, so the model decides. The upstream name is the
+		// mapped, suffix-stripped name actually sent upstream.
+		modelName := info.GetUpstreamModelName()
+		if modelName == "" {
+			modelName = info.GetOriginModelName()
+		}
+		return kitreasoning.IsGPTFamilyModel(modelName)
+	default:
+		return false
+	}
 }
 
 // ShouldForwardGPTServiceTier reports whether the global policy allows

@@ -215,11 +215,35 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 	relayInfo.RetryIndex = 0
 	relayInfo.LastError = nil
 
-	for ; retryParam.GetRetry() <= common.RetryTimes; retryParam.IncreaseRetry() {
+	for ; retryParam.GetRetry() <= common.RetryTimes || common.GetContextKeyBool(c, constant.ContextKeyAutoRouted); retryParam.IncreaseRetry() {
 		relayInfo.StreamStatus = nil
 		relayInfo.PerformanceBusinessRejection = false
 		relayInfo.PerformanceOutputTokens = 0
 		relayInfo.RetryIndex = retryParam.GetRetry()
+		if retryParam.GetRetry() > 0 && common.GetContextKeyBool(c, constant.ContextKeyAutoRouted) {
+			nextModel, routeErr := middleware.NextAutoRetryModel(c)
+			if routeErr != nil {
+				newAPIError = routeErr
+				break
+			}
+			if nextModel == "" {
+				break
+			}
+			relayInfo.OriginModelName = nextModel
+			retryParam.ModelName = nextModel
+			common.SetContextKey(c, constant.ContextKeyAutoGroupIndex, 0)
+			common.SetContextKey(c, constant.ContextKeyAutoGroupRetryIndex, 0)
+			request, requestErr := helper.GetAndValidateRequest(c, relayFormat)
+			if requestErr != nil {
+				newAPIError = types.NewError(requestErr, types.ErrorCodeInvalidRequest, types.ErrOptionWithSkipRetry())
+				break
+			}
+			relayInfo.Request = request
+			if billingErr := prepareAutoRetryBilling(c, relayInfo); billingErr != nil {
+				newAPIError = billingErr
+				break
+			}
+		}
 		channel, channelErr := getChannel(c, relayInfo, retryParam)
 		if channelErr != nil {
 			logger.LogError(c, channelErr.Error())
@@ -348,7 +372,16 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		newAPIError = service.NormalizeViolationFeeError(newAPIError)
 		relayInfo.LastError = newAPIError
 
-		decision := service.DecideRelayRetry(c, newAPIError, common.RetryTimes-retryParam.GetRetry())
+		retryTimes := common.RetryTimes - retryParam.GetRetry()
+		if common.GetContextKeyBool(c, constant.ContextKeyAutoRouted) {
+			// The ordinary budget applies to channels of one model. Auto retries
+			// instead continue until every eligible model has had one attempt.
+			retryTimes = max(retryTimes, 1)
+		}
+		decision := service.DecideRelayRetry(c, newAPIError, retryTimes)
+		if common.GetContextKeyBool(c, constant.ContextKeyAutoRouted) && decision.Action == "retry" {
+			service.ExcludeAutoModel(c, relayInfo.OriginModelName)
+		}
 		service.RecordPolicyFailure(c, channel.Id, newAPIError, decision)
 		processChannelError(c, *types.NewChannelError(channel.Id, channel.Type, channel.Name, channel.ChannelInfo.IsMultiKey, common.GetContextKeyString(c, constant.ContextKeyChannelKey), channel.GetAutoBan()), newAPIError, relayInfo)
 

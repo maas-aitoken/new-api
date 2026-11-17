@@ -16,17 +16,361 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/i18n"
+	"github.com/QuantumNous/new-api/middleware"
+	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/relay/channel"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relay/helper"
+	relaydto "github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting/autorouter_setting"
+	"github.com/QuantumNous/new-api/setting/config"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
+	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	"github.com/QuantumNous/new-api/setting/system_setting"
 	"github.com/gin-gonic/gin"
+	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 )
+
+func disableRelayTestPerfMetrics(t *testing.T) {
+	t.Helper()
+	saved := map[string]string{}
+	require.NoError(t, config.GlobalConfig.SaveToDB(func(key, value string) error {
+		if key == "perf_metrics_setting.enabled" {
+			saved[key] = value
+		}
+		return nil
+	}))
+	require.NoError(t, config.GlobalConfig.LoadFromDB(map[string]string{"perf_metrics_setting.enabled": "false"}))
+	t.Cleanup(func() { require.NoError(t, config.GlobalConfig.LoadFromDB(saved)) })
+}
+
+func TestRelayAutoRetriesNextModelBeyondChannelRetryBudget(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	disableRelayTestPerfMetrics(t)
+	previousDB, previousLogDB := model.DB, model.LOG_DB
+	previousCache, previousRedis := common.MemoryCacheEnabled, common.RedisEnabled
+	previousRetryTimes := common.RetryTimes
+	previousRatios := ratio_setting.ModelRatio2JSONString()
+	previousCompletions := ratio_setting.CompletionRatio2JSONString()
+	previousGroups := ratio_setting.GroupRatio2JSONString()
+	autoSetting := autorouter_setting.GetAutoRouterSetting()
+	previousAutoSetting := *autoSetting
+	autoSetting.Enabled = true
+	autoSetting.DefaultModels = []string{"failed-model", "available-model", "last-model"}
+	autoSetting.TaskModels = map[string][]string{}
+	autoSetting.TaskScores = map[string]map[string]float64{}
+	t.Setenv("JEV_ENDPOINT", "")
+	database, err := gorm.Open(sqlite.Open(t.TempDir()+"/relay.db"), &gorm.Config{})
+	require.NoError(t, err)
+	sqlDB, err := database.DB()
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, sqlDB.Close()) })
+	require.NoError(t, database.AutoMigrate(&model.Model{}, &model.Channel{}, &model.Ability{}, &model.ChannelModelStatus{}, &model.ChannelModelCapability{}, &model.User{}, &model.UserSubscription{}, &model.SubscriptionPlan{}, &model.QuotaData{}, &model.Log{}, &model.Token{}))
+	model.DB, model.LOG_DB = database, database
+	common.MemoryCacheEnabled, common.RedisEnabled = true, false
+	common.RetryTimes = 0
+	t.Cleanup(func() {
+		model.DB, model.LOG_DB = previousDB, previousLogDB
+		common.MemoryCacheEnabled, common.RedisEnabled = previousCache, previousRedis
+		model.InitChannelCache()
+		common.RetryTimes = previousRetryTimes
+		require.NoError(t, ratio_setting.UpdateModelRatioByJSONString(previousRatios))
+		require.NoError(t, ratio_setting.UpdateCompletionRatioByJSONString(previousCompletions))
+		require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(previousGroups))
+		*autoSetting = previousAutoSetting
+	})
+	require.NoError(t, ratio_setting.UpdateModelRatioByJSONString(`{"failed-model":1,"available-model":1,"last-model":1}`))
+	require.NoError(t, ratio_setting.UpdateCompletionRatioByJSONString(`{"failed-model":1,"available-model":1,"last-model":1}`))
+	require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(`{"default":1}`))
+	var requests []string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, readErr := io.ReadAll(r.Body)
+		assert.NoError(t, readErr)
+		requests = append(requests, string(body))
+		var requestModel struct{ Model string }
+		assert.NoError(t, common.Unmarshal(body, &requestModel))
+		if requestModel.Model != "last-model" {
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"ok","object":"chat.completion","created":1,"model":"last-model","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+	}))
+	defer upstream.Close()
+	priority, weight := int64(0), uint(1)
+	for id, name := range []string{"failed-model", "available-model", "last-model"} {
+		channel := model.Channel{Id: id + 1, Name: name, Type: constant.ChannelTypeOpenAI, BaseURL: common.GetPointer(upstream.URL), Key: "test", Status: common.ChannelStatusEnabled, Models: name, Group: "default", Priority: &priority, Weight: &weight}
+		require.NoError(t, database.Create(&channel).Error)
+		require.NoError(t, channel.AddAbilities(database))
+	}
+	model.InitChannelCache()
+	require.NoError(t, database.Create(&model.User{Id: 1, Username: "auto-retry-user", Quota: 1_000_000}).Error)
+	require.NoError(t, i18n.Init())
+
+	router := gin.New()
+	router.POST("/v1/chat/completions", func(c *gin.Context) {
+		common.SetContextKey(c, constant.ContextKeyUsingGroup, "default")
+		common.SetContextKey(c, constant.ContextKeyUserGroup, "default")
+		common.SetContextKey(c, constant.ContextKeyUserId, 1)
+		c.Set("id", 1)
+	}, middleware.Distribute(), func(c *gin.Context) {
+		Relay(c, types.RelayFormatOpenAI)
+	})
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"auto","messages":[{"role":"user","content":"hello"}]}`))
+	request.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(response, request)
+	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+	require.Len(t, requests, 3, "each model must be tried once even when the channel retry budget is zero")
+	assert.Contains(t, requests[0], `"model":"failed-model"`)
+	assert.Contains(t, requests[1], `"model":"available-model"`)
+	assert.Contains(t, requests[2], `"model":"last-model"`)
+
+	requests = nil
+	response = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"auto","messages":[{"role":"user","content":"exhaust all models"}]}`))
+	request.Header.Set("Content-Type", "application/json")
+	autoSetting.DefaultModels = []string{"failed-model", "available-model"}
+	router.ServeHTTP(response, request)
+	require.Equal(t, http.StatusTooManyRequests, response.Code)
+	assert.Len(t, requests, 2, "the request ends after every eligible model has failed once")
+}
+
+func TestRelayAutoRetryRefreshesModelScopedRequestState(t *testing.T) {
+	t.Run("reasoning and billing", testRelayAutoRetryRefreshesModelScopedRequestState)
+	t.Run("capability channel filter", testRelayAutoRetryReplacesCapabilityFilter)
+}
+
+func testRelayAutoRetryRefreshesModelScopedRequestState(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	disableRelayTestPerfMetrics(t)
+	previousDB, previousLogDB := model.DB, model.LOG_DB
+	previousCache, previousRedis := common.MemoryCacheEnabled, common.RedisEnabled
+	previousRetryTimes := common.RetryTimes
+	previousRatios := ratio_setting.ModelRatio2JSONString()
+	previousCompletions := ratio_setting.CompletionRatio2JSONString()
+	previousPrices := ratio_setting.ModelPrice2JSONString()
+	previousGroups := ratio_setting.GroupRatio2JSONString()
+	autoSetting := autorouter_setting.GetAutoRouterSetting()
+	previousAutoSetting := *autoSetting
+	gateSetting := operation_setting.GetCapabilityGateSetting()
+	previousGateMode := gateSetting.Mode
+	autoSetting.Enabled = true
+	autoSetting.DefaultModels = []string{"auto-state-first", "auto-state-second", "auto-state-third"}
+	autoSetting.TaskModels = map[string][]string{"general.chat": {"auto-state-first", "auto-state-second", "auto-state-third"}}
+	autoSetting.TaskScores = map[string]map[string]float64{}
+	autoSetting.RankSources = map[string]string{"taxonomy_version": "3"}
+	autoSetting.JevEndpoint = ""
+	t.Setenv("JEV_ENDPOINT", "")
+	t.Setenv("JEV_MODEL", "")
+	t.Setenv("JEV_API_KEY", "")
+	jev := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"model":"jev","answers":{"task_type":{"choice":"general.chat","probabilities":{"general.chat":1}},"difficulty":{"probabilities":{"1":1}}}}`)
+	}))
+	defer jev.Close()
+	autoSetting.JevEndpoint = jev.URL
+	database, err := gorm.Open(sqlite.Open(t.TempDir()+"/relay.db"), &gorm.Config{})
+	require.NoError(t, err)
+	sqlDB, err := database.DB()
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, sqlDB.Close()) })
+	require.NoError(t, database.AutoMigrate(&model.Model{}, &model.Channel{}, &model.Ability{}, &model.ChannelModelStatus{}, &model.ChannelModelCapability{}, &model.User{}, &model.UserSubscription{}, &model.SubscriptionPlan{}, &model.QuotaData{}, &model.Log{}, &model.Token{}))
+	model.DB, model.LOG_DB = database, database
+	common.MemoryCacheEnabled, common.RedisEnabled = true, false
+	common.RetryTimes = 0
+	gateSetting.Mode = operation_setting.CapabilityGateModeOff
+	t.Cleanup(func() {
+		model.DB, model.LOG_DB = previousDB, previousLogDB
+		common.MemoryCacheEnabled, common.RedisEnabled = previousCache, previousRedis
+		model.InitChannelCache()
+		common.RetryTimes = previousRetryTimes
+		require.NoError(t, ratio_setting.UpdateModelRatioByJSONString(previousRatios))
+		require.NoError(t, ratio_setting.UpdateCompletionRatioByJSONString(previousCompletions))
+		require.NoError(t, ratio_setting.UpdateModelPriceByJSONString(previousPrices))
+		require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(previousGroups))
+		*autoSetting = previousAutoSetting
+		gateSetting.Mode = previousGateMode
+		model.InvalidateCapabilityCache()
+	})
+	require.NoError(t, ratio_setting.UpdateModelRatioByJSONString(`{"auto-state-first":1,"auto-state-first-medium":1,"auto-state-second":2,"auto-state-second@effort:medium":2,"auto-state-third":4}`))
+	require.NoError(t, ratio_setting.UpdateCompletionRatioByJSONString(`{"auto-state-first":1,"auto-state-second":1,"auto-state-third":1}`))
+	require.NoError(t, ratio_setting.UpdateModelPriceByJSONString(`{}`))
+	require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(`{"default":1}`))
+	var requests []string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, readErr := io.ReadAll(r.Body)
+		assert.NoError(t, readErr)
+		requests = append(requests, string(body))
+		var request relaydto.GeneralOpenAIRequest
+		assert.NoError(t, common.Unmarshal(body, &request))
+		if request.Model == "auto-state-first" || request.Model == "auto-state-first-medium" {
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		if request.Model == "auto-state-second" && len(request.Tools) == 0 {
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"ok","object":"chat.completion","created":1,"model":"`+request.Model+`","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+	}))
+	defer upstream.Close()
+	priority, weight := int64(0), uint(1)
+	for id, name := range []string{"auto-state-first,auto-state-first-medium", "auto-state-second", "auto-state-third"} {
+		channel := model.Channel{Id: id + 1, Name: name, Type: constant.ChannelTypeOpenAI, BaseURL: common.GetPointer(upstream.URL), Key: "test", Status: common.ChannelStatusEnabled, Models: name, Group: "default", Priority: &priority, Weight: &weight}
+		require.NoError(t, database.Create(&channel).Error)
+		require.NoError(t, channel.AddAbilities(database))
+	}
+	for id := 4; id <= 5; id++ {
+		channel := model.Channel{Id: id, Name: "auto-state-first-extra", Type: constant.ChannelTypeOpenAI, BaseURL: common.GetPointer(upstream.URL), Key: "test", Status: common.ChannelStatusEnabled, Models: "auto-state-first,auto-state-first-medium", Group: "default", Priority: &priority, Weight: &weight}
+		require.NoError(t, database.Create(&channel).Error)
+		require.NoError(t, channel.AddAbilities(database))
+	}
+	require.NoError(t, database.Create(&[]model.Model{
+		{ModelName: "auto-state-first", Capabilities: `{"context":{"max_input_tokens":1000},"tools":{"supported":true},"reasoning":{"supported":true,"efforts":["none","minimal","low","medium","high","xhigh"]}}`},
+		{ModelName: "auto-state-second", Capabilities: `{"tools":{"supported":true},"reasoning":{"supported":true}}`},
+		{ModelName: "auto-state-third", Capabilities: `{"tools":{"supported":true},"reasoning":{"supported":false}}`},
+	}).Error)
+	model.InitChannelCache()
+	require.NoError(t, model.InitCapabilityCache())
+	require.NoError(t, model.SetChannelModelCapability(4, "auto-state-first", `{"tools":{"supported":false}}`))
+	require.NoError(t, model.SetChannelModelCapability(5, "auto-state-first", `{"reasoning":{"efforts":["low","medium"]}}`))
+	require.NoError(t, database.Create(&model.User{Id: 1, Username: "auto-retry-state-user", Quota: 1_000_000}).Error)
+	require.NoError(t, i18n.Init())
+
+	router := gin.New()
+	var billingModel, billingEffort string
+	router.POST("/v1/chat/completions", func(c *gin.Context) {
+		common.SetContextKey(c, constant.ContextKeyUsingGroup, "default")
+		common.SetContextKey(c, constant.ContextKeyUserGroup, "default")
+		common.SetContextKey(c, constant.ContextKeyUserId, 1)
+		c.Set("id", 1)
+	}, middleware.Distribute(), func(c *gin.Context) {
+		previousPrepare := prepareAutoRetryBilling
+		prepareAutoRetryBilling = func(c *gin.Context, info *relaycommon.RelayInfo) *types.NewAPIError {
+			apiErr := previousPrepare(c, info)
+			billingModel = info.GetBillingModelName()
+			billingEffort = info.Request.(*relaydto.GeneralOpenAIRequest).ReasoningEffort
+			return apiErr
+		}
+		defer func() { prepareAutoRetryBilling = previousPrepare }()
+		Relay(c, types.RelayFormatOpenAI)
+	})
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"auto","messages":[{"role":"user","content":"auto retry request state"}],"max_tokens":16,"reasoning_effort":"high","tools":[{"type":"function","function":{"name":"lookup","parameters":{"type":"object"}}}]}`))
+	request.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(response, request)
+	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+	require.Len(t, requests, 2)
+	assert.Contains(t, requests[0], `"model":"auto-state-first"`)
+	assert.Contains(t, requests[1], `"model":"auto-state-second"`)
+	assert.Contains(t, requests[1], `"reasoning_effort":"medium"`)
+	assert.Equal(t, "auto-state-second", billingModel)
+	assert.Equal(t, "medium", billingEffort, "billing must use the same reasoning fields as the rewritten body")
+}
+
+func testRelayAutoRetryReplacesCapabilityFilter(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	disableRelayTestPerfMetrics(t)
+	previousDB, previousLogDB := model.DB, model.LOG_DB
+	previousCache, previousRedis := common.MemoryCacheEnabled, common.RedisEnabled
+	previousRetryTimes := common.RetryTimes
+	previousRatios := ratio_setting.ModelRatio2JSONString()
+	previousCompletions := ratio_setting.CompletionRatio2JSONString()
+	previousGroups := ratio_setting.GroupRatio2JSONString()
+	autoSetting := autorouter_setting.GetAutoRouterSetting()
+	previousAutoSetting := *autoSetting
+	gateSetting := operation_setting.GetCapabilityGateSetting()
+	previousGateMode := gateSetting.Mode
+	autoSetting.Enabled = true
+	autoSetting.DefaultModels = []string{"first", "second", "third"}
+	autoSetting.TaskModels = map[string][]string{}
+	autoSetting.TaskScores = map[string]map[string]float64{}
+	autoSetting.RankSources = map[string]string{"taxonomy_version": "3"}
+	autoSetting.JevEndpoint = ""
+	database, err := gorm.Open(sqlite.Open(t.TempDir()+"/relay.db"), &gorm.Config{})
+	require.NoError(t, err)
+	sqlDB, err := database.DB()
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, sqlDB.Close()) })
+	require.NoError(t, database.AutoMigrate(&model.Model{}, &model.Channel{}, &model.Ability{}, &model.ChannelModelStatus{}, &model.ChannelModelCapability{}, &model.User{}, &model.UserSubscription{}, &model.SubscriptionPlan{}, &model.QuotaData{}, &model.Log{}, &model.Token{}))
+	model.DB, model.LOG_DB = database, database
+	common.MemoryCacheEnabled, common.RedisEnabled = true, false
+	common.RetryTimes = 0
+	gateSetting.Mode = operation_setting.CapabilityGateModeEnforce
+	t.Cleanup(func() {
+		model.DB, model.LOG_DB = previousDB, previousLogDB
+		common.MemoryCacheEnabled, common.RedisEnabled = previousCache, previousRedis
+		model.InitChannelCache()
+		common.RetryTimes = previousRetryTimes
+		require.NoError(t, ratio_setting.UpdateModelRatioByJSONString(previousRatios))
+		require.NoError(t, ratio_setting.UpdateCompletionRatioByJSONString(previousCompletions))
+		require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(previousGroups))
+		*autoSetting = previousAutoSetting
+		gateSetting.Mode = previousGateMode
+		model.InvalidateCapabilityCache()
+	})
+	require.NoError(t, ratio_setting.UpdateModelRatioByJSONString(`{"first":1,"second":1,"third":1}`))
+	require.NoError(t, ratio_setting.UpdateCompletionRatioByJSONString(`{"first":1,"second":1,"third":1}`))
+	require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(`{"default":1}`))
+	var requests []string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, readErr := io.ReadAll(r.Body)
+		assert.NoError(t, readErr)
+		requests = append(requests, string(body))
+		var request struct{ Model string }
+		assert.NoError(t, common.Unmarshal(body, &request))
+		if request.Model != "third" {
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"ok","object":"chat.completion","created":1,"model":"third","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+	}))
+	defer upstream.Close()
+	priority, weight := int64(0), uint(1)
+	for id, name := range []string{"first", "second", "third", "first"} {
+		channel := model.Channel{Id: id + 1, Name: name, Type: constant.ChannelTypeOpenAI, BaseURL: common.GetPointer(upstream.URL), Key: "test", Status: common.ChannelStatusEnabled, Models: name, Group: "default", Priority: &priority, Weight: &weight}
+		require.NoError(t, database.Create(&channel).Error)
+		require.NoError(t, channel.AddAbilities(database))
+	}
+	require.NoError(t, database.Create(&[]model.Model{
+		{ModelName: "first", Capabilities: `{"tools":{"supported":true},"reasoning":{"supported":true}}`},
+		{ModelName: "second", Capabilities: `{"tools":{"supported":true}}`},
+		{ModelName: "third", Capabilities: `{"tools":{"supported":true},"reasoning":{"supported":false}}`},
+	}).Error)
+	model.InitChannelCache()
+	require.NoError(t, model.InitCapabilityCache())
+	require.NoError(t, model.SetChannelModelCapability(4, "first", `{"tools":{"supported":false}}`))
+	require.NoError(t, database.Create(&model.User{Id: 1, Username: "auto-retry-capability-user", Quota: 1_000_000}).Error)
+	require.NoError(t, i18n.Init())
+	router := gin.New()
+	router.POST("/v1/chat/completions", func(c *gin.Context) {
+		common.SetContextKey(c, constant.ContextKeyUsingGroup, "default")
+		common.SetContextKey(c, constant.ContextKeyUserGroup, "default")
+		common.SetContextKey(c, constant.ContextKeyUserId, 1)
+		c.Set("id", 1)
+	}, middleware.Distribute(), func(c *gin.Context) {
+		Relay(c, types.RelayFormatOpenAI)
+	})
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"auto","messages":[{"role":"user","content":"auto retry capability filter"}],"max_tokens":16,"tools":[{"type":"function","function":{"name":"lookup","parameters":{"type":"object"}}}]}`))
+	request.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(response, request)
+	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+	require.Len(t, requests, 3, "the next model must not inherit the first model's capability channel filter")
+	assert.Contains(t, requests[0], `"model":"first"`)
+	assert.Contains(t, requests[1], `"model":"second"`)
+	assert.Contains(t, requests[2], `"model":"third"`)
+	assert.NotContains(t, requests[2], "reasoning_effort")
+}
 
 func TestRelayKeepAliveDuringImagePreparation(t *testing.T) {
 	settings := operation_setting.GetGeneralSetting()
