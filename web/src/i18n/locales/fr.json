@@ -5913,6 +5913,7 @@
     "Request names your users call": "Noms de requête utilisés par vos utilisateurs",
     "Request overrides, routing behavior, and upstream model automation": "Surcharges de requête, comportement de routage et automatisation des modèles amont",
     "Request Path": "Chemin de requête",
+    "Request parameters": "Paramètres de la requête",
     "Request policies": "Politiques de requête",
     "Request policy decisions": "Décisions de la politique de requête",
     "Request processing": "Traitement des requêtes",

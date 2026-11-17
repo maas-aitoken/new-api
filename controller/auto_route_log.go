@@ -22,16 +22,17 @@ func GetAutoRouteLogs(c *gin.Context) {
 	endTime, _ := strconv.ParseInt(c.Query("end_time"), 10, 64)
 	userID, _ := strconv.Atoi(c.Query("user_id"))
 	logs, total, err := model.GetAutoRouteLogs(model.AutoRouteLogQuery{
-		RequestId: c.Query("request_id"),
-		UserId:    userID,
-		Model:     c.Query("model"),
-		Outcome:   c.Query("outcome"),
-		Judgment:  c.Query("judgment"),
-		TaskType:  c.Query("task_type"),
-		StartTime: startTime,
-		EndTime:   endTime,
-		Offset:    pageInfo.GetStartIdx(),
-		Limit:     pageInfo.GetPageSize(),
+		RequestId:     c.Query("request_id"),
+		RequestParams: c.Query("request_params"),
+		UserId:        userID,
+		Model:         c.Query("model"),
+		Outcome:       c.Query("outcome"),
+		Judgment:      c.Query("judgment"),
+		TaskType:      c.Query("task_type"),
+		StartTime:     startTime,
+		EndTime:       endTime,
+		Offset:        pageInfo.GetStartIdx(),
+		Limit:         pageInfo.GetPageSize(),
 	})
 	if err != nil {
 		common.ApiError(c, err)

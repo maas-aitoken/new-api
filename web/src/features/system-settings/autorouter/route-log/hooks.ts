@@ -27,6 +27,7 @@ export const ROUTE_LOG_PAGE_SIZE = 20
 
 export const EMPTY_ROUTE_LOG_FILTERS: RouteLogFilters = {
   request_id: '',
+  request_params: '',
   user_id: '',
   model: '',
   task_type: '',

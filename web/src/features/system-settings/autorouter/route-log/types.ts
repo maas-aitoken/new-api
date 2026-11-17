@@ -25,6 +25,7 @@ export type RouteLogItem = {
   id: number
   created_at: number
   request_id: string
+  request_params: string
   user_id: number
   token_id: number
   using_group: string
@@ -48,6 +49,7 @@ export type RouteLogPage = {
 /** The list filters as typed into the toolbar; an empty string means no filter. */
 export type RouteLogFilters = {
   request_id: string
+  request_params: string
   user_id: string
   model: string
   task_type: string

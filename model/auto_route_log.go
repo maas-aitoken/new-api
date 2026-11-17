@@ -3,6 +3,7 @@ package model
 import (
 	"context"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/QuantumNous/new-api/common"
 )
@@ -18,7 +19,15 @@ const (
 	// 一行超限会让整批 INSERT 失败，所以写入方超出时要先精简内容，不能靠截断 JSON。
 	AutoRouteLogDetailMax = 32 * 1024
 
-	// autoRouteLogInsertChunk 是单条 INSERT 的行数。15 列 × 50 行 = 750 个占位符，
+	// AutoRouteLogParamsMax 是 request_params 的字节上限。放不下的字段由写入方整个丢掉，
+	// 不能靠截断，否则存下来的就不是合法 JSON；列表每行都带这一列，所以不放宽。
+	AutoRouteLogParamsMax = 2048
+
+	// autoRouteLogParamsKeywordMin 是按 request_params 检索的关键词最短长度，
+	// 更短的关键词会匹配几乎所有行。
+	autoRouteLogParamsKeywordMin = 2
+
+	// autoRouteLogInsertChunk 是单条 INSERT 的行数。16 列 × 50 行 = 800 个占位符，
 	// 加上最坏 50 × 32KB 的 detail，仍远低于各数据库的单语句和单包上限。
 	autoRouteLogInsertChunk = 50
 )
@@ -32,11 +41,14 @@ type AutoRouteLog struct {
 	Id        int64 `json:"id" gorm:"primaryKey"`
 	CreatedAt int64 `json:"created_at" gorm:"bigint;index"`
 	// RequestId 与 logs、relay_attempts 的 request_id 同源，使用日志的详情靠它找到这里。
-	RequestId  string `json:"request_id" gorm:"type:varchar(64);index"`
-	UserId     int    `json:"user_id" gorm:"index"`
-	TokenId    int    `json:"token_id"`
-	UsingGroup string `json:"using_group" gorm:"type:varchar(64)"`
-	Outcome    string `json:"outcome" gorm:"type:varchar(16);index"`
+	RequestId string `json:"request_id" gorm:"type:varchar(64);index"`
+	// RequestParams 是去掉对话内容后的请求参数（JSON）：采样参数、推理档位，以及评测框架
+	// 经 extra_body 并进请求体顶层的任意字段。用来把同一批请求圈出来，按子串检索。
+	RequestParams string `json:"request_params" gorm:"type:text"`
+	UserId        int    `json:"user_id" gorm:"index"`
+	TokenId       int    `json:"token_id"`
+	UsingGroup    string `json:"using_group" gorm:"type:varchar(64)"`
+	Outcome       string `json:"outcome" gorm:"type:varchar(16);index"`
 	// Judgment 是判断的来源（现调 jev、缓存、辅助请求……），取值见 pkg/autorouter 的 Judgment*。
 	Judgment string `json:"judgment" gorm:"type:varchar(32)"`
 	// Source 是路由的来源：jev、cache、inherit、default。
@@ -66,15 +78,17 @@ func BatchInsertAutoRouteLogs(logs []*AutoRouteLog) error {
 // AutoRouteLogQuery 是选路日志列表的筛选条件，零值的字段不参与筛选。
 type AutoRouteLogQuery struct {
 	RequestId string
-	UserId    int
-	Model     string
-	Outcome   string
-	Judgment  string
-	TaskType  string
-	StartTime int64
-	EndTime   int64
-	Offset    int
-	Limit     int
+	// RequestParams 是在 request_params 里检索的关键词，子串匹配。
+	RequestParams string
+	UserId        int
+	Model         string
+	Outcome       string
+	Judgment      string
+	TaskType      string
+	StartTime     int64
+	EndTime       int64
+	Offset        int
+	Limit         int
 }
 
 // GetAutoRouteLogs 按时间倒序返回一页选路日志。列表不带 detail：一页最多 100 行，
@@ -90,6 +104,19 @@ func GetAutoRouteLogs(query AutoRouteLogQuery) ([]AutoRouteLog, int64, error) {
 		Judgment:  strings.TrimSpace(query.Judgment),
 		TaskType:  strings.TrimSpace(query.TaskType),
 	})
+	if keyword := strings.TrimSpace(query.RequestParams); keyword != "" {
+		if utf8.RuneCountInString(keyword) < autoRouteLogParamsKeywordMin {
+			return nil, 0, common.NewMessage("Fuzzy search keywords must be at least 2 characters long")
+		}
+		// 关键词里的 % 和 _ 按字面匹配，所以先转义再两头加通配符。
+		if common.UsingLogDatabase(common.DatabaseTypeClickHouse) {
+			pattern := strings.NewReplacer(`\`, `\\`, "%", `\%`, "_", `\_`).Replace(keyword)
+			db = db.Where("request_params LIKE ?", "%"+pattern+"%")
+		} else {
+			pattern := strings.NewReplacer("!", "!!", "%", "!%", "_", "!_").Replace(keyword)
+			db = db.Where("request_params LIKE ? ESCAPE '!'", "%"+pattern+"%")
+		}
+	}
 	if query.StartTime > 0 {
 		db = db.Where("created_at >= ?", query.StartTime)
 	}

@@ -20,6 +20,7 @@ import { useTranslation } from 'react-i18next'
 
 import { CopyButton } from '@/components/copy-button'
 import type { StaticDataTableColumn } from '@/components/data-table'
+import { TruncatedText } from '@/components/truncated-text'
 import { Button } from '@/components/ui/button'
 import { formatTimestampToDate } from '@/lib/format'
 
@@ -89,6 +90,20 @@ export function useRouteLogColumns(
       header: t('Preference'),
       cellClassName: 'text-xs',
       cell: (row) => (row.preference ? preferenceLabel(t, row.preference) : '-'),
+    },
+    {
+      id: 'request-params',
+      header: t('Request parameters'),
+      cell: (row) =>
+        row.request_params ? (
+          <TruncatedText
+            text={row.request_params}
+            className='font-mono text-xs'
+            maxWidth='max-w-[240px]'
+          />
+        ) : (
+          '-'
+        ),
     },
     {
       id: 'request',

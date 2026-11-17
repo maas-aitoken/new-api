@@ -37,6 +37,7 @@ function item(id: number, overrides: Partial<RouteLogItem> = {}): RouteLogItem {
     id,
     created_at: 1_760_000_000 + id,
     request_id: `req-${id}`,
+    request_params: '',
     user_id: 42,
     token_id: 7,
     using_group: 'vip',
@@ -76,6 +77,16 @@ function renderList() {
   )
 }
 
+test('a row shows the request parameters, or a dash when it has none', async () => {
+  mockApi([item(1, { request_params: '{"experiment_id":"tau3_bench_1"}' }), item(2)])
+  renderList()
+
+  await screen.findByText('model-1')
+  const [, withParams, withoutParams] = screen.getAllByRole('row')
+  expect(within(withParams).getByText('{"experiment_id":"tau3_bench_1"}')).toBeVisible()
+  expect(within(withoutParams).queryByText(/experiment_id/)).toBeNull()
+})
+
 test('the first page is requested without filters and its rows show the outcome of each request', async () => {
   const get = mockApi([item(1), item(2, { outcome: 'failed', judgment: 'unroutable', model: '' })])
   renderList()
@@ -96,6 +107,7 @@ test('filters are sent only after Search, trimmed and without the empty ones, an
   await screen.findByText('model-1')
 
   await user.type(screen.getByLabelText('Request ID'), '  req-9  ')
+  await user.type(screen.getByLabelText('Request parameters'), ' tau3_bench_1 ')
   await user.type(screen.getByLabelText('Model'), 'sonnet')
   expect(listCalls(get)).toHaveLength(1)
   await user.selectOptions(screen.getByLabelText('Result'), 'failed')
@@ -104,6 +116,7 @@ test('filters are sent only after Search, trimmed and without the empty ones, an
   await waitFor(() => expect(listCalls(get)).toHaveLength(2))
   expect(listCalls(get)[1]).toEqual({
     request_id: 'req-9',
+    request_params: 'tau3_bench_1',
     model: 'sonnet',
     outcome: 'failed',
     p: 1,

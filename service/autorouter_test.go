@@ -915,7 +915,7 @@ func TestAutoRouteLogRowCarriesTheRequestAndTheOutcome(t *testing.T) {
 		common.SetContextKey(c, constant.ContextKeyUsingGroup, "vip")
 		return c
 	}
-	_, err := ResolveAutoModel(newContext(9960, "req-routed", `{"messages":[{"role":"user","content":"hard"}]}`), allModelsAvailable)
+	_, err := ResolveAutoModel(newContext(9960, "req-routed", `{"experiment_id":"tau3_bench_2026_11_12_18_10","messages":[{"role":"user","content":"hard"}]}`), allModelsAvailable)
 	require.NoError(t, err)
 	_, err = ResolveAutoModel(newContext(9960, "req-failed", `{"messages":[{"role":"user","content":"hard"}]}`), candidatesFrom(func(string) bool { return false }))
 	require.Error(t, err)
@@ -924,7 +924,7 @@ func TestAutoRouteLogRowCarriesTheRequestAndTheOutcome(t *testing.T) {
 	require.Len(t, logs, 2)
 	routed, failed := logs[0], logs[1]
 	assert.Equal(t, model.AutoRouteLog{
-		CreatedAt: routed.CreatedAt, RequestId: "req-routed", UserId: 42, TokenId: 9960, UsingGroup: "vip",
+		CreatedAt: routed.CreatedAt, RequestId: "req-routed", RequestParams: `{"experiment_id":"tau3_bench_2026_11_12_18_10"}`, UserId: 42, TokenId: 9960, UsingGroup: "vip",
 		Outcome: model.AutoRouteOutcomeRouted, Judgment: autorouter.JudgmentLive, Source: autorouter.SourceJev,
 		TaskType: "code.build", Model: "coder", Effort: "xhigh", Preference: autorouter.PreferenceBalanced,
 		JevLatencyMs: routed.JevLatencyMs, Detail: routed.Detail,
@@ -978,6 +978,29 @@ func TestNewAutoRouteLogDerivesEffortLatencyAndColumnWidths(t *testing.T) {
 	entry := newAutoRouteLog(c, &long, nil)
 	assert.Len(t, []rune(entry.Model), 255, "超出列宽的值要截断，否则整批 INSERT 会失败")
 	assert.Len(t, entry.TaskType, 64)
+}
+
+// 请求参数是去掉对话内容后的整个请求体，评测框架经 extra_body 并进来的任意字段都在里面；
+// 对话内容不落库，协议不认识时也不存。
+func TestNewAutoRouteLogKeepsTheRequestParametersButNotTheConversation(t *testing.T) {
+	result := &autorouter.Result{Route: autorouter.Route{Model: "coder"}, Trace: &autorouter.Trace{}}
+	newContext := func(path, body string) *gin.Context {
+		c := newAutoRouterContext(9962, body)
+		c.Request.URL.Path = path
+		return c
+	}
+
+	chat := newAutoRouteLog(newContext("/v1/chat/completions", `{"model":"auto","experiment_id":"tau3_bench_1","run":{"team":"search"},"messages":[{"role":"user","content":"secret prompt"}]}`), result, nil)
+	assert.JSONEq(t, `{"model":"auto","experiment_id":"tau3_bench_1","run":{"team":"search"}}`, chat.RequestParams)
+
+	claude := newAutoRouteLog(newContext("/v1/messages", `{"system":"secret","messages":[],"max_tokens":8}`), result, nil)
+	assert.Equal(t, `{"max_tokens":8}`, claude.RequestParams)
+
+	unknown := newAutoRouteLog(newContext("/v1/embeddings", `{"model":"auto"}`), result, nil)
+	assert.Empty(t, unknown.RequestParams)
+
+	oversized := newAutoRouteLog(newContext("/v1/chat/completions", `{"keep":1,"big":"`+strings.Repeat("x", model.AutoRouteLogParamsMax)+`"}`), result, nil)
+	assert.Equal(t, `{"keep":1}`, oversized.RequestParams, "a field that does not fit is left out whole")
 }
 
 // 详情超过上限时依次去掉最占地方的部分：比较候选带、整个路由结果，最后只剩一个空对象。
