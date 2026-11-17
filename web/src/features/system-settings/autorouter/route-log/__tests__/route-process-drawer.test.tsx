@@ -23,7 +23,12 @@ import { expect, test, vi } from 'vitest'
 import { api } from '@/lib/api'
 
 import { RouteProcessDrawer } from '../route-process-drawer'
-import type { RouteLog, RouteResult, RouteTraceMode } from '../types'
+import type {
+  RouteLog,
+  RouteResult,
+  RouteTrace,
+  RouteTraceMode,
+} from '../types'
 
 const logItem = {
   id: 1,
@@ -41,6 +46,23 @@ const logItem = {
   effort: 'high',
   preference: 'balanced',
   jev_latency_ms: 120,
+}
+
+const routedTrace: RouteTrace = {
+  request: { protocol: 'anthropic', human_turns: 2, text_runes: 80 },
+  judgment: 'live',
+  validity: { profiles: ['code.build', 'code'] },
+  effort: { difficulty: 3, base: 'high', threshold: 0.5, benefit: 0.2 },
+  ladder: [
+    {
+      profile: 'code.build',
+      models: 3,
+      outcome: 'compared',
+      model: 'sonnet',
+      skipped: [{ model: 'opus', score: 0.97, reason: 'capability' }],
+      skipped_more: 3,
+    },
+  ],
 }
 
 const routed: RouteLog = {
@@ -80,28 +102,14 @@ const routed: RouteLog = {
       },
       jev: { endpoint: 'https://jev.example', latency_ms: 120 },
     },
-    trace: {
-      request: { protocol: 'anthropic', human_turns: 2, text_runes: 80 },
-      judgment: 'live',
-      validity: { profiles: ['code.build', 'code'] },
-      effort: { difficulty: 3, base: 'high', threshold: 0.5, benefit: 0.2 },
-      ladder: [
-        {
-          profile: 'code.build',
-          models: 3,
-          outcome: 'compared',
-          model: 'sonnet',
-          skipped: [{ model: 'opus', score: 0.97, reason: 'capability' }],
-          skipped_more: 3,
-        },
-      ],
-    },
+    trace: routedTrace,
   },
 }
 
 function renderDrawer(props: {
   requestId?: string
   summary?: RouteResult
+  scope?: 'all' | 'self'
   onClose?: () => void
 }) {
   const client = new QueryClient({
@@ -112,6 +120,7 @@ function renderDrawer(props: {
       <RouteProcessDrawer
         requestId={props.requestId ?? 'req-1'}
         summary={props.summary}
+        scope={props.scope}
         onClose={props.onClose ?? (() => undefined)}
       />
     </QueryClientProvider>
@@ -146,6 +155,29 @@ test('a recorded log shows its steps in order, from the request to the result', 
     ).toBeTruthy()
   })
   expect(api.get).toHaveBeenCalledWith('/api/auto-route-logs/req-1')
+})
+
+test('self scope reads the process from the /self endpoint', async () => {
+  mockLog(routed)
+  renderDrawer({ scope: 'self' })
+
+  await screen.findByText('Request')
+  expect(api.get).toHaveBeenCalledWith('/api/auto-route-logs/self/req-1')
+})
+
+test('a trace that lost its request facts skips that step instead of crashing the drawer', async () => {
+  // 模拟被改库改坏的 detail：线上到达的是未校验的 JSON，类型上必填的字段可能缺失。
+  mockLog({
+    ...logItem,
+    detail: JSON.parse(
+      '{"result":{"resolved_model":"model-a"},"trace":{"judgment":"live"}}'
+    ),
+  })
+  renderDrawer({})
+
+  expect(await screen.findByText('Classification')).toBeVisible()
+  expect(await screen.findByText('Result')).toBeVisible()
+  expect(screen.queryByText('Request')).not.toBeInTheDocument()
 })
 
 test('the model that was chosen is marked in the comparison, and a better-ranked model says why it was skipped', async () => {
@@ -291,7 +323,7 @@ test('a model the scheduler could not place says so in the skipped list', async 
     detail: {
       ...routed.detail,
       trace: {
-        ...routed.detail!.trace!,
+        ...routedTrace,
         ladder: [
           {
             profile: 'code.build',
