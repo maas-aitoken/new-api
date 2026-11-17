@@ -878,6 +878,10 @@ export function DetailsDialog(props: DetailsDialogProps) {
             summary={adminInfo.auto_router}
           />
         )}
+        {!props.isAdmin && props.log.auto_routed && props.log.request_id && (
+          // 普通用户的消费日志不带 admin_info 摘要，只给入口；过程走 /self 接口。
+          <AutoRouteDetail requestId={props.log.request_id} self />
+        )}
         {props.isAdmin && other?.admin_info?.quota_saturation && (
           <DetailSection
             icon={<AlertTriangle className='size-3.5' aria-hidden='true' />}

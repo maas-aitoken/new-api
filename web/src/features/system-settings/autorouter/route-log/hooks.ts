@@ -21,7 +21,7 @@ import { keepPreviousData, useQuery } from '@tanstack/react-query'
 import { requireServerSuccess } from '@/lib/server-error-message'
 
 import { getRouteLog, getRouteLogs } from './api'
-import type { RouteLogFilters } from './types'
+import type { RouteLogFilters, RouteLogScope } from './types'
 
 export const ROUTE_LOG_PAGE_SIZE = 20
 
@@ -44,16 +44,23 @@ function activeFilters(filters: RouteLogFilters) {
   ) as Partial<RouteLogFilters>
 }
 
-export function useRouteLogs(filters: RouteLogFilters, pageIndex: number) {
+export function useRouteLogs(
+  filters: RouteLogFilters,
+  pageIndex: number,
+  scope: RouteLogScope = 'all'
+) {
   return useQuery({
-    queryKey: ['auto-route-logs', filters, pageIndex],
+    queryKey: ['auto-route-logs', scope, filters, pageIndex],
     queryFn: async () =>
       requireServerSuccess(
-        await getRouteLogs({
-          ...activeFilters(filters),
-          p: pageIndex + 1,
-          page_size: ROUTE_LOG_PAGE_SIZE,
-        })
+        await getRouteLogs(
+          {
+            ...activeFilters(filters),
+            p: pageIndex + 1,
+            page_size: ROUTE_LOG_PAGE_SIZE,
+          },
+          scope
+        )
       ).data,
     placeholderData: keepPreviousData,
     retry: false,
@@ -61,11 +68,15 @@ export function useRouteLogs(filters: RouteLogFilters, pageIndex: number) {
 }
 
 /** The log of one request; data is null when none was recorded. */
-export function useRouteLog(requestId: string, enabled: boolean) {
+export function useRouteLog(
+  requestId: string,
+  enabled: boolean,
+  scope: RouteLogScope = 'all'
+) {
   return useQuery({
-    queryKey: ['auto-route-log', requestId],
+    queryKey: ['auto-route-log', scope, requestId],
     queryFn: async () =>
-      requireServerSuccess(await getRouteLog(requestId)).data,
+      requireServerSuccess(await getRouteLog(requestId, scope)).data,
     enabled: enabled && requestId !== '',
     retry: false,
   })

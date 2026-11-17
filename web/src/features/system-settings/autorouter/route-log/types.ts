@@ -20,6 +20,11 @@ import type { AutoRouterResponse } from '../types'
 
 export type RouteLogOutcome = 'routed' | 'failed'
 
+/**
+ * 'all' 走管理员接口看全部留痕；'self' 走 /self 接口，服务端只返回当前用户自己的。
+ */
+export type RouteLogScope = 'all' | 'self'
+
 /** One row of the routing log list; the process itself is only in the detail. */
 export type RouteLogItem = {
   id: number

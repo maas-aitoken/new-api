@@ -108,8 +108,9 @@ function describeValue(value: unknown): string {
   return JSON.stringify(value)
 }
 
-export function CapabilityGateEventLogs() {
+export function CapabilityGateEventLogs(props: { scope?: 'all' | 'self' }) {
   const { t } = useTranslation()
+  const scope = props.scope ?? 'all'
   const [modelDraft, setModelDraft] = useState('')
   const [actionDraft, setActionDraft] = useState<
     CapabilityGateEventAction | typeof ALL_ACTIONS
@@ -125,19 +126,23 @@ export function CapabilityGateEventLogs() {
   const eventsQuery = useQuery({
     queryKey: [
       'capability-gate-events',
+      scope,
       page,
       modelFilter,
       actionFilter,
       requestFilter,
     ],
     queryFn: async () => {
-      const response = await getCapabilityGateEvents({
-        p: page,
-        page_size: PAGE_SIZE,
-        model: modelFilter || undefined,
-        action: actionFilter === ALL_ACTIONS ? undefined : actionFilter,
-        request_id: requestFilter || undefined,
-      })
+      const response = await getCapabilityGateEvents(
+        {
+          p: page,
+          page_size: PAGE_SIZE,
+          model: modelFilter || undefined,
+          action: actionFilter === ALL_ACTIONS ? undefined : actionFilter,
+          request_id: requestFilter || undefined,
+        },
+        scope
+      )
       if (!response.success || !response.data) {
         throw new Error(response.message || t('Failed to load event logs'))
       }
@@ -274,8 +279,12 @@ export function CapabilityGateEventLogs() {
                     )}
                     {event.user_id > 0 && (
                       <p className='text-muted-foreground mt-0.5 text-xs'>
-                        {t('User')} {event.user_id} · {t('Token')}{' '}
-                        {event.token_id}
+                        {scope === 'all' && (
+                          <>
+                            {t('User')} {event.user_id} ·{' '}
+                          </>
+                        )}
+                        {t('Token')} {event.token_id}
                         {event.using_group &&
                           ` · ${t('Group')} ${event.using_group}`}
                       </p>

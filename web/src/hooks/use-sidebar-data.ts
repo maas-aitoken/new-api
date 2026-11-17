@@ -36,8 +36,10 @@ import {
   WalletCards,
   ClipboardList,
   Settings,
+  ShieldAlert,
   ShieldCheck,
   ChartNoAxesCombined,
+  Waypoints,
 } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
@@ -116,6 +118,16 @@ export function useSidebarData(badges: SidebarBadges = {}): SidebarData {
             title: t('Audit Logs'),
             url: '/usage-logs/audit',
             icon: ClipboardList,
+          },
+          {
+            title: t('Routing logs'),
+            url: '/usage-logs/routing',
+            icon: Waypoints,
+          },
+          {
+            title: t('Capability gate logs'),
+            url: '/usage-logs/capability-gate',
+            icon: ShieldAlert,
           },
           {
             title: t('Task Logs'),

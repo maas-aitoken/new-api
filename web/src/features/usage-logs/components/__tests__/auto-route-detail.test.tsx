@@ -89,7 +89,11 @@ test('a log without a request id has no way into the process', () => {
   ).not.toBeInTheDocument()
 })
 
-function renderDialog(isAdmin: boolean, other: LogOtherData) {
+function renderDialog(
+  isAdmin: boolean,
+  other: LogOtherData,
+  autoRouted = true
+) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   client.setQueryData(['status'], {}, { updatedAt: Date.now() + 60_000 })
   render(
@@ -110,7 +114,7 @@ function renderDialog(isAdmin: boolean, other: LogOtherData) {
           use_time: 0,
           is_stream: false,
           fast_mode: false,
-          auto_routed: true,
+          auto_routed: autoRouted,
           iself_email: '',
           channel: 1,
           channel_name: 'channel',
@@ -137,15 +141,33 @@ test('the log details show an admin how an auto request was routed', () => {
   expect(screen.getByRole('button', { name: 'View routing process' })).toBeVisible()
 })
 
-test('a user who is not an admin never sees how the request was routed', () => {
+test('a user who is not an admin gets an entry into their own routing process', async () => {
+  const user = userEvent.setup()
+  const get = vi
+    .spyOn(api, 'get')
+    .mockResolvedValue({ data: { success: true, data: null } })
   renderDialog(false, { admin_info: { auto_router: summary } })
 
+  expect(screen.getByText('Auto routing')).toBeVisible()
+  expect(screen.getByRole('button', { name: 'View routing process' })).toBeVisible()
+  // 普通用户的消费日志被服务端剥掉了 admin_info 摘要，摘要行不出现
+  expect(screen.queryByText('Routed to')).not.toBeInTheDocument()
+
+  await user.click(screen.getByRole('button', { name: 'View routing process' }))
+  expect(await screen.findByText('Routing process')).toBeVisible()
+  await waitFor(() =>
+    expect(get).toHaveBeenCalledWith('/api/auto-route-logs/self/req-1')
+  )
+})
+
+test('a non-admin log that was not auto routed has no auto routing section', () => {
+  renderDialog(false, { admin_info: {} }, false)
+
   expect(screen.queryByText('Auto routing')).not.toBeInTheDocument()
-  expect(screen.queryByText('View routing process')).not.toBeInTheDocument()
 })
 
 test('a request that was not auto routed has no auto routing section', () => {
-  renderDialog(true, { admin_info: {} })
+  renderDialog(true, { admin_info: {} }, false)
 
   expect(screen.queryByText('Auto routing')).not.toBeInTheDocument()
 })

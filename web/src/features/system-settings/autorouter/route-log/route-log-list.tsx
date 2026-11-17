@@ -43,7 +43,12 @@ import {
 import { judgmentLabel, outcomeLabel } from './labels'
 import { RouteProcessDrawer } from './route-process-drawer'
 import { useRouteLogColumns } from './route-log-columns'
-import type { RouteLogFilters, RouteLogItem, RouteLogOutcome } from './types'
+import type {
+  RouteLogFilters,
+  RouteLogItem,
+  RouteLogOutcome,
+  RouteLogScope,
+} from './types'
 
 const EMPTY_ITEMS: RouteLogItem[] = []
 
@@ -67,15 +72,16 @@ const JUDGMENTS = [
 ]
 
 /** The routing logs, newest first; a row opens the process of its request. */
-export function RouteLogList() {
+export function RouteLogList(props: { scope?: RouteLogScope }) {
   const { t } = useTranslation()
+  const scope = props.scope ?? 'all'
   const [draft, setDraft] = useState<RouteLogFilters>(EMPTY_ROUTE_LOG_FILTERS)
   const [filters, setFilters] = useState<RouteLogFilters>(
     EMPTY_ROUTE_LOG_FILTERS
   )
   const [pageIndex, setPageIndex] = useState(0)
   const [viewing, setViewing] = useState('')
-  const logsQuery = useRouteLogs(filters, pageIndex)
+  const logsQuery = useRouteLogs(filters, pageIndex, scope)
   const columns = useRouteLogColumns(setViewing)
 
   const items = logsQuery.data?.items ?? EMPTY_ITEMS
@@ -172,7 +178,7 @@ export function RouteLogList() {
             />
             {field('request_id', t('Request ID'))}
             {field('request_params', t('Request parameters'))}
-            {field('user_id', t('User ID'))}
+            {scope === 'all' && field('user_id', t('User ID'))}
             {field('model', t('Model'))}
             {field('task_type', t('Task type'))}
             <NativeSelect
@@ -246,7 +252,11 @@ export function RouteLogList() {
           <DataTablePagination table={table} compact />
         </div>
       </div>
-      <RouteProcessDrawer requestId={viewing} onClose={() => setViewing('')} />
+      <RouteProcessDrawer
+        requestId={viewing}
+        onClose={() => setViewing('')}
+        scope={scope}
+      />
     </div>
   )
 }
