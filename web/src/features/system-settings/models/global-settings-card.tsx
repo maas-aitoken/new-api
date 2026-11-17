@@ -269,7 +269,7 @@ export function GlobalSettingsCard({ defaultValues }: GlobalSettingsCardProps) {
               <AlertTitle>{t('Central policy')}</AlertTitle>
               <AlertDescription>
                 {t(
-                  'These controls apply to all GPT requests sent through supported GPT channels.'
+                  'These controls apply to GPT and o-series model requests sent through supported GPT channels.'
                 )}
               </AlertDescription>
             </Alert>

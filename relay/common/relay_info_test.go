@@ -47,11 +47,71 @@ func TestShouldForwardGPTServiceTierSupportsOpenAIChannelWithoutTags(t *testing.
 	})
 
 	info := &RelayInfo{ChannelMeta: &ChannelMeta{
-		ChannelType: constant.ChannelTypeOpenAI,
-		ChannelTag:  "direct-openai",
+		ChannelType:       constant.ChannelTypeOpenAI,
+		ChannelTag:        "direct-openai",
+		UpstreamModelName: "gpt-5.1",
 	}}
 	settings.GPTRequestFastPolicy = model_setting.GPTRequestFastPolicyAllow
 	assert.True(t, ShouldForwardGPTServiceTier(info))
+}
+
+func TestIsGPTRequestPolicyChannelRequiresGPTModelOnOpenAIChannels(t *testing.T) {
+	for _, tt := range []struct {
+		name        string
+		channelType int
+		upstream    string
+		origin      string
+		want        bool
+	}{
+		{name: "openai channel with gpt model", channelType: constant.ChannelTypeOpenAI, upstream: "gpt-5.1", want: true},
+		{name: "openai channel with o-series model", channelType: constant.ChannelTypeOpenAI, upstream: "o3-mini", want: true},
+		{name: "openai channel with namespaced gpt model", channelType: constant.ChannelTypeOpenAI, upstream: "openai/gpt-4o", want: true},
+		{name: "openai channel with deepseek model", channelType: constant.ChannelTypeOpenAI, upstream: "deepseek-v3", want: false},
+		{name: "openai channel with claude model", channelType: constant.ChannelTypeOpenAI, upstream: "claude-sonnet-5", want: false},
+		{name: "openai channel with qwen model", channelType: constant.ChannelTypeOpenAI, upstream: "qwen3-max", want: false},
+		{name: "openai channel falls back to origin model", channelType: constant.ChannelTypeOpenAI, origin: "gpt-5.1", want: true},
+		{name: "openai channel origin fallback stays non-gpt", channelType: constant.ChannelTypeOpenAI, origin: "glm-4.6", want: false},
+		{name: "codex channel serves gpt models only", channelType: constant.ChannelTypeCodex, upstream: "codex-mini-latest", want: true},
+		{name: "unrelated channel type", channelType: constant.ChannelTypeAnthropic, upstream: "gpt-5.1", want: false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			info := &RelayInfo{
+				OriginModelName: tt.origin,
+				ChannelMeta: &ChannelMeta{
+					ChannelType:       tt.channelType,
+					UpstreamModelName: tt.upstream,
+				},
+			}
+			assert.Equal(t, tt.want, IsGPTRequestPolicyChannel(info))
+		})
+	}
+}
+
+func TestApplyGPTRequestPolicyJSONLeavesNonGPTModelsUntouched(t *testing.T) {
+	settings := model_setting.GetGlobalSettings()
+	originalFast := settings.GPTRequestFastPolicy
+	originalReasoning := settings.GPTRequestReasoningPolicy
+	t.Cleanup(func() {
+		settings.GPTRequestFastPolicy = originalFast
+		settings.GPTRequestReasoningPolicy = originalReasoning
+	})
+	settings.GPTRequestFastPolicy = model_setting.GPTRequestFastPolicyDisabled
+	settings.GPTRequestReasoningPolicy = model_setting.GPTRequestReasoningPolicyCapXHigh
+
+	info := &RelayInfo{
+		ReasoningEffort: "max",
+		ChannelMeta: &ChannelMeta{
+			ChannelType:       constant.ChannelTypeOpenAI,
+			UpstreamModelName: "deepseek-chat",
+		},
+	}
+	body := []byte(`{"service_tier":"fast","reasoning":{"effort":"max"},"reasoning_effort":"max"}`)
+	out, err := ApplyGPTRequestPolicyJSON(info, body)
+	require.NoError(t, err)
+	assert.JSONEq(t, string(body), string(out))
+
+	ApplyGPTReasoningEffortCap(info)
+	assert.Equal(t, "max", info.GetReasoningEffort())
 }
 
 func TestApplyGPTChatRequestPolicy(t *testing.T) {
@@ -63,7 +123,10 @@ func TestApplyGPTChatRequestPolicy(t *testing.T) {
 		settings.GPTRequestReasoningPolicy = originalReasoning
 	})
 
-	info := &RelayInfo{ChannelMeta: &ChannelMeta{ChannelType: constant.ChannelTypeOpenAI}}
+	info := &RelayInfo{ChannelMeta: &ChannelMeta{
+		ChannelType:       constant.ChannelTypeOpenAI,
+		UpstreamModelName: "gpt-5.1",
+	}}
 	request := &dto.GeneralOpenAIRequest{
 		ServiceTier:     json.RawMessage(`"fast"`),
 		ReasoningEffort: "xhigh",
@@ -96,7 +159,10 @@ func TestApplyGPTRequestPolicyJSONSupportsResponsesAndChatShapes(t *testing.T) {
 	settings.GPTRequestFastPolicy = model_setting.GPTRequestFastPolicyAllow
 	settings.GPTRequestReasoningPolicy = model_setting.GPTRequestReasoningPolicyCapHigh
 
-	info := &RelayInfo{ChannelMeta: &ChannelMeta{ChannelType: constant.ChannelTypeOpenAI}}
+	info := &RelayInfo{ChannelMeta: &ChannelMeta{
+		ChannelType:       constant.ChannelTypeOpenAI,
+		UpstreamModelName: "gpt-5.1",
+	}}
 	out, err := ApplyGPTRequestPolicyJSON(info, []byte(`{"service_tier":"fast","reasoning":{"effort":"xhigh"},"reasoning_effort":"max"}`))
 	require.NoError(t, err)
 	assert.JSONEq(t, `{"service_tier":"priority","reasoning":{"effort":"high"},"reasoning_effort":"high"}`, string(out))
@@ -105,6 +171,33 @@ func TestApplyGPTRequestPolicyJSONSupportsResponsesAndChatShapes(t *testing.T) {
 	out, err = ApplyGPTRequestPolicyJSON(info, []byte(`{"reasoning":{"effort":"max"},"reasoning_effort":"max"}`))
 	require.NoError(t, err)
 	assert.JSONEq(t, `{"reasoning":{"effort":"xhigh"},"reasoning_effort":"xhigh"}`, string(out))
+}
+
+func TestApplyGPTRequestPolicyJSONCapsClaudeOriginatedChatRequests(t *testing.T) {
+	settings := model_setting.GetGlobalSettings()
+	originalReasoning := settings.GPTRequestReasoningPolicy
+	t.Cleanup(func() {
+		settings.GPTRequestReasoningPolicy = originalReasoning
+	})
+	settings.GPTRequestReasoningPolicy = model_setting.GPTRequestReasoningPolicyCapXHigh
+
+	// A /v1/messages request on a GPT channel is converted to the chat
+	// completions shape before the policy runs, so output_config.effort has
+	// already become reasoning_effort.
+	info := &RelayInfo{
+		RelayFormat:     types.RelayFormatClaude,
+		ReasoningEffort: "max",
+		ChannelMeta: &ChannelMeta{
+			ChannelType:       constant.ChannelTypeOpenAI,
+			UpstreamModelName: "gpt-5.1",
+		},
+	}
+	out, err := ApplyGPTRequestPolicyJSON(info, []byte(`{"model":"gpt-5.1","reasoning_effort":"max"}`))
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"model":"gpt-5.1","reasoning_effort":"xhigh"}`, string(out))
+
+	ApplyGPTReasoningEffortCap(info)
+	assert.Equal(t, "xhigh", info.GetReasoningEffort())
 }
 
 func TestApplyCodexReasoningPolicyCapsOnlyAboveHigh(t *testing.T) {

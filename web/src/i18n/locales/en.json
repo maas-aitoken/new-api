@@ -7147,7 +7147,7 @@
     "Theme Settings": "Theme Settings",
     "There are both add and remove models pending, but you only selected one type. Confirm submitting only the selected items?": "There are both add and remove models pending, but you only selected one type. Confirm submitting only the selected items?",
     "There is a rule for vip billed as premium → use its ratio 0.3": "There is a rule for vip billed as premium → use its ratio 0.3",
-    "These controls apply to all GPT requests sent through supported GPT channels.": "These controls apply to all GPT requests sent through supported GPT channels.",
+    "These controls apply to GPT and o-series model requests sent through supported GPT channels.": "These controls apply to GPT and o-series model requests sent through supported GPT channels.",
     "These controls apply to GPT requests sent through channels whose tags match any configured tag. Individual channel overrides can be added later.": "These controls apply to GPT requests sent through channels whose tags match any configured tag. Individual channel overrides can be added later.",
     "These models are still in your selection but were not returned by the upstream listing. Entries that are only model_mapping source aliases are omitted. Toggle to adjust before saving.": "These models are still in your selection but were not returned by the upstream listing. Entries that are only model_mapping source aliases are omitted. Toggle to adjust before saving.",
     "These models match this rule and have no metadata row of their own.": "These models match this rule and have no metadata row of their own.",
