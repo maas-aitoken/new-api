@@ -122,6 +122,16 @@ func ClaudeHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *typ
 				return newAPIErrorFromParamOverride(err)
 			}
 		}
+		// A Claude-format request reaching a GPT channel is converted to the
+		// chat completions shape above, so the same policy that guards
+		// /v1/chat/completions applies to its effort and service tier.
+		if relaycommon.IsGPTRequestPolicyChannel(info) {
+			jsonData, err = relaycommon.ApplyGPTRequestPolicyJSON(info, jsonData)
+			if err != nil {
+				return types.NewError(err, types.ErrorCodeConvertRequestFailed, types.ErrOptionWithSkipRetry())
+			}
+			relaycommon.ApplyGPTReasoningEffortCap(info)
+		}
 		if otelRuntime := observability.FromContext(c.Request.Context()); otelRuntime != nil {
 			otelRuntime.RecordInput(c.Request.Context(), jsonData, info.GetFinalRequestRelayFormat())
 		}

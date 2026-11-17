@@ -7123,7 +7123,7 @@
     "Theme Settings": "テーマ設定",
     "There are both add and remove models pending, but you only selected one type. Confirm submitting only the selected items?": "追加と削除の両方のモデルが保留中ですが、一方のタイプのみ選択されています。選択した項目のみ送信してよろしいですか？",
     "There is a rule for vip billed as premium → use its ratio 0.3": "「vip が premium として課金」のルールあり → ルールの 0.3 を使用",
-    "These controls apply to all GPT requests sent through supported GPT channels.": "これらの設定は、サポート対象の GPT チャンネル経由で送信されるすべての GPT リクエストに適用されます。",
+    "These controls apply to GPT and o-series model requests sent through supported GPT channels.": "これらの設定は、サポート対象の GPT チャンネル経由で送信される GPT および o シリーズモデルのリクエストにのみ適用されます。",
     "These controls apply to GPT requests sent through channels whose tags match any configured tag. Individual channel overrides can be added later.": "設定したタグのいずれかに一致するチャンネルから送信される GPT リクエストに適用します。後からチャンネルごとの上書きも追加できます。",
     "These models are still in your selection but were not returned by the upstream listing. Entries that are only model_mapping source aliases are omitted. Toggle to adjust before saving.": "これらはまだ選択中ですが上流のリストにありません。model_mapping にのみソース別名として載る名前は除外されています。保存前に選択を調整してください。",
     "These models match this rule and have no metadata row of their own.": "これらのモデルはこのルールに一致し、独自のメタデータ行を持ちません。",
