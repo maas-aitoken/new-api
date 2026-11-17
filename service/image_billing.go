@@ -1,7 +1,6 @@
 package service
 
 import (
-	"errors"
 	"fmt"
 	"net/http"
 
@@ -75,16 +74,5 @@ func PrepareImageBillingForRequest(c *gin.Context, info *relaycommon.RelayInfo, 
 		return nil
 	}
 	info.PriceData.FreeModel = false
-	if info.Billing == nil {
-		return PreConsumeBilling(c, quota, info)
-	}
-	if err := info.Billing.Reserve(quota); err != nil {
-		var apiErr *types.NewAPIError
-		if errors.As(err, &apiErr) {
-			return apiErr
-		}
-		return types.NewErrorWithStatusCode(err, types.ErrorCodeInsufficientUserQuota, http.StatusForbidden, types.ErrOptionWithSkipRetry())
-	}
-	info.FinalPreConsumedQuota = info.Billing.GetPreConsumedQuota()
-	return nil
+	return PrepareChannelBilling(c, info, quota)
 }

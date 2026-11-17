@@ -167,6 +167,17 @@ func ReplaceExternalQuotaData(platform string, start, end int64, rows []External
 	})
 }
 
+// ExternalPlatformsWithUsage returns the external platforms holding usage of any of userIDs.
+func ExternalPlatformsWithUsage(userIDs []int) ([]string, error) {
+	platforms := make([]string, 0)
+	if len(userIDs) == 0 {
+		return platforms, nil
+	}
+	err := DB.Model(&ExternalQuotaData{}).Where("local_user_id IN ?", userIDs).
+		Distinct("platform").Pluck("platform", &platforms).Error
+	return platforms, err
+}
+
 func GetExternalQuotaDates(start, end int64, userID int, platform string) ([]*QuotaData, error) {
 	query := DB.Model(&ExternalQuotaData{}).
 		Where("created_at >= ? AND created_at <= ?", start, end)

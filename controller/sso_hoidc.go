@@ -36,6 +36,20 @@ func SsoHoidcLogin(c *gin.Context) {
 	loginUrl := common.HoidcLoginPage +
 		"?platform_id=" + url.QueryEscape(common.HoidcPlatformId) +
 		"&redirect=" + url.QueryEscape(callbackUrl)
+	if c.Query("isLoginOut") == "1" {
+		logoutUrl, err := url.Parse(loginUrl)
+		if err != nil || logoutUrl.Host == "" || (logoutUrl.Scheme != "http" && logoutUrl.Scheme != "https") || logoutUrl.User != nil {
+			common.ApiErrorT(c, "HOIDC SSO is not properly configured")
+			return
+		}
+		logoutUrl.Path = "/"
+		logoutUrl.RawPath = ""
+		logoutUrl.Fragment = ""
+		query := logoutUrl.Query()
+		query.Set("isLoginOut", "1")
+		logoutUrl.RawQuery = query.Encode()
+		loginUrl = logoutUrl.String()
+	}
 
 	c.Redirect(http.StatusFound, loginUrl)
 }

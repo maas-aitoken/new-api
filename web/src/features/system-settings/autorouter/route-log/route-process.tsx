@@ -23,7 +23,10 @@ import { EffortStep, ResultStep } from './result-steps'
 import { SelectionStep } from './selection-step'
 import type { RouteLogDetail } from './types'
 
-function ProcessStep(props: { id: RouteProcessStepId; detail: RouteLogDetail }) {
+function ProcessStep(props: {
+  id: RouteProcessStepId
+  detail: RouteLogDetail
+}) {
   const { result, trace, error } = props.detail
   switch (props.id) {
     case 'request':
@@ -31,18 +34,23 @@ function ProcessStep(props: { id: RouteProcessStepId; detail: RouteLogDetail }) 
     case 'judgment':
       return trace ? <JudgmentStep trace={trace} result={result} /> : null
     case 'validity':
-      return trace?.validity ? (
-        <ValidityStep validity={trace.validity} />
-      ) : null
+      return trace?.validity ? <ValidityStep validity={trace.validity} /> : null
     case 'continuation':
       return trace?.continuation ? (
-        <ContinuationStep continuation={trace.continuation} />
+        <ContinuationStep
+          continuation={trace.continuation}
+          pressure={trace.previous_pressure}
+        />
       ) : null
     case 'mode':
       return trace?.mode ? <ModeStep mode={trace.mode} /> : null
     case 'selection':
       return trace?.ladder ? (
-        <SelectionStep ladder={trace.ladder} pick={result?.pick} />
+        <SelectionStep
+          ladder={trace.ladder}
+          pick={result?.pick}
+          pressure={trace.continuation ? undefined : trace.previous_pressure}
+        />
       ) : null
     case 'effort':
       return trace?.effort ? (

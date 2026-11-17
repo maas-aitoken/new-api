@@ -49,6 +49,11 @@ type Policy struct {
 	// Tiers are the platform's weights of the three fixed preferences. An adaptive
 	// request replaces CostWeight with a weight read from them by its mode answer.
 	Tiers TierWeights
+	// CapacityPricing 表示容量溢价是否开启，CapacityKnee 是不溢价的膝点。
+	// 沿用上一轮模型时也会看上一轮会落到的池子：压力超过膝点就不再沿用，
+	// 改为重新比较——延续保住提示缓存，但不该把请求留在一个已经在涨价的池子里。
+	CapacityPricing bool
+	CapacityKnee    float64
 }
 
 // DefaultProfile is the ranking DefaultModels follow when no task-specific
@@ -139,6 +144,18 @@ func SelectRoute(decision *Decision, previous *Route, policy Policy, candidates 
 		trace.Mode = &mode
 	}
 	available, overridable := candidates.Available, candidates.Overridable
+	// previousPressure 读出上一轮模型的池压力；没有容量信号时 known 为 false，照旧沿用。
+	// 只有确认沿用了或者因压力放弃沿用才记留痕，上一轮的模型已经不能服务时不读计数。
+	previousPressure := func(previous *Route, available func(string) bool, ignoreClientReasoning bool) (pressure float64, busy bool, known bool) {
+		if !policy.CapacityPricing || candidates.CapacityPressure == nil {
+			return 0, false, false
+		}
+		pressure, known = candidates.CapacityPressure(previous.Model, previous.Effort, ignoreClientReasoning)
+		return pressure, known && pressure > policy.CapacityKnee, known
+	}
+	recordPressure := func(previous *Route, pressure float64, reused bool) {
+		trace.PreviousPressure = &PreviousPressure{Model: previous.Model, Pressure: pressure, Knee: policy.CapacityKnee, Reused: reused}
+	}
 	profiles, validity := validateDecision(decision)
 	trace.Validity = &validity
 	upgrade := decision != nil && decision.LargerModelBenefit != nil && *decision.LargerModelBenefit >= policy.UpgradeBenefit
@@ -147,8 +164,15 @@ func SelectRoute(decision *Decision, previous *Route, policy Policy, candidates 
 	effortOnly := validity.Error == "" && decision.TaskType == TaskTypeUnknown && upgrade
 	if profiles == nil && !effortOnly {
 		if previous != nil && ModelAvailable(previous.Model, available) {
-			trace.Ladder = append(trace.Ladder, LadderStep{Profile: previous.Profile, Outcome: OutcomeInherited, Model: previous.Model})
-			return *previous, true, true, nil
+			pressure, busy, known := previousPressure(previous, available, false)
+			if !busy {
+				if known {
+					recordPressure(previous, pressure, true)
+				}
+				trace.Ladder = append(trace.Ladder, LadderStep{Profile: previous.Profile, Outcome: OutcomeInherited, Model: previous.Model})
+				return *previous, true, true, nil
+			}
+			recordPressure(previous, pressure, false)
 		}
 		model, picked, found := policy.choose(DefaultProfile, policy.DefaultModels, available, false, policy.DefaultEffort, candidates, trace)
 		return Route{Model: model, Effort: policy.DefaultEffort}, true, found, picked
@@ -167,10 +191,24 @@ func SelectRoute(decision *Decision, previous *Route, policy Policy, candidates 
 		case effortOnly:
 			keep = ModelAvailable(previous.Model, overridable)
 			if keep {
+				pressure, busy, known := previousPressure(previous, overridable, true)
+				keep = !busy
+				if known {
+					recordPressure(previous, pressure, keep)
+				}
+			}
+			if keep {
 				trace.Ladder = append(trace.Ladder, LadderStep{Profile: previous.Profile, Outcome: OutcomeInherited, Model: previous.Model})
 			}
 		case decision.TaskChange != nil:
 			keep = *decision.TaskChange < policy.ContinuationTaskChange && ModelAvailable(previous.Model, overridable)
+			if keep {
+				pressure, busy, known := previousPressure(previous, overridable, true)
+				keep = !busy
+				if known {
+					recordPressure(previous, pressure, keep)
+				}
+			}
 			trace.Continuation = &Continuation{Previous: previous.Model, TaskChange: *decision.TaskChange, Threshold: policy.ContinuationTaskChange, Continued: keep}
 		}
 	}

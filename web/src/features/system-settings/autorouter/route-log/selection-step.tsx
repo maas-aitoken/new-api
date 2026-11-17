@@ -36,7 +36,12 @@ import {
   skipReasonLabel,
 } from './labels'
 import { StepFrame, ToneBadge } from './route-process-parts'
-import type { RoutePick, RoutePickCandidate, RouteTraceStep } from './types'
+import type {
+  RoutePick,
+  RoutePickCandidate,
+  RoutePreviousPressure,
+  RouteTraceStep,
+} from './types'
 
 const priceFormat = { digitsLarge: 4, digitsSmall: 6, abbreviate: false }
 
@@ -61,6 +66,10 @@ export function PickTable(props: { pick: RoutePick }) {
   // 有估算时比较的是"用户价 × 首次会落到的渠道的费用倍率"，多出两列；旧日志没有这两列。
   const comparesCost = props.pick.band.some(
     (row) => (row.cost_multiplier ?? 0) > 0
+  )
+  // 有容量溢价时多一列：池子越接近额度上限，比较成本越贵。
+  const hasCapacityPremium = props.pick.band.some(
+    (row) => (row.capacity_premium ?? 0) > 0
   )
   // 这次没拿到调度器预览的回答时说明原因，所有倍率都按原生规则算。
   const previewOutcome = previewOutcomeLabel(t, props.pick.preview)
@@ -87,6 +96,28 @@ export function PickTable(props: { pick: RoutePick }) {
           '-'
         ),
     },
+    ...(hasCapacityPremium
+      ? [
+          {
+            id: 'capacity_premium',
+            header: t('Capacity premium'),
+            className: 'h-9 text-right',
+            cellClassName: tableStyles.topNumericCell,
+            cell: (row: RoutePickCandidate) =>
+              row.capacity_premium ? (
+                <div className='flex flex-col items-end'>
+                  <span>× {formatScore(row.capacity_premium)}</span>
+                  <span className='text-muted-foreground text-xs font-normal'>
+                    {t('Pool pressure')}{' '}
+                    {Math.round((row.capacity_pressure ?? 0) * 100)}%
+                  </span>
+                </div>
+              ) : (
+                '-'
+              ),
+          },
+        ]
+      : []),
     {
       id: 'cost',
       header: t('Compared cost'),
@@ -155,6 +186,9 @@ export function PickTable(props: { pick: RoutePick }) {
         {comparesCost
           ? ` ${t('The discount uses the compared cost: the user price times the cost multiplier of the channel the first attempt lands on. The multiplier never changes what the user is billed.')}`
           : null}
+        {hasCapacityPremium
+          ? ` ${t('The capacity premium raises the compared cost when the pool is close to its RPM, TPM or in-flight limit, so traffic shifts to models with headroom. Pools without a limit have no premium, and it never changes what the user is billed.')}`
+          : null}
       </p>
       {previewOutcome && (
         <p className='text-muted-foreground text-xs'>{previewOutcome}</p>
@@ -200,8 +234,8 @@ function StepSummary(props: { step: RouteTraceStep }) {
         <ul className='text-muted-foreground space-y-0.5 ps-3 text-xs'>
           {step.skipped.map((skipped) => (
             <li key={skipped.model}>
-              <span className='font-mono'>{skipped.model}</span>{' '}
-              ({formatScore(skipped.score)}):{' '}
+              <span className='font-mono'>{skipped.model}</span> (
+              {formatScore(skipped.score)}):{' '}
               {skipReasonLabel(t, skipped.reason)}
             </li>
           ))}
@@ -218,6 +252,7 @@ function StepSummary(props: { step: RouteTraceStep }) {
 export function SelectionStep(props: {
   ladder: RouteTraceStep[]
   pick?: RoutePick
+  pressure?: RoutePreviousPressure
 }) {
   const { t } = useTranslation()
   // A ranking that compares successfully ends the walk, so at most one step did.
@@ -235,6 +270,25 @@ export function SelectionStep(props: {
 
   return (
     <StepFrame icon={ListOrdered} title={t('Model selection')}>
+      {props.pressure && !props.pressure.reused && (
+        <p className='text-muted-foreground text-xs'>
+          {t(
+            'Previous model {{model}} was not reused: pool pressure {{value}} exceeds the knee {{knee}}.',
+            {
+              model: props.pressure.model,
+              value: formatScore(props.pressure.pressure),
+              knee: formatScore(props.pressure.knee),
+            }
+          )}
+        </p>
+      )}
+      {props.pressure?.reused && (
+        <p className='text-muted-foreground text-xs'>
+          {t('Previous model {{model}} is within the no-premium knee.', {
+            model: props.pressure.model,
+          })}
+        </p>
+      )}
       {rows.map((row) => (
         <div key={row.key} className='space-y-2'>
           <StepSummary step={row.step} />

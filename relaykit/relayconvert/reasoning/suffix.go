@@ -136,6 +136,15 @@ func ParseOpenAIReasoningEffortFromModelSuffix(modelName string, preserveEffortT
 	return effort, baseModel
 }
 
+// IsGPTFamilyModel reports whether the model name belongs to the GPT or
+// o-series family whose reasoning-effort vocabulary relaykit defines. Hosts
+// use it to tell a real GPT model from the other upstreams reached through an
+// OpenAI-compatible channel.
+func IsGPTFamilyModel(modelName string) bool {
+	bare := lastModelPathSegment(strings.ToLower(strings.TrimSpace(modelName)))
+	return legacyOpenAIModelPattern.MatchString(bare)
+}
+
 // ParseClaudeModelSuffix folds the naked claude-* aliases (-thinking,
 // -nothinking, -thinking-<budget>, and effort tails such as -high) into an
 // Intent. allowSuffixAlias is the host thinking-adapter toggle; when false the

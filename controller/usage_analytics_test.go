@@ -253,6 +253,34 @@ func TestUsageAnalyticsIncludesDepartmentOfHead(t *testing.T) {
 	assert.Equal(t, "Sales", *scope.Data.DefaultDepartment)
 }
 
+func TestGetUsagePlatformsListsOnlyPlatformsWithVisibleUsage(t *testing.T) {
+	setupUsageAnalyticsControllerTestDB(t)
+	require.NoError(t, model.DB.AutoMigrate(&model.ExternalQuotaData{}))
+	t.Setenv("EXTERNAL_PLATFORMS_CONFIG", `[{"name":"jp","label":"JP","base_url":"https://jp.example.internal","admin_token":"test-only"},`+
+		`{"name":"us","label":"US","base_url":"https://us.example.internal","admin_token":"test-only"}]`)
+	require.NoError(t, model.DB.Create(&model.ExternalQuotaData{Platform: "jp", LocalUserID: 2, RemoteUsername: "bob",
+		ModelName: "gpt-a", CreatedAt: 3600, Count: 1, Quota: 10}).Error)
+	type platformsResponse struct {
+		Success bool `json:"success"`
+		Data    []struct {
+			Value string `json:"value"`
+		} `json:"data"`
+	}
+	values := func(userID, role int) []string {
+		payload := serveUsageAnalyticsAs[platformsResponse](t, GetUsagePlatforms, userID, role, "/api/data/platforms")
+		require.True(t, payload.Success)
+		names := make([]string, 0, len(payload.Data))
+		for _, item := range payload.Data {
+			names = append(names, item.Value)
+		}
+		return names
+	}
+
+	assert.Equal(t, []string{"local", "jp", "us"}, values(1, common.RoleAdminUser))
+	assert.Equal(t, []string{"local", "jp"}, values(2, common.RoleCommonUser))
+	assert.Equal(t, []string{"local"}, values(1, common.RoleCommonUser))
+}
+
 func TestGetSelfUsageAnalyticsForcesCaller(t *testing.T) {
 	setupUsageAnalyticsControllerTestDB(t)
 

@@ -35,6 +35,7 @@ import {
   type FactRow,
 } from './route-process-parts'
 import type {
+  RoutePreviousPressure,
   RouteTraceContinuation,
   RouteTraceMode,
   RouteTraceValidity,
@@ -66,10 +67,17 @@ export function ValidityStep(props: { validity: RouteTraceValidity }) {
 
 function continuationVerdict(
   t: (key: string) => string,
-  continuation: RouteTraceContinuation
+  continuation: RouteTraceContinuation,
+  pressure?: RoutePreviousPressure
 ): { tone: RouteTone; label: string } {
   if (continuation.continued) {
     return { tone: 'success', label: t('Continued the previous task') }
+  }
+  if (pressure && !pressure.reused) {
+    return {
+      tone: 'warning',
+      label: t('Compared again because the pool is busy'),
+    }
   }
   if (continuation.task_change >= continuation.threshold) {
     return { tone: 'info', label: t('A new task') }
@@ -79,10 +87,11 @@ function continuationVerdict(
 
 export function ContinuationStep(props: {
   continuation: RouteTraceContinuation
+  pressure?: RoutePreviousPressure
 }) {
   const { t } = useTranslation()
   const continuation = props.continuation
-  const verdict = continuationVerdict(t, continuation)
+  const verdict = continuationVerdict(t, continuation, props.pressure)
 
   return (
     <StepFrame icon={GitCompareArrows} title={t('Continuation check')}>
@@ -102,6 +111,17 @@ export function ContinuationStep(props: {
               threshold: formatScore(continuation.threshold),
             }),
           ],
+          ...(props.pressure
+            ? [
+                [
+                  t('Pool pressure'),
+                  t('{{value}} against a knee of {{knee}}', {
+                    value: formatScore(props.pressure.pressure),
+                    knee: formatScore(props.pressure.knee),
+                  }),
+                ] as FactRow,
+              ]
+            : []),
         ]}
       />
     </StepFrame>
@@ -141,7 +161,9 @@ export function ModeStep(props: { mode: RouteTraceMode }) {
         </>
       )}
       <Facts rows={facts} />
-      <p className='text-muted-foreground text-xs'>{t('Platform cost weights')}</p>
+      <p className='text-muted-foreground text-xs'>
+        {t('Platform cost weights')}
+      </p>
       <Chips items={tiers} />
       <p className='text-muted-foreground text-xs'>
         {judged

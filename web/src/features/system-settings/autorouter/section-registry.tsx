@@ -17,6 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { createSectionRegistry } from '../utils/section-registry'
+import { CapacitySection } from './capacity-section'
 import { ConnectionSection } from './connection-section'
 import { JudgmentSection } from './judgment-section'
 import { PreferenceSection } from './preference-section'
@@ -37,6 +38,13 @@ const AUTOROUTER_SECTIONS = [
     titleKey: 'Preference and cost',
     build: (settings: AutoRouterSettings) => (
       <PreferenceSection settings={settings} />
+    ),
+  },
+  {
+    id: 'capacity',
+    titleKey: 'Capacity premium',
+    build: (settings: AutoRouterSettings) => (
+      <CapacitySection settings={settings} />
     ),
   },
   {

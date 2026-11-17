@@ -25,6 +25,7 @@ export type RouteLogItem = {
   id: number
   created_at: number
   request_id: string
+  request_params: string
   user_id: number
   token_id: number
   using_group: string
@@ -48,6 +49,7 @@ export type RouteLogPage = {
 /** The list filters as typed into the toolbar; an empty string means no filter. */
 export type RouteLogFilters = {
   request_id: string
+  request_params: string
   user_id: string
   model: string
   task_type: string
@@ -79,6 +81,12 @@ export type RoutePickCandidate = {
    * （平台成本，不参与计费）；没有表示没估算，按 price 比较。
    */
   cost_multiplier?: number
+  /**
+   * 会落到的计数池的容量溢价与压力。有溢价时 cost = price × 倍率 × 溢价；
+   * 没有表示这个池子没配额度或功能关闭，按 1 算。都不参与计费。
+   */
+  capacity_premium?: number
+  capacity_pressure?: number
   cost?: number
   channel_id?: number
   channels?: number
@@ -153,6 +161,13 @@ export type RouteTraceValidity = {
   profiles?: string[]
 }
 
+export type RoutePreviousPressure = {
+  model: string
+  pressure: number
+  knee: number
+  reused: boolean
+}
+
 export type RouteTraceContinuation = {
   previous: string
   task_change: number
@@ -200,6 +215,8 @@ export type RouteTrace = {
   validity?: RouteTraceValidity
   mode?: RouteTraceMode
   continuation?: RouteTraceContinuation
+  /** 沿用上一轮模型前的池压力检查；reused 为 false 表示超过膝点，改为重新比较。 */
+  previous_pressure?: RoutePreviousPressure
   effort?: RouteTraceEffort
   ladder?: RouteTraceStep[]
 }

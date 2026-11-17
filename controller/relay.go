@@ -215,11 +215,35 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 	relayInfo.RetryIndex = 0
 	relayInfo.LastError = nil
 
-	for ; retryParam.GetRetry() <= common.RetryTimes; retryParam.IncreaseRetry() {
+	for ; retryParam.GetRetry() <= common.RetryTimes || common.GetContextKeyBool(c, constant.ContextKeyAutoRouted); retryParam.IncreaseRetry() {
 		relayInfo.StreamStatus = nil
 		relayInfo.PerformanceBusinessRejection = false
 		relayInfo.PerformanceOutputTokens = 0
 		relayInfo.RetryIndex = retryParam.GetRetry()
+		if retryParam.GetRetry() > 0 && common.GetContextKeyBool(c, constant.ContextKeyAutoRouted) {
+			nextModel, routeErr := middleware.NextAutoRetryModel(c)
+			if routeErr != nil {
+				newAPIError = routeErr
+				break
+			}
+			if nextModel == "" {
+				break
+			}
+			relayInfo.OriginModelName = nextModel
+			retryParam.ModelName = nextModel
+			common.SetContextKey(c, constant.ContextKeyAutoGroupIndex, 0)
+			common.SetContextKey(c, constant.ContextKeyAutoGroupRetryIndex, 0)
+			request, requestErr := helper.GetAndValidateRequest(c, relayFormat)
+			if requestErr != nil {
+				newAPIError = types.NewError(requestErr, types.ErrorCodeInvalidRequest, types.ErrOptionWithSkipRetry())
+				break
+			}
+			relayInfo.Request = request
+			if billingErr := prepareAutoRetryBilling(c, relayInfo); billingErr != nil {
+				newAPIError = billingErr
+				break
+			}
+		}
 		channel, channelErr := getChannel(c, relayInfo, retryParam)
 		if channelErr != nil {
 			logger.LogError(c, channelErr.Error())
@@ -230,6 +254,12 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		if billingErr := service.PrepareTieredBillingForSelectedGroup(c, relayInfo); billingErr != nil {
 			newAPIError = billingErr
 			break
+		}
+		if relayInfo.TieredBillingSnapshot == nil {
+			if billingErr := service.PrepareChannelBilling(c, relayInfo, relayInfo.PriceData.QuotaToPreConsume); billingErr != nil {
+				newAPIError = billingErr
+				break
+			}
 		}
 
 		bodyStorage, bodyErr := common.GetBodyStorage(c)
@@ -342,7 +372,16 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		newAPIError = service.NormalizeViolationFeeError(newAPIError)
 		relayInfo.LastError = newAPIError
 
-		decision := service.DecideRelayRetry(c, newAPIError, common.RetryTimes-retryParam.GetRetry())
+		retryTimes := common.RetryTimes - retryParam.GetRetry()
+		if common.GetContextKeyBool(c, constant.ContextKeyAutoRouted) {
+			// The ordinary budget applies to channels of one model. Auto retries
+			// instead continue until every eligible model has had one attempt.
+			retryTimes = max(retryTimes, 1)
+		}
+		decision := service.DecideRelayRetry(c, newAPIError, retryTimes)
+		if common.GetContextKeyBool(c, constant.ContextKeyAutoRouted) && decision.Action == "retry" {
+			service.ExcludeAutoModel(c, relayInfo.OriginModelName)
+		}
 		service.RecordPolicyFailure(c, channel.Id, newAPIError, decision)
 		processChannelError(c, *types.NewChannelError(channel.Id, channel.Type, channel.Name, channel.ChannelInfo.IsMultiKey, common.GetContextKeyString(c, constant.ContextKeyChannelKey), channel.GetAutoBan()), newAPIError, relayInfo)
 
@@ -452,7 +491,7 @@ func finishInputFor(c *gin.Context, info *relaycommon.RelayInfo, apiErr *types.N
 	// 费用倍率在选定渠道时（SetupContextForSelectedChannel，每次尝试都会经过）按用户请求
 	// 一侧的模型名算好放在上下文里。这里不按 UpstreamModelName 查：那是映射后的上游名，
 	// 流式响应还会把它改成上游回报的模型名（比如带日期的快照名），会查不到。
-	// 倍率不参与计费，只乘 relay_attempts.cost_actual。
+	// 计费已按同一倍率扣过（service.ChannelBillingMultiplier），这里只把它记进 relay_attempts。
 	if multiplier, ok := common.GetContextKeyType[float64](c, constant.ContextKeyChannelCostMultiplier); ok && multiplier > 0 {
 		in.CostMultiplier = multiplier
 	}
@@ -848,6 +887,7 @@ func executeTaskSubmissionWith(
 		OriginModelName: relayInfo.OriginModelName,
 		PerCallBilling:  common.StringsContains(constant.TaskPricePatches, relayInfo.OriginModelName) || relayInfo.PriceData.UsePrice,
 		TieredSnapshot:  relayInfo.TieredBillingSnapshot,
+		CostMultiplier:  service.ChannelBillingMultiplier(c, relayInfo),
 	}
 	task.Quota = result.Quota
 	task.Data = result.TaskData

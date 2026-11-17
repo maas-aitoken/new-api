@@ -222,6 +222,17 @@ func TestGetUsageAnalyticsForExternalPlatform(t *testing.T) {
 		assert.Equal(t, tt.requests, result.Summary.RequestCount, tt.name)
 		assert.Equal(t, tt.quota, result.Summary.Quota, tt.name)
 	}
+
+	for _, tt := range []struct {
+		userIDs []int
+		want    []string
+	}{
+		{[]int{11}, []string{"jp", "us"}}, {[]int{12}, []string{"us"}}, {[]int{13}, []string{}}, {[]int{}, []string{}},
+	} {
+		platforms, err := ExternalPlatformsWithUsage(tt.userIDs)
+		require.NoError(t, err)
+		assert.ElementsMatch(t, tt.want, platforms, "users %v", tt.userIDs)
+	}
 }
 
 func TestGetUsageAnalyticsGroupByUserJoinsUserAttributes(t *testing.T) {

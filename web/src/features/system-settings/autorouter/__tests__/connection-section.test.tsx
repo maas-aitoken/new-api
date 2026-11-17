@@ -17,7 +17,13 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { useState } from 'react'
 import { beforeEach, expect, test, vi } from 'vitest'
@@ -38,6 +44,7 @@ const settings: AutoRouterSettings = {
   'autorouter_setting.cache_ttl_seconds': 7200,
   'autorouter_setting.default_preference': 'balanced',
   'autorouter_setting.cost_weights': '{}',
+  'autorouter_setting.capacity_pricing': '{}',
   'autorouter_setting.continuation_task_change': 0.5,
   'autorouter_setting.upgrade_benefit': 0.5,
   'autorouter_setting.default_effort': 'medium',
@@ -60,10 +67,7 @@ function Fixture(props: { values?: Partial<AutoRouterSettings> }) {
   )
 }
 
-function mockStatus(
-  jevApiKey: AutoRouterConnectionSource,
-  jevReady = true
-) {
+function mockStatus(jevApiKey: AutoRouterConnectionSource, jevReady = true) {
   vi.spyOn(api, 'get').mockResolvedValue({
     data: {
       success: true,

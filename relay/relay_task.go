@@ -338,7 +338,7 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 	//    发起上游请求前补足预扣，余额不足就不发请求。
 	if info.Billing != nil || !info.PriceData.FreeModel {
 		info.ForcePreConsume = true
-		if apiErr := service.PreConsumeBilling(c, info.PriceData.Quota, info); apiErr != nil {
+		if apiErr := service.PrepareChannelBilling(c, info, info.PriceData.Quota); apiErr != nil {
 			return nil, service.TaskErrorFromAPIError(apiErr)
 		}
 	}
@@ -402,6 +402,7 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 		}
 	}
 
+	finalQuota = service.ScaleChannelBillingQuota(c, info, finalQuota)
 	info.PriceData.Quota = finalQuota
 
 	return &TaskSubmitResult{
