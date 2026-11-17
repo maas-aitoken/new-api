@@ -149,6 +149,13 @@ func RequestSubscriptionQuotaIncrease(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
+	// amount (0 = unlimited) is read by the console notice.
+	model.RecordAuditLog(c, model.AuditLog{
+		UserId: userId, ActorRole: c.GetInt("role"), Category: model.AuditCategoryOperation,
+		Action: model.AuditActionQuotaIncrease, Content: "Subscription quota increased, plan: " + plan.Title, Success: true,
+		Other: model.AuditOther{Op: &model.AuditOperation{Action: model.AuditActionQuotaIncrease,
+			Params: model.AuditFields{"plan": plan.Title, "amount": plan.TotalAmount, "previous_amount": previousTotal}}},
+	})
 	// The increase stands even when the cloud platform cannot be reached.
 	gopool.Go(func() {
 		user, err := model.GetUserById(userId, false)

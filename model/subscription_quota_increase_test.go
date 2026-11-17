@@ -167,23 +167,10 @@ func testQuotaIncreaseClimbsTiersInPlace(t *testing.T) {
 	assert.Equal(t, "Already at the highest quota tier", err.Error())
 	assert.Len(t, activeQuotaIncreaseSubs(t, user.Id), 1)
 
-	expected := []struct {
-		plan   string
-		amount float64
-	}{{"v1", 1000}, {"v2", 3000}, {"v3", 0}}
-	var logs []Log
-	require.NoError(t, LOG_DB.Where("user_id = ? AND type = ?", user.Id, LogTypeSystem).Order("id asc").Find(&logs).Error)
-	require.Len(t, logs, len(expected))
-	for i, log := range logs {
-		var other struct {
-			ContentParts []common.Message `json:"content_parts"`
-		}
-		require.NoError(t, common.UnmarshalJsonStr(log.Other, &other))
-		require.Len(t, other.ContentParts, 1)
-		assert.Equal(t, "Subscription quota increased, plan: {{plan}}", other.ContentParts[0].Key)
-		assert.Equal(t, map[string]any{"plan": expected[i].plan, "amount": expected[i].amount}, other.ContentParts[0].Params)
-		assert.Equal(t, "Subscription quota increased, plan: "+expected[i].plan, log.Content)
-	}
+	// The increase is audited by the controller, never written as a usage log.
+	var logCount int64
+	require.NoError(t, LOG_DB.Model(&Log{}).Where("user_id = ?", user.Id).Count(&logCount).Error)
+	assert.Zero(t, logCount)
 }
 
 func testQuotaIncreaseKeepsOriginalGroupForExpiry(t *testing.T) {

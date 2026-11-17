@@ -19,6 +19,8 @@ const (
 	AuditCategorySecurity    = "security"
 	AuditCategoryOperation   = "operation"
 	AuditCategoryAccessToken = "access_token"
+
+	AuditActionQuotaIncrease = "subscription.quota_increase"
 )
 
 // AuditLog is retained independently of usage logs and their cleanup/TTL policy.
