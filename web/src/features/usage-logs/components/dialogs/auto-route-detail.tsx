@@ -33,8 +33,10 @@ import { DetailRow, DetailSection } from './log-detail-layout'
 type AutoRouteDetailProps = {
   /** The request the log belongs to; the routing log is looked up by it. */
   requestId: string
-  /** The summary kept with the usage log, which the drawer falls back to. */
-  summary: RouteResult
+  /** The summary kept with the usage log (admin view); the drawer falls back to it. */
+  summary?: RouteResult
+  /** View only the current user's own routing log (the /self endpoint). */
+  self?: boolean
 }
 
 /** How an "auto" request was routed, with a way into the full routing process. */
@@ -48,25 +50,29 @@ export function AutoRouteDetail(props: AutoRouteDetailProps) {
       label={t('Auto routing')}
       icon={<Waypoints className='size-4' aria-hidden='true' />}
     >
-      <DetailRow
-        label={t('Routed to')}
-        value={summary.resolved_model || summary.model || '-'}
-        mono
-      />
-      {summary.decision?.task_type && (
-        <DetailRow label={t('Task type')} value={summary.decision.task_type} mono />
-      )}
-      {summary.source && (
-        <DetailRow
-          label={t('Route source')}
-          value={routeSourceLabel(t, summary.source)}
-        />
-      )}
-      {summary.preference && (
-        <DetailRow
-          label={t('Preference')}
-          value={preferenceLabel(t, summary.preference)}
-        />
+      {summary && (
+        <>
+          <DetailRow
+            label={t('Routed to')}
+            value={summary.resolved_model || summary.model || '-'}
+            mono
+          />
+          {summary.decision?.task_type && (
+            <DetailRow label={t('Task type')} value={summary.decision.task_type} mono />
+          )}
+          {summary.source && (
+            <DetailRow
+              label={t('Route source')}
+              value={routeSourceLabel(t, summary.source)}
+            />
+          )}
+          {summary.preference && (
+            <DetailRow
+              label={t('Preference')}
+              value={preferenceLabel(t, summary.preference)}
+            />
+          )}
+        </>
       )}
       {props.requestId && (
         <Button
@@ -82,6 +88,7 @@ export function AutoRouteDetail(props: AutoRouteDetailProps) {
       <RouteProcessDrawer
         requestId={viewing}
         summary={summary}
+        scope={props.self ? 'self' : 'all'}
         onClose={() => setViewing('')}
       />
     </DetailSection>

@@ -195,13 +195,15 @@ var accessTokenRouteRules = map[string]accessTokenRouteRule{
 	"POST /api/scheduler/test-connection":       accessTokenScopeRule("option:write"),
 
 	// router/api-router.go: /api/autorouter
-	"GET /api/autorouter/status":           accessTokenScopeRule("option:read"),
-	"GET /api/autorouter/ranking":          accessTokenScopeRule("option:read"),
-	"PUT /api/autorouter/ranking":          accessTokenScopeRule("option:write"),
-	"POST /api/autorouter/ranking/refresh": accessTokenScopeRule("option:write"),
-	"POST /api/autorouter/ranking/restore": accessTokenScopeRule("option:write"),
-	"GET /api/auto-route-logs/":            accessTokenScopeRule("log:read"),
-	"GET /api/auto-route-logs/:request_id": accessTokenScopeRule("log:read"),
+	"GET /api/autorouter/status":                accessTokenScopeRule("option:read"),
+	"GET /api/autorouter/ranking":               accessTokenScopeRule("option:read"),
+	"PUT /api/autorouter/ranking":               accessTokenScopeRule("option:write"),
+	"POST /api/autorouter/ranking/refresh":      accessTokenScopeRule("option:write"),
+	"POST /api/autorouter/ranking/restore":      accessTokenScopeRule("option:write"),
+	"GET /api/auto-route-logs/":                 accessTokenScopeRule("log:read"),
+	"GET /api/auto-route-logs/:request_id":      accessTokenScopeRule("log:read"),
+	"GET /api/auto-route-logs/self":             accessTokenScopeRule("usage:read"),
+	"GET /api/auto-route-logs/self/:request_id": accessTokenScopeRule("usage:read"),
 
 	// router/api-router.go: /api/performance, /api/system-task, /api/system-info
 	"GET /api/performance/stats":                   accessTokenScopeRule("ops:read"),
@@ -339,6 +341,7 @@ var accessTokenRouteRules = map[string]accessTokenRouteRule{
 	"GET /api/channel-model-capabilities/capacity":        accessTokenScopeRule("model:read"),
 	"DELETE /api/channel-model-capabilities/":             accessTokenScopeRule("model:write"),
 	"GET /api/capability-gate/events":                     accessTokenScopeRule("model:read"),
+	"GET /api/capability-gate/events/self":                accessTokenScopeRule("usage:read"),
 
 	// router/api-router.go: /api/deployments
 	"GET /api/deployments/settings":                     accessTokenScopeRule("deployment:read"),

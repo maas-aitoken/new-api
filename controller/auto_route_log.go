@@ -16,11 +16,15 @@ type autoRouteLogView struct {
 }
 
 // GetAutoRouteLogs 返回 auto 请求的选路日志列表（管理员），列表不带 detail。
+// /self 路由只返回当前用户自己的留痕：user_id 一律取会话用户，不信任查询参数。
 func GetAutoRouteLogs(c *gin.Context) {
 	pageInfo := common.GetPageQuery(c)
 	startTime, _ := strconv.ParseInt(c.Query("start_time"), 10, 64)
 	endTime, _ := strconv.ParseInt(c.Query("end_time"), 10, 64)
 	userID, _ := strconv.Atoi(c.Query("user_id"))
+	if c.FullPath() == "/api/auto-route-logs/self" {
+		userID = c.GetInt("id")
+	}
 	logs, total, err := model.GetAutoRouteLogs(model.AutoRouteLogQuery{
 		RequestId:     c.Query("request_id"),
 		RequestParams: c.Query("request_params"),
@@ -48,11 +52,15 @@ func GetAutoRouteLogs(c *gin.Context) {
 
 // GetAutoRouteLog 返回一次请求的选路过程（管理员）。没有这条日志是正常情况（没开记录、
 // 记录模式没覆盖这类请求、已过保留期），此时 data 为 null，由前端退回消费日志里的摘要。
+// /self 路由只能看自己的留痕：别人的 request_id 与"没有这条日志"一样返回 null，不暴露它存在。
 func GetAutoRouteLog(c *gin.Context) {
 	log, found, err := model.GetAutoRouteLogByRequestId(c.Param("request_id"))
 	if err != nil {
 		common.ApiError(c, err)
 		return
+	}
+	if found && c.FullPath() == "/api/auto-route-logs/self/:request_id" && log.UserId != c.GetInt("id") {
+		found = false
 	}
 	if !found {
 		common.ApiSuccess(c, nil)
