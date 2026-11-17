@@ -489,9 +489,10 @@ func SetApiRouter(router *gin.Engine) {
 		}
 
 		capabilityGateRoute := apiRouter.Group("/capability-gate")
-		capabilityGateRoute.Use(middleware.AdminAuth())
 		{
-			capabilityGateRoute.GET("/events", controller.GetCapabilityGateEvents)
+			// 门控留痕管理员可看全部；用户经 /self 只能看自己的（服务端强制 user_id）。
+			capabilityGateRoute.GET("/events", middleware.AdminAuth(), controller.GetCapabilityGateEvents)
+			capabilityGateRoute.GET("/events/self", middleware.UserAuth(), controller.GetCapabilityGateEvents)
 		}
 
 		autoRouterRoute := apiRouter.Group("/autorouter")
@@ -504,12 +505,13 @@ func SetApiRouter(router *gin.Engine) {
 			autoRouterRoute.POST("/ranking/restore", controller.RestoreAutoRouterRanking)
 		}
 
-		// 选路日志只读，和使用日志一样管理员可看。
+		// 选路日志只读，和使用日志一样管理员可看；用户经 /self 只能看自己的。
 		autoRouteLogRoute := apiRouter.Group("/auto-route-logs")
-		autoRouteLogRoute.Use(middleware.AdminAuth())
 		{
-			autoRouteLogRoute.GET("/", controller.GetAutoRouteLogs)
-			autoRouteLogRoute.GET("/:request_id", controller.GetAutoRouteLog)
+			autoRouteLogRoute.GET("/", middleware.AdminAuth(), controller.GetAutoRouteLogs)
+			autoRouteLogRoute.GET("/:request_id", middleware.AdminAuth(), controller.GetAutoRouteLog)
+			autoRouteLogRoute.GET("/self", middleware.UserAuth(), controller.GetAutoRouteLogs)
+			autoRouteLogRoute.GET("/self/:request_id", middleware.UserAuth(), controller.GetAutoRouteLog)
 		}
 
 		// Deployments (model deployment management)

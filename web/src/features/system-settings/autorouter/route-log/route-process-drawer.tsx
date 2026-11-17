@@ -41,13 +41,15 @@ import { outcomeLabel, outcomeTone } from './labels'
 import { useRouteLog } from './hooks'
 import { RouteProcess } from './route-process'
 import { Facts, ToneBadge } from './route-process-parts'
-import type { RouteLog, RouteResult } from './types'
+import type { RouteLog, RouteLogScope, RouteResult } from './types'
 
 type RouteProcessDrawerProps = {
   /** The request to explain; the drawer is closed while it is empty. */
   requestId: string
   /** The summary the usage log keeps, shown when no detailed log was recorded. */
   summary?: RouteResult
+  /** 'self' 只查当前用户自己的留痕（/self 接口），默认走管理员接口。 */
+  scope?: RouteLogScope
   onClose: () => void
 }
 
@@ -74,7 +76,7 @@ function LogHeader(props: { log: RouteLog }) {
 
 function DrawerBody(props: RouteProcessDrawerProps) {
   const { t } = useTranslation()
-  const query = useRouteLog(props.requestId, true)
+  const query = useRouteLog(props.requestId, true, props.scope ?? 'all')
 
   if (query.isPending) {
     return (

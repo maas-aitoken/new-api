@@ -31,9 +31,9 @@ func TestCapabilityGateEventsCanBeFilteredAndOrdered(t *testing.T) {
 	require.NoError(t, LOG_DB.Exec("DELETE FROM capability_gate_events").Error)
 	t.Cleanup(func() { LOG_DB.Exec("DELETE FROM capability_gate_events") })
 	require.NoError(t, BatchInsertCapabilityGateEvents([]*CapabilityGateEvent{
-		{Mode: "shadow", Model: "model-a", Action: CapabilityGateEventWouldReject, RejectedChannels: "1,2", RejectedCount: 2, RequestId: "req-1", Dimensions: `[{"dimension":"tools.supported","severity":"hard"}]`, CreatedAt: 100},
-		{Mode: "enforce", Model: "model-a", Action: CapabilityGateEventRejected, RejectedChannels: "3", RejectedCount: 1, RequestId: "req-2", Dimensions: `[{"dimension":"params.top_p","severity":"soft"}]`, CreatedAt: 200},
-		{Mode: "enforce", Model: "model-b", Action: CapabilityGateEventSoft, RequestId: "req-3", Dimensions: `[{"dimension":"params.stop","severity":"soft"}]`, CreatedAt: 300},
+		{Mode: "shadow", Model: "model-a", Action: CapabilityGateEventWouldReject, RejectedChannels: "1,2", RejectedCount: 2, RequestId: "req-1", UserId: 7, Dimensions: `[{"dimension":"tools.supported","severity":"hard"}]`, CreatedAt: 100},
+		{Mode: "enforce", Model: "model-a", Action: CapabilityGateEventRejected, RejectedChannels: "3", RejectedCount: 1, RequestId: "req-2", UserId: 8, Dimensions: `[{"dimension":"params.top_p","severity":"soft"}]`, CreatedAt: 200},
+		{Mode: "enforce", Model: "model-b", Action: CapabilityGateEventSoft, RequestId: "req-3", UserId: 7, Dimensions: `[{"dimension":"params.stop","severity":"soft"}]`, CreatedAt: 300},
 	}))
 
 	filtered, total, err := GetCapabilityGateEvents(CapabilityGateEventQuery{
@@ -44,6 +44,12 @@ func TestCapabilityGateEventsCanBeFilteredAndOrdered(t *testing.T) {
 	require.Len(t, filtered, 1)
 	assert.Equal(t, "req-2", filtered[0].RequestId)
 	assert.Equal(t, 1, filtered[0].RejectedCount)
+
+	byUser, total, err := GetCapabilityGateEvents(CapabilityGateEventQuery{UserId: 8, Limit: 20})
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), total)
+	require.Len(t, byUser, 1)
+	assert.Equal(t, "req-2", byUser[0].RequestId, "UserId 非零时只返回这个用户的事件")
 
 	byRequest, total, err := GetCapabilityGateEvents(CapabilityGateEventQuery{RequestId: "req-3", Limit: 20})
 	require.NoError(t, err)

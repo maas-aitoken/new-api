@@ -54,10 +54,13 @@ export async function getChannelModelEvents(
 }
 
 export async function getCapabilityGateEvents(
-  params: CapabilityGateEventQuery
+  params: CapabilityGateEventQuery,
+  scope: 'all' | 'self' = 'all'
 ): Promise<CapabilityGateEventsResponse> {
   const res = await api.get<CapabilityGateEventsResponse>(
-    '/api/capability-gate/events',
+    scope === 'self'
+      ? '/api/capability-gate/events/self'
+      : '/api/capability-gate/events',
     { params }
   )
   return res.data
