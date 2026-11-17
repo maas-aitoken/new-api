@@ -65,6 +65,8 @@ type CapabilityGateEventQuery struct {
 	Model     string
 	Action    string
 	RequestId string
+	// UserId 非零时只返回这个用户的事件，/self 路由用它限定到会话用户。
+	UserId    int
 	StartTime int64
 	EndTime   int64
 	Offset    int
@@ -78,6 +80,7 @@ func GetCapabilityGateEvents(query CapabilityGateEventQuery) ([]CapabilityGateEv
 		Model:     strings.TrimSpace(query.Model),
 		Action:    strings.TrimSpace(query.Action),
 		RequestId: strings.TrimSpace(query.RequestId),
+		UserId:    query.UserId,
 	})
 	if query.StartTime > 0 {
 		db = db.Where("created_at >= ?", query.StartTime)
