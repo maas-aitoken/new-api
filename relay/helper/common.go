@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/logger"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
@@ -184,6 +186,8 @@ func SetEventStreamHeaders(c *gin.Context) {
 
 	// 设置标志，表示头部已经设置过
 	c.Set("event_stream_headers_set", true)
+	// 心跳计数要在 StartStreamKeepAlive 复制上下文之前建好，复制出的心跳上下文和原上下文才共用同一个计数。
+	common.SetContextKey(c, constant.ContextKeyStreamHeartbeatBytes, new(atomic.Int64))
 
 	c.Writer.Header().Set("Content-Type", "text/event-stream")
 	c.Writer.Header().Set("Cache-Control", "no-cache")
@@ -257,7 +261,12 @@ func PingData(c *gin.Context) error {
 		return fmt.Errorf("request context done: %w", c.Request.Context().Err())
 	}
 
-	if _, err := c.Writer.Write([]byte(": PING\n\n")); err != nil {
+	ping := []byte(": PING\n\n")
+	// 先记数再写：重试判断同时在读写出的总字节数，先记数只会把心跳多算，不会把心跳当成正文。
+	if heartbeatBytes, ok := common.GetContextKeyType[*atomic.Int64](c, constant.ContextKeyStreamHeartbeatBytes); ok {
+		heartbeatBytes.Add(int64(len(ping)))
+	}
+	if _, err := c.Writer.Write(ping); err != nil {
 		return fmt.Errorf("write ping data failed: %w", err)
 	}
 	return FlushWriter(c)

@@ -1,6 +1,7 @@
 package service
 
 import (
+	"sync/atomic"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -20,6 +21,19 @@ import (
 func DecideRelayRetry(c *gin.Context, err *types.NewAPIError, retryTimes int) PolicyDecision {
 	if err == nil {
 		return PolicyDecision{Action: "stop", Reason: "request_completed", Source: "system"}
+	}
+	// 客户端已经收到响应正文时不能再重试：下一次尝试会接着写进同一个响应，
+	// Claude 客户端会收到第二个 message_start，OpenAI 客户端会把两次回答拼成一段。
+	// 心跳是 SSE 注释行，客户端会忽略，所以写出的字节数要扣掉心跳。
+	// 先读总字节数再读心跳数：并发的心跳先记数再写，这样只会多扣，不会把心跳当成正文。
+	if c != nil {
+		bodyBytes := int64(c.Writer.Size())
+		if heartbeatBytes, ok := common.GetContextKeyType[*atomic.Int64](c, constant.ContextKeyStreamHeartbeatBytes); ok {
+			bodyBytes -= heartbeatBytes.Load()
+		}
+		if bodyBytes > 0 {
+			return PolicyDecision{Action: "stop", Reason: "response_started", Source: "system"}
+		}
 	}
 	if ShouldSkipRetryAfterChannelAffinityFailure(c) {
 		source := RequestPolicy(c).SessionModeSource
