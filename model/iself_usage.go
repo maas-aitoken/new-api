@@ -35,7 +35,8 @@ type IselfUsageParams struct {
 	UserID    int
 }
 
-func logOtherCacheTokenExprs(column string) (cacheRead, cacheWrite, anthropic string, ok bool) {
+// logOtherUsageExprs reads usage fields of logs.other; a missing field reads as 0.
+func logOtherUsageExprs(column string) (cacheRead, cacheWrite, anthropic, listQuotaDelta string, ok bool) {
 	var number, text string
 	switch common.LogDatabaseType() {
 	case common.DatabaseTypeSQLite:
@@ -55,13 +56,14 @@ func logOtherCacheTokenExprs(column string) (cacheRead, cacheWrite, anthropic st
 		number = "JSONExtractInt(" + column + ", '%[1]s')"
 		text = "JSONExtractString(" + column + ", '%[1]s')"
 	default:
-		return "", "", "", false
+		return "", "", "", "", false
 	}
 	cacheRead = fmt.Sprintf(number, "cache_tokens")
 	written := fmt.Sprintf(number, "cache_write_tokens")
 	cacheWrite = "CASE WHEN " + written + " > 0 THEN " + written + " ELSE " + fmt.Sprintf(number, "cache_creation_tokens") + " END"
 	anthropic = "(" + fmt.Sprintf(text, "usage_semantic") + " = 'anthropic')"
-	return cacheRead, cacheWrite, anthropic, true
+	listQuotaDelta = fmt.Sprintf(number, "list_quota_delta")
+	return cacheRead, cacheWrite, anthropic, listQuotaDelta, true
 }
 
 func GetIselfUsageAnalytics(params IselfUsageParams) ([]IselfUsageRow, error) {
@@ -82,7 +84,7 @@ func GetIselfUsageAnalytics(params IselfUsageParams) ([]IselfUsageRow, error) {
 		}
 	}
 
-	cacheRead, cacheWrite, anthropic, ok := logOtherCacheTokenExprs("logs.other")
+	cacheRead, cacheWrite, anthropic, _, ok := logOtherUsageExprs("logs.other")
 	if !ok {
 		return nil, fmt.Errorf("iself usage unsupported on log database type: %s", common.LogDatabaseType())
 	}
@@ -193,6 +195,7 @@ type iselfMove struct {
 	Hour             int64      `gorm:"column:hour_bucket"`
 	RequestCount     int64      `gorm:"column:request_count"`
 	Quota            int64      `gorm:"column:quota"`
+	ListQuota        int64      `gorm:"column:list_quota"`
 	InputTokens      int64      `gorm:"column:input_tokens"`
 	CompletionTokens int64      `gorm:"column:completion_tokens"`
 	CacheReadTokens  int64      `gorm:"column:cache_read_tokens"`
@@ -206,6 +209,7 @@ func (m iselfMove) metrics() UsageMetrics {
 	return UsageMetrics{
 		RequestCount:     m.RequestCount,
 		Quota:            m.Quota,
+		ListQuota:        m.ListQuota,
 		TokenUsed:        m.InputTokens + m.CompletionTokens,
 		InputTokens:      m.InputTokens,
 		CompletionTokens: m.CompletionTokens,
@@ -221,7 +225,7 @@ func loadIselfMoves(start, end int64, modelName string, byModel, byHour bool, se
 	if !logsHaveIselfEmail() {
 		return nil, nil
 	}
-	cacheRead, cacheWrite, anthropic, ok := logOtherCacheTokenExprs("logs.other")
+	cacheRead, cacheWrite, anthropic, listQuotaDelta, ok := logOtherUsageExprs("logs.other")
 	if !ok {
 		return nil, fmt.Errorf("iself usage unsupported on log database type: %s", common.LogDatabaseType())
 	}
@@ -264,6 +268,7 @@ func loadIselfMoves(start, end int64, modelName string, byModel, byHour bool, se
 	moves := make([]iselfMove, 0)
 	err := query.Select(strings.Join(selects, ", ") + ", COUNT(*) AS request_count, " +
 		"COALESCE(SUM(logs.quota), 0) AS quota, " +
+		"COALESCE(SUM(logs.quota + " + listQuotaDelta + "), 0) AS list_quota, " +
 		"COALESCE(SUM(" + inputExpr + "), 0) AS input_tokens, " +
 		"COALESCE(SUM(logs.completion_tokens), 0) AS completion_tokens, " +
 		"COALESCE(SUM(" + cacheRead + "), 0) AS cache_read_tokens, " +

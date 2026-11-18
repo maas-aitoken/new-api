@@ -161,7 +161,7 @@ func TestIselfUsageIsAttributedToTheEmailAccount(t *testing.T) {
 		require.NoError(t, DB.Create(&users[i]).Error)
 	}
 	quotaRows := []QuotaData{
-		{UserID: 10, Username: "gateway", ModelName: "gpt-a", CreatedAt: hour, Count: 5, Quota: 600, TokenUsed: 550,
+		{UserID: 10, Username: "gateway", ModelName: "gpt-a", CreatedAt: hour, Count: 5, Quota: 600, ListQuotaDelta: 150, TokenUsed: 550,
 			InputTokens: 440, CompletionTokens: 110, CacheWriteTokens: 30, CacheCreationTokens: 30, TrackedCount: 5, LastCalledAt: hour + 120},
 		{UserID: 11, Username: "alice", ModelName: "gpt-a", CreatedAt: hour, Count: 2, Quota: 200, TokenUsed: 200,
 			InputTokens: 160, CompletionTokens: 40, TrackedCount: 2, LastCalledAt: hour + 30},
@@ -176,7 +176,9 @@ func TestIselfUsageIsAttributedToTheEmailAccount(t *testing.T) {
 	logs := []Log{
 		consume(10, "gateway", "alice@example.com", hour+60, 100, 80, 20),
 		consume(10, "gateway", "ALICE@example.com", hour+120, 200, 160, 40),
-		consume(10, "gateway", "bob@example.com", hour+60, 150, 80, 20),
+		// Charged 150 at 0.5 of a 300 list price.
+		{UserId: 10, Username: "gateway", IselfEmail: "bob@example.com", ModelName: "gpt-a", Type: LogTypeConsume,
+			CreatedAt: hour + 60, Quota: 150, PromptTokens: 80, CompletionTokens: 20, Other: `{"cost_multiplier":0.5,"list_quota_delta":150}`},
 		consume(10, "gateway", "bob@example.com", hour+90, 50, 40, 10),
 		consume(10, "gateway", "shared@example.com", hour+60, 100, 80, 20),
 		// alice's own request, plus one she sent with her own iSelf header.
@@ -206,6 +208,12 @@ func TestIselfUsageIsAttributedToTheEmailAccount(t *testing.T) {
 			{"bob", 2, 200, 150, 0},
 			{"gateway", 1, 100, 100, 5},
 		}, got)
+		// bob's list price is 300 + 50; the discount moves with his request.
+		listQuotas := map[string]int64{}
+		for _, row := range result.Rows {
+			listQuotas[*row.Username] = row.ListQuota
+		}
+		assert.Equal(t, map[string]int64{"alice": 500, "bob": 350, "gateway": 100}, listQuotas)
 		// bob has no quota rows, so these come from the iSelf owner lookup.
 		assert.Equal(t, "BU-B", *result.Rows[1].BusinessUnit)
 		assert.Equal(t, "bob@example.com", *result.Rows[1].Email)
@@ -217,6 +225,7 @@ func TestIselfUsageIsAttributedToTheEmailAccount(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, int64(7), result.Summary.RequestCount)
 		assert.Equal(t, int64(800), result.Summary.Quota)
+		assert.Equal(t, int64(950), result.Summary.ListQuota)
 		assert.Equal(t, int64(3), result.Summary.ActiveUsers)
 		assert.Equal(t, int64(1), result.Summary.ModelCount)
 	})
