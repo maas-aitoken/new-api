@@ -5094,6 +5094,7 @@
     "Parameters": "参数",
     "Parsed {{count}} service account file(s)": "已解析 {{count}} 个服务账号文件",
     "Parsed plugin metadata": "解析出的插件元数据",
+    "Part of the response was sent; it cannot be replayed": "已向客户端输出部分响应，不能再重试",
     "Partial Submission": "部分提交确认",
     "Partly shown": "部分展示",
     "Pass Headers": "透传请求头",

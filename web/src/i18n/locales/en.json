@@ -5094,6 +5094,7 @@
     "Parameters": "Parameters",
     "Parsed {{count}} service account file(s)": "Parsed {{count}} service account file(s)",
     "Parsed plugin metadata": "Parsed plugin metadata",
+    "Part of the response was sent; it cannot be replayed": "Part of the response was sent; it cannot be replayed",
     "Partial Submission": "Partial Submission",
     "Partly shown": "Partly shown",
     "Pass Headers": "Pass Headers",
