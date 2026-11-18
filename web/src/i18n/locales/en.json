@@ -1,10 +1,17 @@
 {
+    "A streamed answer that starts with one of these texts (case-insensitive) is held until its finish reason arrives. Refusals with other wording are sent through as usual.": "A streamed answer that starts with one of these texts (case-insensitive) is held until its finish reason arrives. Refusals with other wording are sent through as usual.",
+    "Refusal opening texts": "Refusal opening texts",
+    "Retry on upstream refusal": "Retry on upstream refusal",
   "translation": {
     "360": "360",
     "1000": "1000",
     "10000": "10000",
     "Credits": "Credits",
     "Last refresh": "Last refresh",
+    "Upstream refused before any output": "Upstream refused before any output",
+    "Upstream refused; this answer was not sent to the client": "Upstream refused; this answer was not sent to the client",
+    "Upstream refused; this answer was not sent to the client: {{text}}": "Upstream refused; this answer was not sent to the client: {{text}}",
+    "When the upstream refuses before any output reaches the client, that attempt is billed as usual but its answer is not sent, and the request is retried. Applies to chat, Responses, Claude and Gemini text requests.": "When the upstream refuses before any output reaches the client, that attempt is billed as usual but its answer is not sent, and the request is retried. Applies to chat, Responses, Claude and Gemini text requests.",
     "{{enabled}}/{{total}} enabled": "{{enabled}}/{{total}} enabled",
     "7d window": "7d window",
     "All sources reachable": "All sources reachable",
