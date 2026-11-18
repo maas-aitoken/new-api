@@ -220,6 +220,7 @@ func loadAttributedUsage(q attributedUsageQuery) ([]attributedUsageRow, error) {
 func (m *UsageMetrics) add(other UsageMetrics) {
 	m.RequestCount += other.RequestCount
 	m.Quota += other.Quota
+	m.ListQuota += other.ListQuota
 	m.TokenUsed += other.TokenUsed
 	m.InputTokens += other.InputTokens
 	m.CompletionTokens += other.CompletionTokens
@@ -237,6 +238,7 @@ func (m *UsageMetrics) add(other UsageMetrics) {
 func (m *UsageMetrics) subtract(other UsageMetrics) {
 	m.RequestCount = max(m.RequestCount-other.RequestCount, 0)
 	m.Quota = max(m.Quota-other.Quota, 0)
+	m.ListQuota = max(m.ListQuota-other.ListQuota, 0)
 	m.TokenUsed = max(m.TokenUsed-other.TokenUsed, 0)
 	m.InputTokens = max(m.InputTokens-other.InputTokens, 0)
 	m.CompletionTokens = max(m.CompletionTokens-other.CompletionTokens, 0)
@@ -264,6 +266,7 @@ const usageUserAttributesSelect = "COALESCE(MAX(users.display_name), '') AS disp
 type UsageMetrics struct {
 	RequestCount     int64 `json:"request_count"`
 	Quota            int64 `json:"quota"`
+	ListQuota        int64 `json:"list_quota"` // before the channel model multiplier
 	TokenUsed        int64 `json:"token_used"`
 	InputTokens      int64 `json:"input_tokens"`
 	CompletionTokens int64 `json:"completion_tokens"`
@@ -279,6 +282,7 @@ type UsageMetrics struct {
 
 const usageMetricsSelect = "COALESCE(SUM(quota_data.count), 0) AS request_count, " +
 	"COALESCE(SUM(quota_data.quota), 0) AS quota, " +
+	"COALESCE(SUM(quota_data.quota + quota_data.list_quota_delta), 0) AS list_quota, " +
 	"COALESCE(SUM(quota_data.token_used), 0) AS token_used, " +
 	"COALESCE(SUM(quota_data.input_tokens), 0) AS input_tokens, " +
 	"COALESCE(SUM(quota_data.completion_tokens), 0) AS completion_tokens, " +

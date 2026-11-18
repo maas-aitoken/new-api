@@ -80,7 +80,7 @@ func TestGetUsageAnalyticsSummaryAggregatesClosedRange(t *testing.T) {
 	assert.Empty(t, result.Rows)
 	assert.Equal(t, UsageAnalyticsSummary{
 		UsageMetrics: UsageMetrics{
-			RequestCount: 17, Quota: 1130, TokenUsed: 2300,
+			RequestCount: 17, Quota: 1130, ListQuota: 1130, TokenUsed: 2300,
 			InputTokens: 1670, CompletionTokens: 430, CacheReadTokens: 400, CacheWriteTokens: 60,
 			UseTimeTotal: 39, UseTimeCount: 12, StreamErrorCount: 1, FailedCount: 3,
 			// Legacy requests are excluded from tracked_count.
@@ -145,14 +145,14 @@ func TestGetUsageAnalyticsGroupByModel(t *testing.T) {
 	assert.Nil(t, result.Summary)
 	assert.Equal(t, []UsageAnalyticsRow{
 		{
-			UsageMetrics: UsageMetrics{RequestCount: 12, Quota: 850, TokenUsed: 1600, InputTokens: 1050, CompletionTokens: 250,
+			UsageMetrics: UsageMetrics{RequestCount: 12, Quota: 850, ListQuota: 850, TokenUsed: 1600, InputTokens: 1050, CompletionTokens: 250,
 				CacheReadTokens: 300, CacheWriteTokens: 60, UseTimeTotal: 26, UseTimeCount: 7, StreamErrorCount: 1, FailedCount: 1,
 				TrackedCount: 8, LastCalledAt: analyticsH2 + 300},
 			ModelName: common.GetPointer("gpt-a"),
 			UserCount: common.GetPointer(int64(2)),
 		},
 		{
-			UsageMetrics: UsageMetrics{RequestCount: 5, Quota: 280, TokenUsed: 700, InputTokens: 620, CompletionTokens: 180,
+			UsageMetrics: UsageMetrics{RequestCount: 5, Quota: 280, ListQuota: 280, TokenUsed: 700, InputTokens: 620, CompletionTokens: 180,
 				CacheReadTokens: 100, UseTimeTotal: 13, UseTimeCount: 5, TrackedCount: 5, LastCalledAt: analyticsH3 + 50},
 			ModelName: common.GetPointer("gpt-b"),
 			UserCount: common.GetPointer(int64(2)),

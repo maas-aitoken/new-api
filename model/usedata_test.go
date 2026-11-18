@@ -36,6 +36,7 @@ func TestRecordConsumeLogWritesExtendedQuotaDataColumns(t *testing.T) {
 		useTimeTotal     int64
 		useTimeCount     int64
 		streamErrorCount int
+		listQuotaDelta   int
 	}{
 		{
 			name: "anthropic falls back to cache_creation_tokens",
@@ -79,6 +80,13 @@ func TestRecordConsumeLogWritesExtendedQuotaDataColumns(t *testing.T) {
 			tokenUsed: 10, inputTokens: 5, completionTokens: 5, trackedCount: 1, useTimeTotal: 0, useTimeCount: 1,
 		},
 		{
+			// 6640 charged at 0.06 of a 110667 list price.
+			name: "discounted charge keeps its list price",
+			params: RecordConsumeLogParams{ModelName: "gpt-discounted", Quota: 6640, PromptTokens: 5, CompletionTokens: 5,
+				OutcomeTracked: true, Other: &LogOther{public: map[string]any{"cost_multiplier": 0.06}}},
+			tokenUsed: 10, inputTokens: 5, completionTokens: 5, trackedCount: 1, useTimeCount: 1, listQuotaDelta: 104027,
+		},
+		{
 			// Paths without final-failure tracking must not affect success rates.
 			name: "untracked path keeps volume but no outcome metrics",
 			params: RecordConsumeLogParams{ModelName: "mj-imagine", Quota: 30, UseTimeSeconds: 7,
@@ -113,10 +121,22 @@ func TestRecordConsumeLogWritesExtendedQuotaDataColumns(t *testing.T) {
 			assert.Equal(t, tt.useTimeTotal, row.UseTimeTotal)
 			assert.Equal(t, tt.useTimeCount, row.UseTimeCount)
 			assert.Equal(t, tt.streamErrorCount, row.StreamErrorCount)
+			assert.Equal(t, tt.listQuotaDelta, row.ListQuotaDelta)
 			assert.GreaterOrEqual(t, row.LastCalledAt, before)
 			assert.Equal(t, row.LastCalledAt-row.LastCalledAt%3600, row.CreatedAt)
 		})
 	}
+
+	// A second request in the same hour adds to the delta.
+	var logged Log
+	require.NoError(t, LOG_DB.Where("model_name = ?", "gpt-discounted").First(&logged).Error)
+	assert.Contains(t, logged.Other, `"list_quota_delta":104027`)
+	RecordConsumeLog(ctx, 1, tests[6].params)
+	SaveQuotaDataCache()
+	var discounted QuotaData
+	require.NoError(t, DB.Where("model_name = ?", "gpt-discounted").First(&discounted).Error)
+	assert.Equal(t, 2*6640, discounted.Quota)
+	assert.Equal(t, 2*104027, discounted.ListQuotaDelta)
 }
 
 func TestLogQuotaDataFinalFailureAccumulatesAcrossFlushes(t *testing.T) {
