@@ -222,6 +222,9 @@ type RelayInfo struct {
 	// the request boundary, independently of billing success or failure.
 	PerformanceOutputTokens      int64
 	PerformanceBusinessRejection bool
+	// BillingSessionIndex 是这个请求第几个计费会话（从 0 开始）。拒答改判的尝试已经按用量结算，
+	// 下一次尝试要新开会话，订阅预扣按请求 ID 去重，靠这个序号区分。
+	BillingSessionIndex int
 
 	// convOptions caches the converter settings snapshot (see ConvOptions).
 	convOptions *convmeta.Options
