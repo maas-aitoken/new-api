@@ -222,6 +222,11 @@ type RelayInfo struct {
 	// the request boundary, independently of billing success or failure.
 	PerformanceOutputTokens      int64
 	PerformanceBusinessRejection bool
+	// ResponseHeld 为 true 时，这次尝试写给客户端的数据还压着没发（上游拒答时重试打开时由
+	// helper.ResponseHold 维护）；HeldResponseText 是其中可见文字的开头，用于拒答改判后的
+	// 错误信息和消费日志。
+	ResponseHeld     bool
+	HeldResponseText string
 	// BillingSessionIndex 是这个请求第几个计费会话（从 0 开始）。拒答改判的尝试已经按用量结算，
 	// 下一次尝试要新开会话，订阅预扣按请求 ID 去重，靠这个序号区分。
 	BillingSessionIndex int
@@ -1044,6 +1049,12 @@ func (info *RelayInfo) SetFirstResponseTime() {
 
 func (info *RelayInfo) HasSendResponse() bool {
 	return info.FirstResponseTime.After(info.StartTime)
+}
+
+// RefusedBeforeOutput 表示这次尝试上游拒答了，而且回答还压着、客户端什么正文都没收到。
+// 这样的尝试照常计费，但回答不发给客户端，改判为失败后按重试规则处理。
+func (info *RelayInfo) RefusedBeforeOutput() bool {
+	return info.ResponseHeld && info.PerformanceBusinessRejection
 }
 
 type OriginTaskRef struct {

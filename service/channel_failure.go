@@ -31,7 +31,8 @@ var channelFailureStates = struct {
 // IsChannelModelFailureMatch reports whether an upstream status code belongs to
 // the per-channel, per-model circuit-breaker rule.
 func IsChannelModelFailureMatch(err *types.NewAPIError) bool {
-	if err == nil {
+	// 上游拒答是内容问题，不算渠道×模型故障。
+	if err == nil || err.GetErrorCode() == types.ErrorCodeUpstreamRefusal {
 		return false
 	}
 	setting := operation_setting.GetMonitorSetting()

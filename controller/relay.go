@@ -64,6 +64,24 @@ func relayHandler(c *gin.Context, info *relaycommon.RelayInfo) *types.NewAPIErro
 	return err
 }
 
+// isTextGenerationRelay 表示这次请求会生成文字回答（Chat、Completions、Responses、Claude
+// Messages、Gemini generateContent），上游拒答时重试只作用于这些请求。
+func isTextGenerationRelay(c *gin.Context, relayFormat types.RelayFormat, info *relaycommon.RelayInfo) bool {
+	switch relayFormat {
+	case types.RelayFormatOpenAIRealtime:
+		return false
+	case types.RelayFormatClaude:
+		return true
+	case types.RelayFormatGemini:
+		return !strings.Contains(c.Request.URL.Path, "embed")
+	}
+	switch info.RelayMode {
+	case relayconstant.RelayModeChatCompletions, relayconstant.RelayModeCompletions, relayconstant.RelayModeResponses:
+		return true
+	}
+	return false
+}
+
 func geminiRelayHandler(c *gin.Context, info *relaycommon.RelayInfo) *types.NewAPIError {
 	var err *types.NewAPIError
 	if strings.Contains(c.Request.URL.Path, "embed") {
@@ -178,6 +196,13 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		}
 	}()
 
+	// 上游拒答时重试：每次尝试写给客户端的数据先压着，拒答的尝试才能丢掉重来。
+	// 要装在心跳之前，处在最里层，写超时和心跳都包在它外面。
+	var responseHold *helper.ResponseHold
+	if operation_setting.UpstreamRefusalRetryEnabled && isTextGenerationRelay(c, relayFormat, relayInfo) {
+		responseHold = helper.InstallResponseHold(c, relayInfo)
+	}
+
 	generalSettings := operation_setting.GetGeneralSetting()
 	if relayFormat == types.RelayFormatClaude && relayInfo.IsStream && generalSettings.PingIntervalEnabled {
 		stopKeepAlive := helper.StartStreamKeepAlive(c, time.Duration(generalSettings.PingIntervalSeconds)*time.Second)
@@ -218,6 +243,8 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 	for ; retryParam.GetRetry() <= common.RetryTimes || common.GetContextKeyBool(c, constant.ContextKeyAutoRouted); retryParam.IncreaseRetry() {
 		relayInfo.StreamStatus = nil
 		relayInfo.PerformanceBusinessRejection = false
+		// 拒答原因按尝试记：上一次被改判的拒答不能带进这次成功的消费日志。
+		common.SetContextKey(c, constant.ContextKeyAdminRejectReason, "")
 		relayInfo.PerformanceOutputTokens = 0
 		relayInfo.RetryIndex = retryParam.GetRetry()
 		if retryParam.GetRetry() > 0 && common.GetContextKeyBool(c, constant.ContextKeyAutoRouted) {
@@ -317,6 +344,10 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			defer func() { c.Request = c.Request.WithContext(attemptParentCtx) }()
 			channelmetrics.IncInFlight(channel.Id)
 			defer channelmetrics.DecInFlight(channel.Id)
+			if responseHold != nil {
+				responseHold.Begin()
+				defer responseHold.Abandon()
+			}
 
 			switch relayFormat {
 			case types.RelayFormatOpenAIRealtime:
@@ -328,7 +359,14 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			default:
 				newAPIError = relayHandler(c, relayInfo)
 			}
+			if responseHold != nil {
+				newAPIError = responseHold.Finish(c, newAPIError)
+			}
 		}()
+		if newAPIError != nil && newAPIError.GetErrorCode() == types.ErrorCodeUpstreamRefusal {
+			// 被改判的尝试已经照常结算；下一次尝试新开计费会话，最终失败时也不会退掉这次的费用。
+			service.CloseSettledAttemptBilling(relayInfo)
+		}
 		attemptStatus := http.StatusOK
 		if newAPIError != nil {
 			attemptStatus = newAPIError.StatusCode

@@ -30,3 +30,30 @@ func AutomaticDisableKeywordsFromString(s string) {
 		}
 	}
 }
+
+// UpstreamRefusalRetryEnabled 打开后，上游拒答（Claude stop_reason=refusal、OpenAI
+// finish_reason=content_filter、Responses incomplete_details.reason=content_filter、
+// Gemini blockReason / finishReason=SAFETY 等）只要发生在客户端收到任何正文之前，
+// 这次尝试照常按用量计费，但回答不发给客户端，改判为失败后按重试规则换渠道或换模型。
+var UpstreamRefusalRetryEnabled = false
+
+// UpstreamRefusalOpeningTexts 是已知拒答回答的开头。拒答信号在流的最后才到，
+// 流式回答的开头和其中某一句对得上时先压着不发，等到结束原因再决定；对不上就立刻放行。
+// 匹配时忽略大小写和开头的空白。
+var UpstreamRefusalOpeningTexts = []string{
+	"The selected model cannot continue this conversation",
+}
+
+func UpstreamRefusalOpeningTextsToString() string {
+	return strings.Join(UpstreamRefusalOpeningTexts, "\n")
+}
+
+func UpstreamRefusalOpeningTextsFromString(s string) {
+	texts := []string{}
+	for text := range strings.SplitSeq(s, "\n") {
+		if text = strings.TrimSpace(text); text != "" {
+			texts = append(texts, text)
+		}
+	}
+	UpstreamRefusalOpeningTexts = texts
+}

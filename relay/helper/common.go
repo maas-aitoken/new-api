@@ -261,12 +261,11 @@ func PingData(c *gin.Context) error {
 		return fmt.Errorf("request context done: %w", c.Request.Context().Err())
 	}
 
-	ping := []byte(": PING\n\n")
 	// 先记数再写：重试判断同时在读写出的总字节数，先记数只会把心跳多算，不会把心跳当成正文。
 	if heartbeatBytes, ok := common.GetContextKeyType[*atomic.Int64](c, constant.ContextKeyStreamHeartbeatBytes); ok {
-		heartbeatBytes.Add(int64(len(ping)))
+		heartbeatBytes.Add(int64(len(heartbeatFrame)))
 	}
-	if _, err := c.Writer.Write(ping); err != nil {
+	if _, err := c.Writer.Write(heartbeatFrame); err != nil {
 		return fmt.Errorf("write ping data failed: %w", err)
 	}
 	return FlushWriter(c)

@@ -54,6 +54,14 @@ func DecideRelayRetry(c *gin.Context, err *types.NewAPIError, retryTimes int) Po
 	if retryTimes <= 0 {
 		return PolicyDecision{Action: "stop", Reason: "attempt_budget_exhausted", Source: "global"}
 	}
+	// 上游拒答时重试：网关压着没发的拒答（upstream_refusal），以及上游直接以错误形式返回的拒答
+	// （Azure 的 content_filter、Gemini 的 prompt_blocked）。它们是 400，不能靠重试状态码命中。
+	if operation_setting.UpstreamRefusalRetryEnabled {
+		switch err.GetErrorCode() {
+		case types.ErrorCodeUpstreamRefusal, types.ErrorCodePromptBlocked, "content_filter":
+			return PolicyDecision{Action: "retry", Reason: "upstream_refusal", Source: "global"}
+		}
+	}
 	code := err.StatusCode
 	if code >= 200 && code < 300 {
 		return PolicyDecision{Action: "stop", Reason: "system_retry_exclusion", Source: "system"}
