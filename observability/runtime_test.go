@@ -1237,3 +1237,76 @@ func TestFinishObservationExportsLangfuseFields(t *testing.T) {
 	require.Equal(t, "mid", attributeValue(route.Attributes, "langfuse.observation.metadata.tier").AsString())
 	require.Equal(t, "mid", attributeValue(route.Attributes, "langfuse.trace.metadata.auto_router_tier").AsString())
 }
+
+// 重试换上游协议时输出采集要跟着重来：第一次尝试选定的流聚合器解析不了后续协议的帧，
+// 请求级 span 的输出会停在失败那次的内容；被压住没发给客户端的拒答也不该留在成功请求里。
+func TestRetryAttemptReplacesCapturedOutput(t *testing.T) {
+	exporter := tracetest.NewInMemoryExporter()
+	provider := trace.NewTracerProvider(trace.WithSpanProcessor(trace.NewSimpleSpanProcessor(exporter)))
+	runtime := &Runtime{
+		enabled:         true,
+		captureMode:     captureModeFull,
+		captureMaxBytes: 1024,
+		tracerProvider:  provider,
+		tracer:          provider.Tracer("test"),
+		propagator:      propagationTraceContextForTest(),
+	}
+	t.Cleanup(func() { require.NoError(t, provider.Shutdown(context.Background())) })
+
+	info := &common.RelayInfo{RequestId: "req-retry-output", OriginModelName: "auto", RelayFormat: "openai"}
+	ctx, span := runtime.StartLLMRequest(context.Background(), info, nil)
+
+	refusedCtx, refusedSpan := runtime.StartAttempt(ctx)
+	runtime.RecordStreamChunk(refusedCtx, `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"refused answer"}}`)
+	runtime.FinishAttempt(refusedCtx, refusedSpan, AttemptTarget{ChannelID: 1, ChannelName: "claude", UpstreamModel: "claude-opus-5-5"}, 400, nil, errors.New("upstream refused"))
+
+	answerCtx, answerSpan := runtime.StartAttempt(ctx)
+	runtime.RecordStreamChunk(answerCtx, `{"choices":[{"index":0,"delta":{"content":"real answer"}}]}`)
+	runtime.FinishAttempt(answerCtx, answerSpan, AttemptTarget{ChannelID: 2, ChannelName: "gpt", UpstreamModel: "gpt-6"}, 200, nil, nil)
+
+	runtime.FinishLLM(ctx, span, nil, info)
+
+	spans := exporter.GetSpans()
+	require.Len(t, spans, 3)
+	output := attributeValue(spans[2].Attributes, "gen_ai.output.messages").AsString()
+	require.JSONEq(t, `[{"role":"assistant","content":"real answer"}]`, output)
+	require.NotContains(t, output, "refused")
+}
+
+// 被改判的拒答尝试也各扣一次费：请求级 span 的 usage/quota 跨尝试累计，等于整单的真实扣费。
+func TestRecordUsageAccumulatesAcrossBilledAttempts(t *testing.T) {
+	exporter := tracetest.NewInMemoryExporter()
+	provider := trace.NewTracerProvider(trace.WithSpanProcessor(trace.NewSimpleSpanProcessor(exporter)))
+	runtime := &Runtime{
+		enabled:         true,
+		captureMode:     captureModeFull,
+		captureMaxBytes: 1024,
+		tracerProvider:  provider,
+		tracer:          provider.Tracer("test"),
+		propagator:      propagationTraceContextForTest(),
+	}
+	t.Cleanup(func() { require.NoError(t, provider.Shutdown(context.Background())) })
+
+	info := &common.RelayInfo{RequestId: "req-retry-usage", OriginModelName: "auto", RelayFormat: "openai"}
+	ctx, span := runtime.StartLLMRequest(context.Background(), info, nil)
+
+	refusedCtx, refusedSpan := runtime.StartAttempt(ctx)
+	inputUSD, outputUSD := 0.25, 0.125
+	runtime.RecordUsageWithCosts(refusedCtx, 10, 5, 15, 100, 8, true, &BillingCostDetails{InputUSD: &inputUSD, OutputUSD: &outputUSD, TotalUSD: 0.25})
+	runtime.FinishAttempt(refusedCtx, refusedSpan, AttemptTarget{ChannelID: 1, ChannelName: "claude", UpstreamModel: "claude-opus-5-5"}, 400, nil, errors.New("upstream refused"))
+
+	answerCtx, answerSpan := runtime.StartAttempt(ctx)
+	runtime.RecordUsageWithCosts(answerCtx, 20, 7, 27, 200, 4, true, &BillingCostDetails{TotalUSD: 0.5})
+	runtime.FinishAttempt(answerCtx, answerSpan, AttemptTarget{ChannelID: 2, ChannelName: "gpt", UpstreamModel: "gpt-6"}, 200, nil, nil)
+
+	runtime.FinishLLM(ctx, span, nil, info)
+
+	spans := exporter.GetSpans()
+	require.Len(t, spans, 3)
+	attrs := spans[2].Attributes
+	require.Equal(t, int64(30), attributeValue(attrs, "gen_ai.usage.input_tokens").AsInt64())
+	require.Equal(t, int64(12), attributeValue(attrs, "gen_ai.usage.output_tokens").AsInt64())
+	require.Equal(t, int64(42), attributeValue(attrs, "gen_ai.usage.total_tokens").AsInt64())
+	require.Equal(t, int64(300), attributeValue(attrs, "new_api.billing.quota").AsInt64())
+	require.JSONEq(t, `{"input":0.25,"output":0.125,"total":0.75}`, attributeValue(attrs, "langfuse.observation.cost_details").AsString())
+}
