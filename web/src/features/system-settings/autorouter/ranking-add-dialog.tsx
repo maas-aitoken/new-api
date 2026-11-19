@@ -25,7 +25,6 @@ import {
   type StaticDataTableColumn,
 } from '@/components/data-table'
 import { Dialog } from '@/components/dialog'
-import { StatusBadge } from '@/components/status-badge'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Combobox } from '@/components/ui/combobox'
@@ -38,18 +37,15 @@ import {
   listedModels,
   parseScore,
   previewRank,
-  reachablePreferences,
   seedAddRows,
   topServedScore,
   type AddRow,
   type RankingDraft,
 } from './ranking-draft'
-import { preferenceLabel } from './route-log/labels'
-import { AUTO_ROUTER_EFFORTS, type CostWeights } from './settings'
+import { AUTO_ROUTER_EFFORTS } from './settings'
 
 type RankingAddDialogProps = {
   draft: RankingDraft
-  costWeights: CostWeights
   onOpenChange: (open: boolean) => void
   onAdd: (
     model: string,
@@ -68,7 +64,7 @@ function parseOffset(text: string): number | undefined {
 /**
  * Adds one model to several profiles at once. Its scores start from a reference
  * model already in the ranking, plus an offset, and each row shows where the
- * model would land and which preferences could pick it.
+ * model would land.
  */
 export function RankingAddDialog(props: RankingAddDialogProps) {
   const { t } = useTranslation()
@@ -141,32 +137,13 @@ export function RankingAddDialog(props: RankingAddDialogProps) {
     }
     const list = props.draft[profile] ?? []
     const top = topServedScore(list, name)
-    const reachable = reachablePreferences(list, name, score, props.costWeights)
     return (
-      <div className='space-y-1'>
-        <div className='text-muted-foreground text-xs'>
-          {top === null || score >= top
-            ? t('Best on the gateway')
-            : t('{{gap}} below the best on the gateway', {
-                gap: (top - score).toFixed(4),
-              })}
-        </div>
-        <div className='flex flex-wrap gap-1'>
-          {reachable.length === 0 ? (
-            <span className='text-muted-foreground text-xs'>
-              {t('No preference compares it')}
-            </span>
-          ) : (
-            reachable.map((preference) => (
-              <StatusBadge
-                key={preference}
-                label={preferenceLabel(t, preference)}
-                variant='info'
-                copyable={false}
-              />
-            ))
-          )}
-        </div>
+      <div className='text-muted-foreground text-xs'>
+        {top === null || score >= top
+          ? t('Best on the gateway')
+          : t('{{gap}} below the best on the gateway', {
+              gap: (top - score).toFixed(4),
+            })}
       </div>
     )
   }
@@ -256,7 +233,7 @@ export function RankingAddDialog(props: RankingAddDialogProps) {
     },
     {
       id: 'reach',
-      header: t('Compared under'),
+      header: t('Gateway comparison'),
       cell: (profile) => {
         const score = parseScore(rows[profile].scoreText)
         if (!rows[profile].checked || score === undefined || name === '') {
@@ -366,11 +343,6 @@ export function RankingAddDialog(props: RankingAddDialogProps) {
           data={Object.keys(rows)}
           getRowKey={(profile) => profile}
         />
-        <p className='text-muted-foreground text-xs'>
-          {t(
-            'A preference compares the models within its cost weight of the best score among the models the gateway serves. Prices, token allowlists and groups are not counted here, so this is an estimate.'
-          )}
-        </p>
       </div>
     </Dialog>
   )

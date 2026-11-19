@@ -35,9 +35,40 @@ const mode = {
   shares: { capability: 0.1, balanced: 0.6, cost: 0.3 },
   position: 1.2,
   weight: 0.116,
-  tiers: { capability: 0, balanced: 0.07, cost: 0.3 },
+  weights: {
+    quality: 0.884,
+    cost: 0.116,
+    capacity: 0.12,
+    success: 0.18,
+    temperature: 0.12,
+  },
+  tiers: {
+    capability: {
+      quality: 1,
+      cost: 0,
+      capacity: 0.12,
+      success: 0.18,
+      temperature: 0.12,
+    },
+    balanced: {
+      quality: 0.93,
+      cost: 0.07,
+      capacity: 0.12,
+      success: 0.18,
+      temperature: 0.12,
+    },
+    cost: {
+      quality: 0.7,
+      cost: 0.3,
+      capacity: 0.12,
+      success: 0.18,
+      temperature: 0.12,
+    },
+  },
 }
-const comparedLadder = [{ profile: 'code.build', outcome: 'compared', model: 'sonnet' }]
+const comparedLadder = [
+  { profile: 'code.build', outcome: 'compared', model: 'sonnet' },
+]
 
 function detailOf(trace: Partial<RouteTrace> & { judgment: string }) {
   return { trace: { request, ...trace } } as RouteLogDetail
@@ -45,7 +76,11 @@ function detailOf(trace: Partial<RouteTrace> & { judgment: string }) {
 
 test.each([
   ['no detail at all', null, ['result']],
-  ['only the summary the usage log keeps', { result: { model: 'coder' } }, ['result']],
+  [
+    'only the summary the usage log keeps',
+    { result: { model: 'coder' } },
+    ['result'],
+  ],
   [
     'a live classification with a valid answer',
     detailOf({ judgment: 'live', validity, ladder, effort }),
@@ -54,7 +89,15 @@ test.each([
   [
     'a cached classification checked against the previous task',
     detailOf({ judgment: 'cache', validity, continuation, ladder, effort }),
-    ['request', 'judgment', 'validity', 'continuation', 'selection', 'effort', 'result'],
+    [
+      'request',
+      'judgment',
+      'validity',
+      'continuation',
+      'selection',
+      'effort',
+      'result',
+    ],
   ],
   [
     'a classifier failure, which leaves no decision to route by',
@@ -85,14 +128,45 @@ test.each([
     ['request', 'judgment', 'result'],
   ],
   [
-    'an adaptive request that compared quality and price shows how its cost weight was judged, right before the selection',
-    detailOf({ judgment: 'live', validity, mode, continuation, ladder: comparedLadder, effort }),
-    ['request', 'judgment', 'validity', 'continuation', 'mode', 'selection', 'effort', 'result'],
+    'an adaptive request that compared model dimensions shows how its policy was judged, right before the selection',
+    detailOf({
+      judgment: 'live',
+      validity,
+      mode,
+      continuation,
+      ladder: comparedLadder,
+      effort,
+    }),
+    [
+      'request',
+      'judgment',
+      'validity',
+      'continuation',
+      'mode',
+      'selection',
+      'effort',
+      'result',
+    ],
   ],
   [
-    'an adaptive request that kept the previous model never used its cost weight',
-    detailOf({ judgment: 'cache', validity, mode, continuation, ladder: [{ outcome: 'inherited' }], effort }),
-    ['request', 'judgment', 'validity', 'continuation', 'selection', 'effort', 'result'],
+    'an adaptive request that kept the previous model never used its policy',
+    detailOf({
+      judgment: 'cache',
+      validity,
+      mode,
+      continuation,
+      ladder: [{ outcome: 'inherited' }],
+      effort,
+    }),
+    [
+      'request',
+      'judgment',
+      'validity',
+      'continuation',
+      'selection',
+      'effort',
+      'result',
+    ],
   ],
   [
     'an adaptive request that took the first servable model never used it either',

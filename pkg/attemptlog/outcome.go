@@ -68,6 +68,7 @@ type ClassifyInput struct {
 }
 
 // Classify maps an attempt to an outcome code.
+// It remains available when attempt telemetry is disabled, for routing metrics.
 //
 // client_cancelled is derived only from authoritative signals that fire during
 // the failure itself: the stream scanner's client_gone end reason, or a

@@ -16,10 +16,9 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// autoRouteCost 给 auto 候选带里的模型估算比较成本：首次请求命中的分组下的用户价，乘上会落到的
-// 渠道的费用倍率与容量溢价（autorouter.Candidates.Costs）。费用倍率按用户请求一侧的模型名配，
-// 和计费乘的是同一个倍率；容量溢价按会落到的计数池的繁忙程度算（service.CapacityCostFactors），
-// 不参与计费，只影响 auto 选哪个模型。
+// autoRouteCost 给 auto 候选里的模型估算比较成本：首次请求命中的分组下的用户价，乘上会落到的
+// 渠道的费用倍率。费用倍率按用户请求一侧的模型名配，和计费乘的是同一个倍率。
+// 调度预览只提供当前可服务性和渠道成本估算，不参与质量、成功率评分。
 //
 // 落到哪个渠道：这次请求由调度器决定渠道（强制模式或金丝雀命中）时问调度器的只读预览；
 // 预览不可用或某个模型没有答案时按原生选渠道的规则算：会话亲和命中就是那个渠道，否则按分组
@@ -106,12 +105,6 @@ func (a autoRouteCost) estimate(names []string, effort string, ignoreClientReaso
 		plans[i] = plan
 	}
 
-	// 所有候选的容量压力一次取齐：逐个候选读会把候选带乘以渠道数的 Redis 往返放进热路径。
-	requests := make([]service.CapacityCostRequest, len(targets))
-	for i, plan := range plans {
-		requests[i] = service.CapacityCostRequest{Shares: plan.shares, Serving: targets[i].serving}
-	}
-	factors := service.CapacityCostFactors(requests, channelCostMultiplier)
 	estimates := make(map[string]autorouter.Cost, len(targets))
 	for i, target := range targets {
 		if excluded[i] {
@@ -123,14 +116,16 @@ func (a autoRouteCost) estimate(names []string, effort string, ignoreClientReaso
 			continue
 		}
 		cost := autorouter.Cost{
-			Price:      a.quoteAt(target.name, plan.group).PricePerMillion,
-			Multiplier: factors[i].Multiplier,
-			Premium:    factors[i].Premium,
-			Pressure:   factors[i].Pressure,
-			Channels:   len(plan.shares),
-			Source:     plan.source,
-			Preview:    plan.note,
+			Price:    a.quoteAt(target.name, plan.group).PricePerMillion,
+			Channels: len(plan.shares),
+			Source:   plan.source,
+			Preview:  plan.note,
 		}
+		multiplier := 0.0
+		for _, share := range plan.shares {
+			multiplier += share.Probability * channelCostMultiplier(share.Channel, target.serving)
+		}
+		cost.Multiplier = multiplier
 		if len(plan.shares) == 1 {
 			cost.ChannelID = plan.shares[0].Channel.Id
 		}
@@ -153,34 +148,9 @@ func (a autoRouteCost) billingGroups() []string {
 	return []string{a.usingGroup}
 }
 
-// pressure 只读地估一个模型首次会落到的池子有多忙，给"要不要继续沿用上一轮模型"用。
-// 它按原生选渠道的规则估，不问调度器预览、不报价；没有容量信号时 known 为 false。
-func (a autoRouteCost) pressure(name, effort string, ignoreClientReasoning bool) (float64, bool) {
-	serving, _, ok := service.AutoServingModel(name, effort, func(candidate string) bool {
-		return a.serves(candidate, ignoreClientReasoning)
-	})
-	if !ok {
-		return 0, false
-	}
-	filters := service.GetChannelConstraints(a.c).Filters
-	channelIDs := a.channelsOf(serving)
-	kept := a.gate.KeptChannels(serving, channelIDs, ignoreClientReasoning)
-	if len(kept) != len(channelIDs) {
-		filters = append(slices.Clone(filters), taskdto.ChannelFilter{Kind: taskdto.FilterCapability, AllowedChannelIDs: kept})
-	}
-	plan, ok := a.nativePlan(a.billingGroups(), autoCostTarget{name: name, serving: serving, allowed: kept, filters: filters})
-	if !ok || len(plan.shares) == 0 {
-		return 0, false
-	}
-	factors := service.CapacityCostFactors([]service.CapacityCostRequest{{Shares: plan.shares, Serving: serving}},
-		func(*model.Channel, string) float64 { return 1 })
-	if !factors[0].Known {
-		return 0, false
-	}
-	return factors[0].Pressure, true
-}
-
-// previewUnusableChannel 是调度器给了渠道、new-api 却没法按它报价时记的原因（渠道不在缓存里、
+// autoRouteCost 给 auto 候选里的模型估算比较成本：首次请求命中的分组下的用户价，乘上会落到的
+// 渠道的费用倍率。费用倍率按用户请求一侧的模型名配，和计费乘的是同一个倍率。
+// 调度预览只提供当前可服务性和渠道成本估算，不参与质量、成功率评分。// previewUnusableChannel 是调度器给了渠道、new-api 却没法按它报价时记的原因（渠道不在缓存里、
 // 不在任何分组里服务这个模型，或在那个分组里按次计价），这个模型按原生规则估算。
 const previewUnusableChannel = "unusable_channel"
 

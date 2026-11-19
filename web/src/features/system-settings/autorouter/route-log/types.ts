@@ -86,23 +86,20 @@ export type RoutePickCandidate = {
    * （平台成本，不参与计费）；没有表示没估算，按 price 比较。
    */
   cost_multiplier?: number
-  /**
-   * 会落到的计数池的容量溢价与压力。有溢价时 cost = price × 倍率 × 溢价；
-   * 没有表示这个池子没配额度或功能关闭，按 1 算。都不参与计费。
-   */
-  capacity_premium?: number
-  capacity_pressure?: number
   cost?: number
   channel_id?: number
   channels?: number
   cost_source?: RouteCostSource
-  /**
-   * 调度器回答了预览、却没用上它给这个模型的答案时的原因（not_cached、error、unusable_channel、
-   * over_limit），这个模型按原生规则估算。
-   */
   preview?: string
-  discount: number
+  /** Five-minute request count and successful/failed outcome samples. */
+  requests: number
+  samples: number
+  /** The four normalized routing dimensions. */
+  cost_score: number
+  capacity: number
+  success: number
   utility: number
+  probability: number
 }
 
 /**
@@ -115,10 +112,18 @@ export type RoutePreviewOutcome = {
   http_status?: number
 }
 
+export type PickDimensions = {
+  quality: number
+  cost: number
+  capacity: number
+  success: number
+  temperature: number
+}
+
 export type RoutePick = {
   chosen: string
-  weight: number
   band: RoutePickCandidate[]
+  dimensions: PickDimensions
   /** 没配调度器、或这次没估算比较成本时没有。 */
   preview?: RoutePreviewOutcome
 }
@@ -166,13 +171,7 @@ export type RouteTraceValidity = {
   profiles?: string[]
 }
 
-export type RoutePreviousPressure = {
-  model: string
-  pressure: number
-  knee: number
-  reused: boolean
-}
-
+/** Continuation keeps the previous model while it can serve the request. */
 export type RouteTraceContinuation = {
   previous: string
   task_change: number
@@ -180,17 +179,18 @@ export type RouteTraceContinuation = {
   continued: boolean
 }
 
-/** How an adaptive request got its cost weight; absent for a key with a fixed preference. */
+/** How an adaptive request got its policy; absent for a key with a fixed preference. */
 export type RouteTraceMode = {
-  /** Empty when the weight was judged; 'no_answer' when it fell back to the balanced weight. */
+  /** Empty when the policy was judged; 'no_answer' when it used the balanced policy. */
   reason?: string
   /** Each preference's share of the judged probability. */
   shares?: Record<string, number>
   /** Expected position on the capability (0), balanced (1), cost (2) scale. */
   position: number
   weight: number
-  /** The platform's three weights when the request ran. */
-  tiers: { capability: number; balanced: number; cost: number }
+  weights: PickDimensions
+  /** The platform's three policies when the request ran. */
+  tiers: Record<string, PickDimensions>
 }
 
 export type RouteTraceEffort = {
@@ -220,8 +220,6 @@ export type RouteTrace = {
   validity?: RouteTraceValidity
   mode?: RouteTraceMode
   continuation?: RouteTraceContinuation
-  /** 沿用上一轮模型前的池压力检查；reused 为 false 表示超过膝点，改为重新比较。 */
-  previous_pressure?: RoutePreviousPressure
   effort?: RouteTraceEffort
   ladder?: RouteTraceStep[]
 }

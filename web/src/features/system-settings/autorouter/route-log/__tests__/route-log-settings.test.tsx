@@ -101,7 +101,9 @@ test.each(['0', '366', '1.5'])(
     fireEvent.change(retention, { target: { value: days } })
     await user.click(screen.getByRole('button', { name: 'Save Changes' }))
 
-    await waitFor(() => expect(retention).toHaveAttribute('aria-invalid', 'true'))
+    await waitFor(() =>
+      expect(retention).toHaveAttribute('aria-invalid', 'true')
+    )
     expect(api.put).not.toHaveBeenCalled()
   }
 )

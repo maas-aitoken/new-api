@@ -41,8 +41,8 @@ import {
   useRouteLogs,
 } from './hooks'
 import { judgmentLabel, outcomeLabel } from './labels'
-import { RouteProcessDrawer } from './route-process-drawer'
 import { useRouteLogColumns } from './route-log-columns'
+import { RouteProcessDrawer } from './route-process-drawer'
 import type {
   RouteLogFilters,
   RouteLogItem,
@@ -192,7 +192,9 @@ export function RouteLogList(props: { scope?: RouteLogScope }) {
                 }))
               }
             >
-              <NativeSelectOption value=''>{t('All results')}</NativeSelectOption>
+              <NativeSelectOption value=''>
+                {t('All results')}
+              </NativeSelectOption>
               <NativeSelectOption value='routed'>
                 {outcomeLabel(t, 'routed')}
               </NativeSelectOption>

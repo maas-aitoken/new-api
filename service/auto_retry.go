@@ -1,6 +1,7 @@
 package service
 
 import (
+	"math/rand/v2"
 	"slices"
 	"strings"
 
@@ -37,7 +38,16 @@ func ResolveAutoRetryModel(c *gin.Context, candidates AutoCandidates) (*autorout
 		return !excluded(name) && candidates.Serves(name, true)
 	}
 	policy := autorouter_setting.GetAutoRouterSetting().Policy(common.GetContextKeyString(c, constant.ContextKeyTokenAutoPreference))
-	routing := autorouter.Candidates{Available: available, Overridable: overridable, Price: candidates.Price, Why: candidates.Why, Costs: candidates.Costs}
+	routing := autorouter.Candidates{
+		Available: available, Overridable: overridable, Price: candidates.Price,
+		Why: candidates.Why, Costs: candidates.Costs, Metrics: candidates.Metrics, Random: candidates.Random,
+	}
+	if routing.Metrics == nil {
+		routing.Metrics = autoModelMetricsStore.Snapshot
+	}
+	if routing.Random == nil {
+		routing.Random = rand.Float64
+	}
 	initial := GetAutoRouterResult(c)
 	var decision *autorouter.Decision
 	if initial != nil {

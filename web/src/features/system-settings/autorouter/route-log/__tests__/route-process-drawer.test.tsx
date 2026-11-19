@@ -65,6 +65,42 @@ const routedTrace: RouteTrace = {
   ],
 }
 
+const rawDimensions = {
+  quality: 0.93,
+  cost: 0.07,
+  capacity: 0.12,
+  success: 0.18,
+  temperature: 0.12,
+}
+
+const dimensions = {
+  ...rawDimensions,
+  quality: 0.93 / 1.3,
+  cost: 0.07 / 1.3,
+  capacity: 0.12 / 1.3,
+  success: 0.18 / 1.3,
+}
+
+function candidate(
+  model: string,
+  score: number,
+  price: number,
+  probability: number
+) {
+  return {
+    model,
+    score,
+    price,
+    cost_score: model === 'sonnet' ? 0.4 : 1,
+    capacity: model === 'sonnet' ? 0.5 : 0.5,
+    success: model === 'sonnet' ? 0.98 : 0.96,
+    requests: 1,
+    samples: 20,
+    utility: score,
+    probability,
+  }
+}
+
 const routed: RouteLog = {
   ...logItem,
   outcome: 'routed',
@@ -88,16 +124,10 @@ const routed: RouteLog = {
       },
       pick: {
         chosen: 'sonnet',
-        weight: 0.07,
+        dimensions,
         band: [
-          {
-            model: 'sonnet',
-            score: 0.95,
-            price: 4,
-            discount: 0,
-            utility: 0.95,
-          },
-          { model: 'haiku', score: 0.93, price: 1, discount: 0, utility: 0.93 },
+          candidate('sonnet', 0.95, 4, 0.55),
+          candidate('haiku', 0.93, 1, 0.45),
         ],
       },
       jev: { endpoint: 'https://jev.example', latency_ms: 120 },
@@ -204,33 +234,23 @@ test('a comparison by platform cost shows the multiplier of each candidate, wher
         ...routed.detail?.result,
         pick: {
           chosen: 'sonnet',
-          weight: 0.07,
+          dimensions,
           band: [
             {
-              model: 'sonnet',
-              score: 0.95,
-              price: 4,
+              ...candidate('sonnet', 0.95, 4, 0.55),
               cost_multiplier: 0.25,
-              capacity_premium: 5,
-              capacity_pressure: 0.9,
-              cost: 5,
+              cost: 1,
               channel_id: 12,
               channels: 1,
               cost_source: 'scheduler',
-              discount: 0,
-              utility: 0.95,
             },
             {
-              model: 'haiku',
-              score: 0.93,
-              price: 1.5,
+              ...candidate('haiku', 0.93, 1.5, 0.45),
               cost_multiplier: 0.8,
               cost: 1.2,
               channels: 2,
               cost_source: 'expected',
               preview: 'not_cached',
-              discount: 0.07,
-              utility: 0.86,
             },
           ],
           preview: { status: 'answered' },
@@ -248,13 +268,16 @@ test('a comparison by platform cost shows the multiplier of each candidate, wher
   ).toBeVisible()
   const chosenRow = screen.getByText('Chosen').closest('tr') as HTMLElement
   expect(within(chosenRow).getByText('× 0.2500')).toBeVisible()
-  // 池子接近额度上限时的容量溢价与压力也展示出来，且不算进用户计费。
+  expect(screen.getByRole('columnheader', { name: 'Cost score' })).toBeVisible()
+  expect(screen.getByRole('columnheader', { name: 'Capacity' })).toBeVisible()
+  expect(screen.getByRole('columnheader', { name: 'Success' })).toBeVisible()
   expect(
-    screen.getByRole('columnheader', { name: 'Capacity premium' })
+    screen.getByRole('columnheader', { name: 'Probability' })
   ).toBeVisible()
-  expect(within(chosenRow).getByText('× 5.0000')).toBeVisible()
-  expect(chosenRow.textContent).toContain('Pool pressure')
-  expect(chosenRow.textContent).toContain('90%')
+  expect(within(chosenRow).getByText('0.4000')).toBeVisible()
+  expect(within(chosenRow).getByText('0.5000')).toBeVisible()
+  expect(within(chosenRow).getByText('0.9800')).toBeVisible()
+  expect(within(chosenRow).getByText('0.5500')).toBeVisible()
   expect(
     within(chosenRow).getByText('Scheduler picks channel #12')
   ).toBeVisible()
@@ -264,7 +287,9 @@ test('a comparison by platform cost shows the multiplier of each candidate, wher
     within(otherRow).getByText('The scheduler has not loaded this model yet')
   ).toBeVisible()
   expect(
-    screen.getByText(/The multiplier never changes what the user is billed/)
+    screen.getByText(
+      /The cost multiplier never changes what the user is billed/
+    )
   ).toBeVisible()
   expect(
     screen.queryByText(/so every multiplier follows the native routing rules/)
@@ -291,19 +316,15 @@ test.each([
           ...routed.detail?.result,
           pick: {
             chosen: 'sonnet',
-            weight: 0.07,
+            dimensions,
             band: [
               {
-                model: 'sonnet',
-                score: 0.95,
-                price: 4,
+                ...candidate('sonnet', 0.95, 4, 1),
                 cost_multiplier: 0.25,
                 cost: 1,
                 channel_id: 12,
                 channels: 1,
                 cost_source: 'expected',
-                discount: 0,
-                utility: 0.95,
               },
             ],
             preview,
@@ -318,6 +339,8 @@ test.each([
 )
 
 test('a model the scheduler could not place says so in the skipped list', async () => {
+  const baseTrace = routed.detail?.trace
+  if (!baseTrace) throw new Error('the fixture has no trace')
   mockLog({
     ...routed,
     detail: {
@@ -357,7 +380,9 @@ test('a comparison by user price alone keeps the original columns', async () => 
     screen.queryByRole('columnheader', { name: 'Cost multiplier' })
   ).not.toBeInTheDocument()
   expect(
-    screen.queryByText(/The multiplier never changes what the user is billed/)
+    screen.queryByText(
+      /The cost multiplier never changes what the user is billed/
+    )
   ).not.toBeInTheDocument()
 })
 
@@ -720,9 +745,19 @@ test('an effort held at the previous one and then raised by the benefit lists th
   ).toBeTruthy()
 })
 
-const tiers = { capability: 0, balanced: 0.07, cost: 0.3 }
+const tiers = {
+  capability: { ...rawDimensions, quality: 1, cost: 0 },
+  balanced: rawDimensions,
+  cost: { ...rawDimensions, quality: 0.7, cost: 0.3 },
+}
+const balancedWeights = dimensions
+const adaptiveWeights = {
+  ...balancedWeights,
+  quality: 0.8725 / 1.3,
+  cost: 0.1275 / 1.3,
+}
 
-// An adaptive request that compared quality and price at the weight its mode gave.
+// An adaptive request shows the policy used by the four-dimensional comparison.
 function adaptiveLog(mode: RouteTraceMode): RouteLog {
   return {
     ...logItem,
@@ -735,22 +770,10 @@ function adaptiveLog(mode: RouteTraceMode): RouteLog {
         preference: 'adaptive',
         pick: {
           chosen: 'haiku',
-          weight: 0.1275,
+          dimensions: adaptiveWeights,
           band: [
-            {
-              model: 'sonnet',
-              score: 0.95,
-              price: 4,
-              discount: 0.1275,
-              utility: 0.8225,
-            },
-            {
-              model: 'haiku',
-              score: 0.93,
-              price: 1,
-              discount: 0,
-              utility: 0.93,
-            },
+            candidate('sonnet', 0.95, 4, 0.45),
+            candidate('haiku', 0.93, 1, 0.55),
           ],
         },
       },
@@ -772,19 +795,20 @@ function adaptiveLog(mode: RouteTraceMode): RouteLog {
   }
 }
 
-test('an adaptive request shows how its cost weight was judged, between the validity check and the model selection', async () => {
+test('an adaptive request shows its four weights and temperature, between the validity check and the model selection', async () => {
   mockLog(
     adaptiveLog({
       shares: { capability: 0.1, balanced: 0.55, cost: 0.35 },
       position: 1.25,
-      weight: 0.1275,
+      weight: 0.1275 / 1.3,
+      weights: adaptiveWeights,
       tiers,
     })
   )
   renderDrawer({})
 
   expect(await screen.findByText('Judged from the request')).toBeVisible()
-  const titles = ['Validity check', 'Cost preference', 'Model selection']
+  const titles = ['Validity check', 'Routing weights', 'Model selection']
   titles.slice(1).forEach((title, index) => {
     expect(
       screen
@@ -796,32 +820,52 @@ test('an adaptive request shows how its cost weight was judged, between the vali
   })
   expect(screen.getByText('Balanced 0.5500')).toBeVisible()
   expect(screen.getByText('Cost first 0.3500')).toBeVisible()
-  expect(screen.getByText('Cost first 0.3000')).toBeVisible()
+  expect(screen.getByText('Platform preference policies')).toBeVisible()
+  expect(
+    screen.getByText(
+      'Cost first Quality 0.7000, cost 0.3000, capacity 0.1200 and success 0.1800; sampling temperature 0.1200.'
+    )
+  ).toBeVisible()
+  expect(
+    screen.getByText('Capacity weight').nextElementSibling
+  ).toHaveTextContent('0.0923')
+  expect(
+    screen.getByText('Sampling temperature').nextElementSibling
+  ).toHaveTextContent('0.1200')
   expect(
     screen.getByText('Expected position').nextElementSibling
   ).toHaveTextContent('1.2500')
   expect(screen.getByText('Cost weight').nextElementSibling).toHaveTextContent(
-    '0.1275'
+    '0.0981'
   )
+  expect(
+    screen.getByText('Quality weight').nextElementSibling
+  ).toHaveTextContent('0.6712')
   expect(screen.getByText('Preference').nextElementSibling).toHaveTextContent(
     'Decide per request'
   )
 })
 
-test('an adaptive request with no usable judgment says the balanced weight applied', async () => {
+test('an adaptive request with no usable judgment says the balanced policy applied', async () => {
   mockLog(
-    adaptiveLog({ reason: 'no_answer', position: 1, weight: 0.07, tiers })
+    adaptiveLog({
+      reason: 'no_answer',
+      position: 1,
+      weight: 0.07 / 1.3,
+      weights: balancedWeights,
+      tiers,
+    })
   )
   renderDrawer({})
 
   expect(await screen.findByText('No usable judgment')).toBeVisible()
   expect(
     screen.getByText(
-      'The classifier gave no usable answer on cost, so the balanced weight applies.'
+      'The classifier gave no usable answer, so the balanced policy applies.'
     )
   ).toBeVisible()
   expect(screen.getByText('Cost weight').nextElementSibling).toHaveTextContent(
-    '0.0700'
+    '0.0538'
   )
   expect(screen.queryByText('Expected position')).not.toBeInTheDocument()
   expect(
@@ -835,36 +879,4 @@ test('with no request selected the drawer stays closed and asks for nothing', ()
 
   expect(screen.queryByText('Routing process')).not.toBeInTheDocument()
   expect(get).not.toHaveBeenCalled()
-})
-
-test('a continuation dropped because the pool is busy shows the pressure against the knee', async () => {
-  const baseTrace = routed.detail?.trace
-  if (!baseTrace) throw new Error('the fixture has no trace')
-  mockLog({
-    ...routed,
-    detail: {
-      ...routed.detail,
-      trace: {
-        ...baseTrace,
-        continuation: {
-          previous: 'opus',
-          task_change: 0.3,
-          threshold: 0.5,
-          continued: false,
-        },
-        previous_pressure: {
-          model: 'opus',
-          pressure: 0.8,
-          knee: 0.5,
-          reused: false,
-        },
-      },
-    },
-  })
-  renderDrawer({})
-
-  expect(
-    await screen.findByText('Compared again because the pool is busy')
-  ).toBeVisible()
-  expect(screen.getByText('0.8000 against a knee of 0.5000')).toBeVisible()
 })
