@@ -8361,6 +8361,25 @@
     "Not refreshed": "未更新",
     "Rate limited": "レート制限中",
     "By clicking sign in, you agree to our": "サインインをクリックすると、以下に同意したことになります：",
-    "By creating an account, you agree to our": "アカウントを作成すると、以下に同意したことになります："
+    "By creating an account, you agree to our": "アカウントを作成すると、以下に同意したことになります：",
+    "Capacity premium": "容量プレミアム",
+    "Compared again because the pool is busy": "プールが混雑しているため再比較しました",
+    "Compared models": "比較したモデル",
+    "No routing process details were stored for this request": "このリクエストのルーティング処理詳細は保存されていません",
+    "Platform cost weights": "プラットフォームのコスト重み",
+    "Pool pressure": "プール負荷",
+    "Previous model {{model}} is within the no-premium knee.": "前のモデル {{model}} はプレミアムなしのしきい値内です。",
+    "Previous model {{model}} was not reused: pool pressure {{value}} exceeds the knee {{knee}}.": "プール負荷 {{value}} がしきい値 {{knee}} を超えたため、前のモデル {{model}} は再利用しませんでした。",
+    "Quality weight": "品質の重み",
+    "Retained candidates keep their scores and probabilities from the full comparison.": "保持された候補は、完全な比較時のスコアと確率を維持します。",
+    "Samples": "サンプル数",
+    "Showing {{kept}} of {{total}} compared models.": "比較した {{total}} モデル中 {{kept}} 件を表示しています。",
+    "Showing {{kept}} of {{total}} compared models; omitted sampling probability {{probability}}.": "比較した {{total}} モデル中 {{kept}} 件を表示しています。省略したサンプリング確率は {{probability}} です。",
+    "Some routing details were omitted or shortened to fit the log.": "ログのサイズ制限に合わせるため、一部のルーティング詳細を省略または短縮しました。",
+    "The capacity premium raises the compared cost when the pool is close to its RPM, TPM or in-flight limit, so traffic shifts to models with headroom. Pools without a limit have no premium, and it never changes what the user is billed.": "プールが RPM、TPM、実行中リクエストの上限に近づくと、容量プレミアムにより比較コストが増加し、余裕のあるモデルへトラフィックが移動します。上限のないプールにはプレミアムがなく、ユーザーの請求額にも影響しません。",
+    "The classifier gave no usable answer on cost, so the balanced weight applies.": "分類器からコストについて有効な回答が得られなかったため、バランスの重みを適用します。",
+    "The expected position runs from 0 (capability first) through 1 (balanced) to 2 (cost first), and the cost weight is read from it along the line through the three platform weights.": "期待位置は 0（能力優先）から 1（バランス）を経て 2（コスト優先）まで変化し、その位置に沿って 3 つのプラットフォーム重みの折れ線からコスト重みを読み取ります。",
+    "The original routing detail could not be encoded; only the readable core is shown.": "元のルーティング詳細をエンコードできなかったため、読み取り可能な主要情報のみを表示しています。",
+    "{{value}} against a knee of {{knee}}": "{{value}}（しきい値 {{knee}}）"
   }
 }

@@ -8361,6 +8361,25 @@
     "Not refreshed": "Не обновлено",
     "Rate limited": "Ограничено",
     "By clicking sign in, you agree to our": "Нажимая «Войти», вы соглашаетесь с нашими",
-    "By creating an account, you agree to our": "Создавая аккаунт, вы соглашаетесь с нашими"
+    "By creating an account, you agree to our": "Создавая аккаунт, вы соглашаетесь с нашими",
+    "Capacity premium": "Надбавка за ёмкость",
+    "Compared again because the pool is busy": "Повторное сравнение из-за загруженности пула",
+    "Compared models": "Сравненные модели",
+    "No routing process details were stored for this request": "Для этого запроса не сохранены сведения о процессе маршрутизации",
+    "Platform cost weights": "Веса стоимости платформы",
+    "Pool pressure": "Нагрузка пула",
+    "Previous model {{model}} is within the no-premium knee.": "Прежняя модель {{model}} находится в пределах порога без надбавки.",
+    "Previous model {{model}} was not reused: pool pressure {{value}} exceeds the knee {{knee}}.": "Прежняя модель {{model}} не использована повторно: нагрузка пула {{value}} превышает порог {{knee}}.",
+    "Quality weight": "Вес качества",
+    "Retained candidates keep their scores and probabilities from the full comparison.": "Сохранённые кандидаты сохраняют оценки и вероятности полного сравнения.",
+    "Samples": "Выборки",
+    "Showing {{kept}} of {{total}} compared models.": "Показано {{kept}} из {{total}} сравненных моделей.",
+    "Showing {{kept}} of {{total}} compared models; omitted sampling probability {{probability}}.": "Показано {{kept}} из {{total}} сравненных моделей; пропущенная вероятность выборки: {{probability}}.",
+    "Some routing details were omitted or shortened to fit the log.": "Некоторые сведения о маршрутизации опущены или сокращены, чтобы уложиться в ограничение размера журнала.",
+    "The capacity premium raises the compared cost when the pool is close to its RPM, TPM or in-flight limit, so traffic shifts to models with headroom. Pools without a limit have no premium, and it never changes what the user is billed.": "Когда пул приближается к ограничениям RPM, TPM или числа выполняемых запросов, надбавка за ёмкость повышает сравниваемую стоимость, направляя трафик к моделям с запасом. Для пулов без ограничений надбавки нет; она никогда не влияет на сумму счёта пользователя.",
+    "The classifier gave no usable answer on cost, so the balanced weight applies.": "Классификатор не дал пригодного ответа о стоимости, поэтому применяется сбалансированный вес.",
+    "The expected position runs from 0 (capability first) through 1 (balanced) to 2 (cost first), and the cost weight is read from it along the line through the three platform weights.": "Ожидаемая позиция изменяется от 0 (сначала возможности) через 1 (баланс) до 2 (сначала стоимость); вес стоимости считывается по линии, проходящей через три веса платформы.",
+    "The original routing detail could not be encoded; only the readable core is shown.": "Не удалось закодировать исходные сведения о маршрутизации; показаны только читаемые основные данные.",
+    "{{value}} against a knee of {{knee}}": "{{value}} при пороге {{knee}}"
   }
 }

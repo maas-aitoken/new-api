@@ -8369,6 +8369,25 @@
     "Not refreshed": "Not refreshed",
     "Rate limited": "Rate limited",
     "By clicking sign in, you agree to our": "By clicking sign in, you agree to our",
-    "By creating an account, you agree to our": "By creating an account, you agree to our"
+    "By creating an account, you agree to our": "By creating an account, you agree to our",
+    "Capacity premium": "Capacity premium",
+    "Compared again because the pool is busy": "Compared again because the pool is busy",
+    "Compared models": "Compared models",
+    "No routing process details were stored for this request": "No routing process details were stored for this request",
+    "Platform cost weights": "Platform cost weights",
+    "Pool pressure": "Pool pressure",
+    "Previous model {{model}} is within the no-premium knee.": "Previous model {{model}} is within the no-premium knee.",
+    "Previous model {{model}} was not reused: pool pressure {{value}} exceeds the knee {{knee}}.": "Previous model {{model}} was not reused: pool pressure {{value}} exceeds the knee {{knee}}.",
+    "Quality weight": "Quality weight",
+    "Retained candidates keep their scores and probabilities from the full comparison.": "Retained candidates keep their scores and probabilities from the full comparison.",
+    "Samples": "Samples",
+    "Showing {{kept}} of {{total}} compared models.": "Showing {{kept}} of {{total}} compared models.",
+    "Showing {{kept}} of {{total}} compared models; omitted sampling probability {{probability}}.": "Showing {{kept}} of {{total}} compared models; omitted sampling probability {{probability}}.",
+    "Some routing details were omitted or shortened to fit the log.": "Some routing details were omitted or shortened to fit the log.",
+    "The capacity premium raises the compared cost when the pool is close to its RPM, TPM or in-flight limit, so traffic shifts to models with headroom. Pools without a limit have no premium, and it never changes what the user is billed.": "The capacity premium raises the compared cost when the pool is close to its RPM, TPM or in-flight limit, so traffic shifts to models with headroom. Pools without a limit have no premium, and it never changes what the user is billed.",
+    "The classifier gave no usable answer on cost, so the balanced weight applies.": "The classifier gave no usable answer on cost, so the balanced weight applies.",
+    "The expected position runs from 0 (capability first) through 1 (balanced) to 2 (cost first), and the cost weight is read from it along the line through the three platform weights.": "The expected position runs from 0 (capability first) through 1 (balanced) to 2 (cost first), and the cost weight is read from it along the line through the three platform weights.",
+    "The original routing detail could not be encoded; only the readable core is shown.": "The original routing detail could not be encoded; only the readable core is shown.",
+    "{{value}} against a knee of {{knee}}": "{{value}} against a knee of {{knee}}"
   }
 }

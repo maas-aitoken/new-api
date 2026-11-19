@@ -8369,6 +8369,25 @@
     "Not refreshed": "未刷新",
     "Rate limited": "限流中",
     "By clicking sign in, you agree to our": "点击登录即表示您同意我们的",
-    "By creating an account, you agree to our": "创建账户即表示您同意我们的"
+    "By creating an account, you agree to our": "创建账户即表示您同意我们的",
+    "Capacity premium": "容量溢价",
+    "Compared again because the pool is busy": "资源池繁忙，已重新比较",
+    "Compared models": "模型比较",
+    "No routing process details were stored for this request": "此请求未保存选路过程详情",
+    "Platform cost weights": "平台成本权重",
+    "Pool pressure": "资源池压力",
+    "Previous model {{model}} is within the no-premium knee.": "上一模型 {{model}} 的资源池压力未超过免溢价膝点。",
+    "Previous model {{model}} was not reused: pool pressure {{value}} exceeds the knee {{knee}}.": "资源池压力 {{value}} 超过膝点 {{knee}}，未沿用上一模型 {{model}}。",
+    "Quality weight": "质量权重",
+    "Retained candidates keep their scores and probabilities from the full comparison.": "保留的候选仍使用完整比较时的得分和概率，未按当前子集重新计算。",
+    "Samples": "样本数",
+    "Showing {{kept}} of {{total}} compared models.": "显示 {{total}} 个比较模型中的 {{kept}} 个。",
+    "Showing {{kept}} of {{total}} compared models; omitted sampling probability {{probability}}.": "显示 {{total}} 个比较模型中的 {{kept}} 个；省略模型的采样概率合计为 {{probability}}。",
+    "Some routing details were omitted or shortened to fit the log.": "为符合日志大小限制，部分选路详情已省略或缩短。",
+    "The capacity premium raises the compared cost when the pool is close to its RPM, TPM or in-flight limit, so traffic shifts to models with headroom. Pools without a limit have no premium, and it never changes what the user is billed.": "当资源池接近 RPM、TPM 或并发上限时，容量溢价会提高比较成本，使流量转向余量充足的模型。无上限的资源池不产生溢价；容量溢价不影响用户实际计费。",
+    "The classifier gave no usable answer on cost, so the balanced weight applies.": "分类器未给出可用的成本判断，因此采用均衡档成本权重。",
+    "The expected position runs from 0 (capability first) through 1 (balanced) to 2 (cost first), and the cost weight is read from it along the line through the three platform weights.": "期望位置从 0（能力优先）经 1（均衡）到 2（成本优先），成本权重根据该位置沿三档平台权重之间的折线取值。",
+    "The original routing detail could not be encoded; only the readable core is shown.": "原始选路详情无法编码，仅显示可读的核心信息。",
+    "{{value}} against a knee of {{knee}}": "{{value}}，膝点为 {{knee}}"
   }
 }
