@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -10,6 +11,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
@@ -1009,55 +1011,229 @@ func TestNewAutoRouteLogKeepsTheRequestParametersButNotTheConversation(t *testin
 	assert.Equal(t, `{"keep":1}`, oversized.RequestParams, "a field that does not fit is left out whole")
 }
 
-// 详情超过上限时依次去掉最占地方的部分：比较候选带、整个路由结果，最后只剩一个空对象。
-func TestEncodeAutoRouteDetailShrinksToFit(t *testing.T) {
-	band := make([]autorouter.Candidate, 2000)
-	probabilities := make(map[string]float64, 4000)
-	ladder := make([]autorouter.LadderStep, 1500)
-	for i := range band {
-		band[i] = autorouter.Candidate{Model: "model-" + strconv.Itoa(i), Score: 0.9, Price: 1}
-	}
-	for i := range 4000 {
-		probabilities["task-"+strconv.Itoa(i)] = 0.5
-	}
-	for i := range ladder {
-		ladder[i] = autorouter.LadderStep{Profile: "general", Outcome: autorouter.OutcomeNone}
-	}
-	build := func(pick *autorouter.Pick, decision *autorouter.Decision, steps []autorouter.LadderStep) *autorouter.Result {
-		return &autorouter.Result{
-			Route: autorouter.Route{Model: "coder"}, Pick: pick, Decision: decision,
-			Trace: &autorouter.Trace{Judgment: autorouter.JudgmentLive, Ladder: steps},
-		}
-	}
-	tests := []struct {
-		name       string
-		result     *autorouter.Result
-		wantResult bool
-		wantPick   bool
-		wantTrace  bool
-	}{
-		{"fits as is", build(&autorouter.Pick{Chosen: "coder", Band: band[:3]}, nil, nil), true, true, true},
-		{"the comparison band goes first", build(&autorouter.Pick{Chosen: "coder", Band: band}, nil, nil), true, false, true},
-		{"then the route result", build(nil, &autorouter.Decision{TaskTypeProbabilities: probabilities}, nil), false, false, true},
-		{"nothing fits", build(nil, nil, ladder), false, false, false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			encoded := encodeAutoRouteDetail(tt.result, errors.New("no model"))
+type autoRouteCollectionTruncationView struct {
+	Total              int      `json:"total"`
+	Kept               int      `json:"kept"`
+	OmittedProbability *float64 `json:"omitted_probability,omitempty"`
+}
 
-			assert.LessOrEqual(t, len(encoded), model.AutoRouteLogDetailMax)
-			var detail map[string]any
-			require.NoError(t, common.UnmarshalJsonStr(encoded, &detail))
-			assert.Equal(t, tt.wantResult, detail["result"] != nil, "result")
-			assert.Equal(t, tt.wantTrace, detail["trace"] != nil, "trace")
-			if tt.wantResult {
-				assert.Equal(t, tt.wantPick, detail["result"].(map[string]any)["pick"] != nil, "pick")
+type autoRouteDetailView struct {
+	Result    *autorouter.Result `json:"result"`
+	Trace     *autorouter.Trace  `json:"trace"`
+	Error     string             `json:"error"`
+	Truncated *struct {
+		Collections map[string]autoRouteCollectionTruncationView `json:"collections"`
+		Fields      []string                                     `json:"fields"`
+		Strings     []string                                     `json:"strings"`
+		Reason      string                                       `json:"reason"`
+	} `json:"truncated"`
+}
+
+// 详情超限只压缩日志副本：保留可核查的比较证据和省略说明，不能改变真实选路结果。
+func TestEncodeAutoRouteDetailShrinksToFit(t *testing.T) {
+	t.Run("a small detail stays complete", func(t *testing.T) {
+		result := &autorouter.Result{
+			Route: autorouter.Route{Model: "coder"},
+			Pick: &autorouter.Pick{Chosen: "coder", Band: []autorouter.Candidate{
+				{Model: "coder", Score: 0.9, Price: 1, Utility: 0.9, Probability: 1},
+			}},
+			Trace: &autorouter.Trace{Judgment: autorouter.JudgmentLive},
+		}
+
+		encoded := encodeAutoRouteDetail(result, nil)
+		var got autoRouteDetailView
+		require.NoError(t, common.UnmarshalJsonStr(encoded, &got))
+		assert.Nil(t, got.Truncated)
+		require.NotNil(t, got.Result)
+		require.NotNil(t, got.Result.Pick)
+		assert.Len(t, got.Result.Pick.Band, 1)
+	})
+
+	t.Run("the shipped 146 candidate comparison keeps its evidence", func(t *testing.T) {
+		policy := autorouter_setting.GetAutoRouterSetting().Policy(autorouter.PreferenceBalanced)
+		decision := &autorouter.Decision{TaskType: "data.business", Difficulty: 2}
+		available := func(string) bool { return true }
+		trace := &autorouter.Trace{}
+		route, _, ok, pick := autorouter.SelectRoute(decision, nil, policy, autorouter.Candidates{
+			Available: available, Overridable: available,
+			Price: func(string) (float64, bool) { return 1, true },
+			Costs: func(models []string, _ string, _ bool) (map[string]autorouter.Cost, *autorouter.PreviewOutcome) {
+				costs := make(map[string]autorouter.Cost, len(models))
+				for _, name := range models {
+					costs[name] = autorouter.Cost{Price: 1, Multiplier: 1, Channels: 2, Source: autorouter.CostSourceExpected}
+				}
+				return costs, nil
+			},
+			Random: func() float64 { return 0.5 },
+		}, trace)
+		require.True(t, ok)
+		require.NotNil(t, pick)
+		require.Len(t, pick.Band, 146)
+		result := &autorouter.Result{Route: route, ResolvedModel: route.Model, Decision: decision, Pick: pick, Trace: trace}
+		full, err := common.Marshal(autoRouteDetail{Result: result, Trace: trace})
+		require.NoError(t, err)
+		require.Greater(t, len(full), model.AutoRouteLogDetailMax)
+		beforeResult, err := common.Marshal(result)
+		require.NoError(t, err)
+		beforeTrace, err := common.Marshal(trace)
+		require.NoError(t, err)
+		originalBand := append([]autorouter.Candidate(nil), pick.Band...)
+
+		encoded := encodeAutoRouteDetail(result, nil)
+		assert.LessOrEqual(t, len(encoded), model.AutoRouteLogDetailMax)
+		var got autoRouteDetailView
+		require.NoError(t, common.UnmarshalJsonStr(encoded, &got))
+		require.NotNil(t, got.Result)
+		require.NotNil(t, got.Result.Pick, "超限时不能把整个比较过程删掉")
+		require.NotNil(t, got.Trace)
+		require.NotNil(t, got.Truncated)
+		kept := got.Result.Pick.Band
+		assert.Greater(t, len(kept), 16, "只在确有字节压力时省略，不能粗暴砍到固定小样本")
+		assert.Less(t, len(kept), len(originalBand))
+
+		keptModels := make(map[string]bool, len(kept))
+		originalIndexes := make(map[string]int, len(originalBand))
+		for i, candidate := range originalBand {
+			originalIndexes[candidate.Model] = i
+		}
+		previous := -1
+		for _, candidate := range kept {
+			keptModels[candidate.Model] = true
+			index, found := originalIndexes[candidate.Model]
+			require.True(t, found)
+			assert.Greater(t, index, previous, "保留下来的候选必须维持原榜单顺序")
+			previous = index
+		}
+		highestUtility, lowestCost, firstCostMetadata := 0, 0, -1
+		for i, candidate := range originalBand {
+			if candidate.Utility > originalBand[highestUtility].Utility {
+				highestUtility = i
 			}
-			if tt.wantTrace {
-				assert.Equal(t, "no model", detail["error"])
+			cost := candidate.Price
+			if candidate.CostMultiplier > 0 {
+				cost = candidate.Cost
 			}
-		})
-	}
+			lowest := originalBand[lowestCost].Price
+			if originalBand[lowestCost].CostMultiplier > 0 {
+				lowest = originalBand[lowestCost].Cost
+			}
+			if cost < lowest {
+				lowestCost = i
+			}
+			if firstCostMetadata < 0 && candidate.CostMultiplier > 0 {
+				firstCostMetadata = i
+			}
+		}
+		assert.True(t, keptModels[pick.Chosen], "中选模型必须保留")
+		assert.True(t, keptModels[originalBand[0].Model])
+		assert.True(t, keptModels[originalBand[highestUtility].Model])
+		assert.True(t, keptModels[originalBand[lowestCost].Model])
+		assert.True(t, keptModels[originalBand[firstCostMetadata].Model])
+
+		truncation, found := got.Truncated.Collections["result.pick.band"]
+		require.True(t, found)
+		assert.Equal(t, len(originalBand), truncation.Total)
+		assert.Equal(t, len(kept), truncation.Kept)
+		require.NotNil(t, truncation.OmittedProbability)
+		keptProbability := 0.0
+		for _, candidate := range kept {
+			keptProbability += candidate.Probability
+		}
+		assert.InDelta(t, 1-keptProbability, *truncation.OmittedProbability, 1e-9)
+		afterResult, err := common.Marshal(result)
+		require.NoError(t, err)
+		afterTrace, err := common.Marshal(trace)
+		require.NoError(t, err)
+		assert.JSONEq(t, string(beforeResult), string(afterResult), "日志压缩不能修改真实选路结果")
+		assert.JSONEq(t, string(beforeTrace), string(afterTrace), "日志压缩不能修改真实留痕")
+	})
+
+	t.Run("huge collections and strings degrade with a readable core", func(t *testing.T) {
+		band := make([]autorouter.Candidate, 2000)
+		probabilities := make(map[string]float64, 4000)
+		ladder := make([]autorouter.LadderStep, 1500)
+		for i := range band {
+			band[i] = autorouter.Candidate{Model: "model-" + strconv.Itoa(i), Score: 0.9, Price: 1, Cost: 1, CostMultiplier: 1, Utility: float64(i), Probability: 0.0005}
+		}
+		band[len(band)-1].Utility = -1
+		for i := range 4000 {
+			probabilities["task-"+strconv.Itoa(i)] = 0.5
+		}
+		for i := range ladder {
+			ladder[i] = autorouter.LadderStep{Profile: "general", Outcome: autorouter.OutcomeNone}
+		}
+		ladder[750] = autorouter.LadderStep{Profile: "code.build", Outcome: autorouter.OutcomeCompared, Model: "model-1999"}
+		result := &autorouter.Result{
+			Route:    autorouter.Route{Model: "model-1999"},
+			Pick:     &autorouter.Pick{Chosen: "model-1999", Band: band},
+			Decision: &autorouter.Decision{TaskType: "task-3999", TaskTypeProbabilities: probabilities},
+			Trace:    &autorouter.Trace{Judgment: autorouter.JudgmentLive, Ladder: ladder},
+		}
+		longError := strings.Repeat("长", 30000)
+
+		encoded := encodeAutoRouteDetail(result, errors.New(longError))
+		assert.LessOrEqual(t, len(encoded), model.AutoRouteLogDetailMax)
+		assert.True(t, utf8.ValidString(encoded))
+		var got autoRouteDetailView
+		require.NoError(t, common.UnmarshalJsonStr(encoded, &got))
+		require.NotNil(t, got.Result)
+		require.NotNil(t, got.Trace)
+		require.NotNil(t, got.Result.Pick)
+		require.NotNil(t, got.Truncated)
+		assert.NotEmpty(t, got.Result.Pick.Band)
+		assert.Equal(t, "model-1999", got.Result.Pick.Band[len(got.Result.Pick.Band)-1].Model, "最低效用且位于末尾的中选模型也不能丢")
+		assert.Contains(t, got.Result.Decision.TaskTypeProbabilities, "task-3999", "实际选中的任务类型优先于概率表裁剪")
+		assert.NotEmpty(t, got.Trace.Ladder)
+		assert.Less(t, len(got.Error), len(longError))
+		assert.Contains(t, got.Truncated.Strings, "error")
+		assert.NotEqual(t, "{}", encoded)
+	})
+
+	t.Run("a marshal failure is explicit and does not invent a route error", func(t *testing.T) {
+		result := &autorouter.Result{
+			Route: autorouter.Route{Model: "coder"},
+			Pick:  &autorouter.Pick{Chosen: "coder", Band: []autorouter.Candidate{{Model: "coder", Utility: math.NaN()}}},
+			Trace: &autorouter.Trace{Judgment: autorouter.JudgmentLive},
+		}
+
+		encoded := encodeAutoRouteDetail(result, nil)
+		var got autoRouteDetailView
+		require.NoError(t, common.UnmarshalJsonStr(encoded, &got))
+		require.NotNil(t, got.Result)
+		require.NotNil(t, got.Trace)
+		require.NotNil(t, got.Truncated)
+		assert.Equal(t, "encoding_error", got.Truncated.Reason)
+		assert.Equal(t, []string{"result.pick"}, got.Truncated.Fields, "只报告实际存在且被裁掉的字段")
+		assert.Empty(t, got.Error)
+		assert.NotEqual(t, "{}", encoded)
+	})
+
+	t.Run("the final fallback reports only actual omissions", func(t *testing.T) {
+		detail := autoRouteDetail{
+			Error: strings.Repeat("x", 600),
+			Result: &autorouter.Result{Route: autorouter.Route{
+				Model: strings.Repeat("m", 300),
+			}},
+			Trace: &autorouter.Trace{
+				Judgment:     strings.Repeat("j", 100),
+				Unroutable:   &autorouter.Unroutable{},
+				Validity:     &autorouter.Validity{},
+				Mode:         &autorouter.ModeTrace{},
+				Continuation: &autorouter.Continuation{},
+				Effort:       &autorouter.EffortTrace{},
+			},
+			Truncated: &autoRouteTruncation{},
+		}
+
+		minimal := minimalAutoRouteDetail(detail)
+		assert.ElementsMatch(t, []string{
+			"trace.unroutable", "trace.validity", "trace.mode", "trace.continuation", "trace.effort",
+		}, minimal.Truncated.Fields)
+		assert.NotContains(t, minimal.Truncated.Fields, "trace.ladder")
+		assert.Contains(t, minimal.Truncated.Strings, "error")
+		assert.Contains(t, minimal.Truncated.Strings, "result.model")
+		assert.Contains(t, minimal.Truncated.Strings, "trace.judgment")
+	})
 }
 
 func TestAutoRouterListedOnlyWhenResolvable(t *testing.T) {

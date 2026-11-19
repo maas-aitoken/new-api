@@ -30,9 +30,10 @@ func StopAutoRouteLogWriter() {
 // autoRouteDetail 是选路日志里完整的选路过程。Result 与消费日志 admin_info.auto_router
 // 里的摘要是同一份数据，详情页可以读同样的字段；Trace 是只属于选路日志的部分。
 type autoRouteDetail struct {
-	Result *autorouter.Result `json:"result,omitempty"`
-	Trace  *autorouter.Trace  `json:"trace,omitempty"`
-	Error  string             `json:"error,omitempty"`
+	Result    *autorouter.Result   `json:"result,omitempty"`
+	Trace     *autorouter.Trace    `json:"trace,omitempty"`
+	Error     string               `json:"error,omitempty"`
+	Truncated *autoRouteTruncation `json:"truncated,omitempty"`
 }
 
 // recordAutoRoute 按 route_log_mode 决定这次 auto 请求要不要留选路日志。
@@ -97,26 +98,4 @@ func newAutoRouteLog(c *gin.Context, result *autorouter.Result, resolveErr error
 		entry.Effort = truncateStr(suffix, 16)
 	}
 	return entry
-}
-
-// encodeAutoRouteDetail 返回不超过 AutoRouteLogDetailMax 字节的详情。正常情况远小于上限，
-// 只有榜单配得极长时才会超出，此时依次去掉最占地方的比较候选带、整个路由结果，只留留痕。
-func encodeAutoRouteDetail(result *autorouter.Result, resolveErr error) string {
-	detail := autoRouteDetail{Result: result, Trace: result.Trace}
-	if resolveErr != nil {
-		detail.Error = resolveErr.Error()
-	}
-	withoutPick := *result
-	withoutPick.Pick = nil
-	tiers := []autoRouteDetail{
-		detail,
-		{Result: &withoutPick, Trace: detail.Trace, Error: detail.Error},
-		{Trace: detail.Trace, Error: detail.Error},
-	}
-	for _, tier := range tiers {
-		if encoded, err := common.Marshal(tier); err == nil && len(encoded) <= model.AutoRouteLogDetailMax {
-			return string(encoded)
-		}
-	}
-	return "{}"
 }
