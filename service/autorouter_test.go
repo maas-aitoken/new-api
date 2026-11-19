@@ -118,6 +118,11 @@ func useAutoRouterSetting(t *testing.T, endpoint string, timeoutMs int) {
 	setting.RankSources = map[string]string{"taxonomy_version": autorouter.TaxonomyVersion}
 	setting.DifficultyEfforts = []string{"low", "medium", "high", "xhigh"}
 	setting.DefaultEffort = "medium"
+	setting.PreferenceWeights = autorouter.PreferenceWeights{
+		autorouter.PreferenceCapability: {Quality: 1, Cost: 0},
+		autorouter.PreferenceBalanced:   {Quality: 0.93, Cost: 0.07},
+		autorouter.PreferenceCost:       {Quality: 0.7, Cost: 0.3},
+	}
 }
 
 func newAutoRouterContext(tokenID int, body string) *gin.Context {
@@ -310,7 +315,7 @@ func TestResolveAutoModelSkipsJevWhenNothingIsRoutable(t *testing.T) {
 	assert.False(t, common.GetContextKeyBool(c, constant.ContextKeyAutoRouted), "a request that resolved to no model is not marked")
 }
 
-// 候选的用户价格从 AutoCandidates.Price 进来，按榜单选模型时在榜单分接近的模型里选更便宜的。
+// 候选的用户价格从 AutoCandidates.Price 进来，与榜单分归一化后加权比较。
 func TestResolveAutoModelPicksByQualityAndPrice(t *testing.T) {
 	var calls atomic.Int32
 	useAutoRouterSetting(t, fakeJev(t, &calls, 0).URL, 1000)
@@ -325,7 +330,7 @@ func TestResolveAutoModelPicksByQualityAndPrice(t *testing.T) {
 	}
 	body := `{"messages":[{"role":"user","content":"hard"}]}`
 
-	t.Run("the cheaper model wins when the scores are close", func(t *testing.T) {
+	t.Run("the cost weight gives a cheaper model a higher cost score", func(t *testing.T) {
 		result, err := ResolveAutoModel(newAutoRouterContext(9801, body), candidates(func(model string) (float64, bool) {
 			price, ok := prices[model]
 			return price, ok
@@ -335,6 +340,7 @@ func TestResolveAutoModelPicksByQualityAndPrice(t *testing.T) {
 		require.NotNil(t, result.Pick)
 		assert.Equal(t, "sonnet-m", result.Pick.Chosen)
 		assert.Len(t, result.Pick.Band, 2)
+		assert.Greater(t, result.Pick.Band[1].CostScore, result.Pick.Band[0].CostScore)
 		assert.Equal(t, autorouter.PreferenceBalanced, result.Preference, "没设偏好的 key 走平台默认，出厂是均衡")
 	})
 
@@ -346,7 +352,7 @@ func TestResolveAutoModelPicksByQualityAndPrice(t *testing.T) {
 		assert.Equal(t, "opus-m-xhigh", result.ResolvedModel)
 		assert.Equal(t, autorouter.PreferenceCapability, result.Preference)
 		require.NotNil(t, result.Pick)
-		assert.Len(t, result.Pick.Band, 1)
+		assert.Len(t, result.Pick.Band, 2)
 	})
 
 	t.Run("a key without a preference follows a changed platform default", func(t *testing.T) {
@@ -412,7 +418,7 @@ func TestResolveAutoModelAdaptivePreferenceReadsTheWeightFromTheModeAnswer(t *te
 			assert.Equal(t, tt.wantModel, result.ResolvedModel, tt.instruction)
 			assert.Equal(t, autorouter.PreferenceAdaptive, result.Preference)
 			require.NotNil(t, result.Pick, tt.instruction)
-			assert.InDelta(t, tt.wantWeight, result.Pick.Weight, 1e-9, tt.instruction)
+			assert.InDelta(t, tt.wantWeight, result.Pick.Dimensions.Cost, 1e-9, tt.instruction)
 			require.NotNil(t, result.Trace.Mode, tt.instruction)
 			assert.InDelta(t, tt.wantWeight, result.Trace.Mode.Weight, 1e-9, tt.instruction)
 			assert.Empty(t, result.Trace.Mode.Reason)
@@ -429,14 +435,14 @@ func TestResolveAutoModelAdaptivePreferenceReadsTheWeightFromTheModeAnswer(t *te
 		assert.Equal(t, "haiku-m-xhigh", first.ResolvedModel)
 		assert.Equal(t, before+1, calls.Load())
 
-		saved := setting.CostWeights
-		setting.CostWeights = map[string]float64{"capability": 0, "balanced": 0.03, "cost": 0.05}
-		t.Cleanup(func() { setting.CostWeights = saved })
+		saved := setting.PreferenceWeights
+		setting.PreferenceWeights = autorouter.PreferenceWeights{"capability": {Quality: 1, Cost: 0}, "balanced": {Quality: 0.97, Cost: 0.03}, "cost": {Quality: 0.95, Cost: 0.05}}
+		t.Cleanup(func() { setting.PreferenceWeights = saved })
 		second := resolve(t, 9635, autorouter.PreferenceAdaptive, "frugal")
 		assert.Equal(t, before+1, calls.Load(), "命中判断缓存，不再调 jev")
 		assert.Equal(t, autorouter.SourceCache, second.Source)
-		assert.Equal(t, "sonnet-m-xhigh", second.ResolvedModel, "平台改了三档权重，同一个判断读出的权重跟着变")
-		assert.Equal(t, autorouter.TierWeights{Capability: 0, Balanced: 0.03, Cost: 0.05}, second.Trace.Mode.Tiers)
+		assert.Equal(t, "opus-m-xhigh", second.ResolvedModel, "平台改了三档权重，同一个判断读出的权重跟着变")
+		assert.Equal(t, autorouter.PreferenceWeights{"capability": {Quality: 1, Cost: 0}, "balanced": {Quality: 0.97, Cost: 0.03}, "cost": {Quality: 0.95, Cost: 0.05}}, second.Trace.Mode.Tiers)
 	})
 	t.Run("a request that is never judged takes the balanced weight", func(t *testing.T) {
 		result := resolve(t, 9636, autorouter.PreferenceAdaptive, "[SUGGESTION MODE: next prompt]")

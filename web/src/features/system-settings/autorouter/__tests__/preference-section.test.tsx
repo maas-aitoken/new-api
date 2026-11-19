@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { useState } from 'react'
 import { beforeEach, expect, test, vi } from 'vitest'
@@ -43,7 +43,7 @@ function Fixture(props: { settings: AutoRouterSettings }) {
 function renderSection(defaultPreference = 'balanced') {
   const settings = {
     'autorouter_setting.default_preference': defaultPreference,
-    'autorouter_setting.cost_weights': '{}',
+    'autorouter_setting.preference_weights': '{}',
   } as AutoRouterSettings
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
@@ -56,7 +56,9 @@ function renderSection(defaultPreference = 'balanced') {
 }
 
 const defaultPreferenceSelect = () =>
-  screen.getByRole('combobox', { name: 'Default preference for keys without one' })
+  screen.getByRole('combobox', {
+    name: 'Default preference for keys without one',
+  })
 
 beforeEach(() => {
   vi.spyOn(api, 'put').mockResolvedValue({ data: { success: true } })
@@ -67,10 +69,12 @@ test('choosing to decide per request writes only the default preference', async 
   renderSection()
 
   await user.click(defaultPreferenceSelect())
-  await user.click(await screen.findByRole('option', { name: 'Decide per request' }))
+  await user.click(
+    await screen.findByRole('option', { name: 'Decide per request' })
+  )
   expect(
     screen.getByText(
-      'Judges each request on whether it stresses result quality or cost, then reads the cost weight for that request from the three weights below.'
+      'Judges each request on whether it stresses result quality or cost, then reads the weights for that request from the three preferences below.'
     )
   ).toBeVisible()
   await user.click(screen.getByRole('button', { name: 'Save Changes' }))
@@ -89,17 +93,94 @@ test('a stored adaptive default is shown as chosen', () => {
 })
 
 test.each(['balanced', 'adaptive'])(
-  'with %s as the default the cost weights are still edited for exactly the three weighted preferences',
-  (defaultPreference) => {
+  'with %s as the default the four weights are edited for exactly the three weighted preferences',
+  async (defaultPreference) => {
+    const user = userEvent.setup()
     renderSection(defaultPreference)
 
-    const fields = screen.getAllByRole('spinbutton')
-    expect(fields).toHaveLength(3)
-    ;['Capability first', 'Balanced', 'Cost first'].forEach((name) => {
-      expect(screen.getByRole('spinbutton', { name })).toBeVisible()
-    })
+    expect(screen.getAllByRole('spinbutton')).toHaveLength(5)
+    await user.click(screen.getByRole('tab', { name: 'Capability first' }))
+    expect(screen.getAllByRole('spinbutton')).toHaveLength(5)
+    expect(screen.getByRole('spinbutton', { name: 'Cost weight' })).toHaveValue(
+      0
+    )
+    await user.click(screen.getByRole('tab', { name: 'Cost first' }))
+    expect(screen.getAllByRole('spinbutton')).toHaveLength(5)
+    expect(screen.getByRole('spinbutton', { name: 'Cost weight' })).toHaveValue(
+      0.4
+    )
   }
 )
+
+test('a stored preference policy fills its five fields', async () => {
+  const user = userEvent.setup()
+  const settings = {
+    'autorouter_setting.default_preference': 'balanced',
+    'autorouter_setting.preference_weights':
+      '{"balanced":{"quality":0.4,"cost":0.1,"capacity":0.2,"success":0.3,"temperature":0}}',
+  } as AutoRouterSettings
+  render(
+    <QueryClientProvider client={new QueryClient()}>
+      <Fixture settings={settings} />
+    </QueryClientProvider>
+  )
+
+  expect(
+    screen.getByRole('spinbutton', { name: 'Quality weight' })
+  ).toHaveValue(0.4)
+  expect(screen.getByRole('spinbutton', { name: 'Cost weight' })).toHaveValue(
+    0.1
+  )
+  expect(
+    screen.getByRole('spinbutton', { name: 'Capacity weight' })
+  ).toHaveValue(0.2)
+  expect(
+    screen.getByRole('spinbutton', { name: 'Success weight' })
+  ).toHaveValue(0.3)
+  expect(
+    screen.getByRole('spinbutton', { name: 'Sampling temperature' })
+  ).toHaveValue(0)
+  await user.click(screen.getByRole('tab', { name: 'Cost first' }))
+  expect(screen.getByRole('spinbutton', { name: 'Cost weight' })).toHaveValue(
+    0.4
+  )
+})
+
+test('editing one preference writes the complete policy for all preferences', async () => {
+  const user = userEvent.setup()
+  renderSection()
+
+  fireEvent.change(screen.getByRole('spinbutton', { name: 'Quality weight' }), {
+    target: { value: '0.8' },
+  })
+  fireEvent.change(
+    screen.getByRole('spinbutton', { name: 'Sampling temperature' }),
+    { target: { value: '0.25' } }
+  )
+  await user.click(screen.getByRole('button', { name: 'Save Changes' }))
+
+  await waitFor(() => expect(api.put).toHaveBeenCalledTimes(1))
+  expect(api.put).toHaveBeenCalledWith('/api/option/', {
+    key: 'autorouter_setting.preference_weights',
+    value:
+      '{"capability":{"quality":0.6,"cost":0,"capacity":0.2,"success":0.2,"temperature":0.12},"balanced":{"quality":0.8,"cost":0.2,"capacity":0.2,"success":0.2,"temperature":0.25},"cost":{"quality":0.2,"cost":0.4,"capacity":0.2,"success":0.2,"temperature":0.12}}',
+  })
+})
+
+test('a weight above one is rejected before anything is saved', async () => {
+  const user = userEvent.setup()
+  renderSection()
+
+  fireEvent.change(screen.getByRole('spinbutton', { name: 'Success weight' }), {
+    target: { value: '1.1' },
+  })
+  await user.click(screen.getByRole('button', { name: 'Save Changes' }))
+
+  expect(
+    await screen.findByText('Must be a number between 0 and 1')
+  ).toBeVisible()
+  expect(api.put).not.toHaveBeenCalled()
+})
 
 test('saving with nothing changed writes nothing', async () => {
   const user = userEvent.setup()

@@ -284,7 +284,7 @@ func TestAutoRouterDecisionReachesLogAdminInfo(t *testing.T) {
 		Route:         autorouter.Route{Profile: "code.build", Model: "sonnet-m", Effort: "xhigh"},
 		Source:        autorouter.SourceJev,
 		Preference:    autorouter.PreferenceBalanced,
-		Pick:          &autorouter.Pick{Chosen: "sonnet-m", Weight: 0.07},
+		Pick:          &autorouter.Pick{Chosen: "sonnet-m", Dimensions: autorouter.DimensionWeights{Cost: 0.07}},
 		EffortAction:  autorouter.EffortSet, AppliedEffort: "high",
 	}
 	c.Set(ginKeyAutoRouterResult, result)

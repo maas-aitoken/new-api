@@ -18,6 +18,7 @@ import (
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/observability"
 	"github.com/QuantumNous/new-api/pkg/attemptlog"
+	"github.com/QuantumNous/new-api/pkg/autorouter"
 	channelcapacity "github.com/QuantumNous/new-api/pkg/channel_capacity"
 	channelmetrics "github.com/QuantumNous/new-api/pkg/channel_metrics"
 	pluginruntime "github.com/QuantumNous/new-api/pkg/jsplugin"
@@ -330,6 +331,12 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			ModelPrice:      priceData.ModelPrice,
 			UsePrice:        priceData.UsePrice,
 		})
+		autoRoute := service.GetAutoRouterResult(c)
+		autoModel := ""
+		if common.GetContextKeyBool(c, constant.ContextKeyAutoRouted) && autoRoute != nil {
+			autoModel = autoRoute.Route.Model
+			autorouter.BeginModelRequest(autoModel)
+		}
 
 		// The closure keeps the in-flight counter balanced even when the relay
 		// panics, because the deferred decrement still runs while unwinding.
@@ -398,7 +405,15 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			common.GetContextKeyInt(c, constant.ContextKeySchedulerInputTokens),
 			common.GetContextKeyInt(c, constant.ContextKeySchedulerOutputTokens))
 
-		attempt.Finish(c, finishInputFor(c, relayInfo, newAPIError))
+		outcome := attempt.Finish(c, finishInputFor(c, relayInfo, newAPIError))
+		if autoModel != "" {
+			switch outcome {
+			case attemptlog.OutcomeClientCancelled, attemptlog.OutcomeInvalidRequest,
+				attemptlog.OutcomeContextLengthExceeded, attemptlog.OutcomeQuotaExhausted:
+			default:
+				autorouter.FinishModelRequest(autoModel, outcome == attemptlog.OutcomeOK)
+			}
+		}
 
 		if newAPIError == nil {
 			service.ResetChannelModelFailureConsecutive(channel.Id, relayInfo.OriginModelName)

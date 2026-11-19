@@ -97,8 +97,14 @@ export function JudgmentSection(props: JudgmentSectionProps) {
 
   const onSubmit = async (values: JudgmentValues) => {
     const updates = changedOptions(
-      { ...defaults, difficulty_efforts: JSON.stringify(defaults.difficulty_efforts) },
-      { ...values, difficulty_efforts: JSON.stringify(values.difficulty_efforts) }
+      {
+        ...defaults,
+        difficulty_efforts: JSON.stringify(defaults.difficulty_efforts),
+      },
+      {
+        ...values,
+        difficulty_efforts: JSON.stringify(values.difficulty_efforts),
+      }
     )
     if (updates.length === 0) {
       toast.info(t('No changes to save'))

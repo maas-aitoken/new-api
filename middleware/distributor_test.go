@@ -451,6 +451,11 @@ func setupAutoRoutingDistribute(t *testing.T, defaultModels []string, channels m
 	setting.TaskModels = map[string][]string{}
 	setting.DefaultModels = defaultModels
 	setting.DefaultEffort = "medium"
+	setting.PreferenceWeights = autorouter.PreferenceWeights{
+		autorouter.PreferenceCapability: {Quality: 1, Cost: 0},
+		autorouter.PreferenceBalanced:   {Quality: 0.93, Cost: 0.07},
+		autorouter.PreferenceCost:       {Quality: 0.7, Cost: 0.3},
+	}
 
 	t.Cleanup(func() {
 		*setting = saved
@@ -1007,12 +1012,15 @@ func TestDistributeAutoPicksByQualityAndUserPrice(t *testing.T) {
 	pool := map[int][]string{1: {"opus-x"}, 2: {"sonnet-x"}, 3: {"ghost-x"}}
 	body := `{"model":"auto","messages":[{"role":"user","content":"fix the bug"}]}`
 
-	t.Run("a leaf task type takes the cheaper of the close models and skips the unpriced one", func(t *testing.T) {
+	t.Run("a leaf task type compares every priced model and skips the unpriced one", func(t *testing.T) {
 		prepare(t, pool, []string{"opus-x"})
 		t.Setenv("JEV_ENDPOINT", fakeJevFor(t, "code.build"))
-		_, originalModel, recorder := serveAutoRoutingRequest(t, "/v1/chat/completions", 9801, body)
+		result, originalModel, recorder := serveAutoRoutingResult(t, 9801, body)
 		require.Equal(t, http.StatusNoContent, recorder.Code, recorder.Body.String())
 		assert.Equal(t, "sonnet-x", originalModel)
+		require.NotNil(t, result)
+		require.NotNil(t, result.Pick)
+		assert.Len(t, result.Pick.Band, 2)
 	})
 
 	t.Run("a key that prefers capability takes the best-scored priced model", func(t *testing.T) {
@@ -1116,15 +1124,18 @@ func TestDistributeAutoComparesThePlatformCost(t *testing.T) {
 		prepare(t, map[int][]string{1: {"pick-x"}, 2: {"alt-y"}})
 		result, originalModel, recorder := serveAutoRoutingResult(t, 9821, body)
 		require.Equal(t, http.StatusNoContent, recorder.Code, recorder.Body.String())
-		assert.Equal(t, "alt-y", originalModel, "without multipliers the user price decides")
+		assert.Equal(t, "alt-y", originalModel, "without multipliers the cheaper model has the higher cost score")
 
 		require.NoError(t, model.SetChannelModelCostMultiplier(1, "pick-x", 0.25))
 		result, originalModel, recorder = serveAutoRoutingResult(t, 9822, body)
 		require.Equal(t, http.StatusNoContent, recorder.Code, recorder.Body.String())
 		assert.Equal(t, "pick-x", originalModel, "8 × 0.25 = 2 is below alt-y's 4")
 		band := bandOf(result)
-		assert.Equal(t, autorouter.Candidate{Model: "pick-x", Score: 0.97, Price: 8, CostMultiplier: 0.25, Cost: 2, ChannelID: 1, Channels: 1,
-			CostSource: autorouter.CostSourceExpected, Discount: 0, Utility: 0.97}, band["pick-x"])
+		assert.Equal(t, "pick-x", band["pick-x"].Model)
+		assert.Equal(t, 8.0, band["pick-x"].Price)
+		assert.Equal(t, 2.0, band["pick-x"].Cost)
+		assert.Equal(t, 1.0, band["pick-x"].CostScore)
+		assert.Equal(t, autorouter.CostSourceExpected, band["pick-x"].CostSource)
 		assert.Equal(t, 1.0, band["alt-y"].CostMultiplier, "an unconfigured channel counts as 1")
 	})
 
@@ -1264,8 +1275,12 @@ func TestDistributeAutoAsksTheSchedulerPreviewWhenItDecides(t *testing.T) {
 		previewChannel["pick-x"] = 1
 		result, originalModel, recorder := serveAutoRoutingResult(t, 9831, body)
 		require.Equal(t, http.StatusNoContent, recorder.Code, recorder.Body.String())
-		assert.Equal(t, autorouter.Candidate{Model: "pick-x", Score: 0.97, Price: 8, CostMultiplier: 0.25, Cost: 2, ChannelID: 1, Channels: 1,
-			CostSource: autorouter.CostSourceScheduler, Discount: 0, Utility: 0.97}, pickOf(t, result))
+		pick := pickOf(t, result)
+		assert.Equal(t, "pick-x", pick.Model)
+		assert.Equal(t, 8.0, pick.Price)
+		assert.Equal(t, 2.0, pick.Cost)
+		assert.Equal(t, 1.0, pick.CostScore)
+		assert.Equal(t, autorouter.CostSourceScheduler, pick.CostSource)
 		assert.Equal(t, "pick-x", originalModel)
 		assert.Equal(t, []int{1, 2}, allowed["pick-x"], "the preview gets the same channel scope as the real schedule")
 		assert.Equal(t, []string{"code.build", "code.build"}, workloads, "preview and schedule carry the same workload")
@@ -1275,7 +1290,7 @@ func TestDistributeAutoAsksTheSchedulerPreviewWhenItDecides(t *testing.T) {
 		previewChannel["pick-x"] = 2
 		result, _, recorder = serveAutoRoutingResult(t, 9832, body)
 		require.Equal(t, http.StatusNoContent, recorder.Code, recorder.Body.String())
-		pick := pickOf(t, result)
+		pick = pickOf(t, result)
 		assert.Equal(t, 1.0, pick.CostMultiplier, "the scheduler would pick channel 2, which has no discount")
 		assert.Equal(t, 2, pick.ChannelID)
 	})

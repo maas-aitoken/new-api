@@ -71,9 +71,7 @@ function renderViewer() {
   })
   render(
     <QueryClientProvider client={client}>
-      <RankingViewer
-        costWeights={{ capability: 0, balanced: 0.07, cost: 0.3 }}
-      />
+      <RankingViewer />
     </QueryClientProvider>
   )
 }
@@ -261,8 +259,7 @@ test('adding a model takes the scores of a reference model plus the offset in th
   await user.clear(offset)
   await user.type(offset, '-0.1')
 
-  // 0.9734 - 0.1 = 0.8734，比网关上最好的 gpt-6.1-terra（0.9）低 0.0266：
-  // 在均衡和成本优先的候选带里，不在能力优先（权重 0）的候选带里。
+  // 0.9734 - 0.1 = 0.8734，比网关上最好的 gpt-6.1-terra（0.9）低 0.0266。
   expect(
     within(dialog).getByRole('textbox', { name: 'Score in code.build' })
   ).toHaveValue('0.8734')
@@ -275,10 +272,9 @@ test('adding a model takes the scores of a reference model plus the offset in th
   expect(
     within(dialog).getByText('0.0266 below the best on the gateway')
   ).toBeVisible()
-  expect(within(dialog).getByText('Balanced')).toBeVisible()
-  expect(within(dialog).getByText('Cost first')).toBeVisible()
-  expect(within(dialog).queryByText('Capability first')).not.toBeInTheDocument()
-
+  expect(
+    within(dialog).queryByText(/A preference compares the models/)
+  ).not.toBeInTheDocument()
   await user.click(
     within(dialog).getByRole('button', { name: 'Add to 1 profiles' })
   )

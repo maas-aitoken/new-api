@@ -38,20 +38,13 @@ function ProcessStep(props: {
       return trace?.validity ? <ValidityStep validity={trace.validity} /> : null
     case 'continuation':
       return trace?.continuation ? (
-        <ContinuationStep
-          continuation={trace.continuation}
-          pressure={trace.previous_pressure}
-        />
+        <ContinuationStep continuation={trace.continuation} />
       ) : null
     case 'mode':
       return trace?.mode ? <ModeStep mode={trace.mode} /> : null
     case 'selection':
       return trace?.ladder ? (
-        <SelectionStep
-          ladder={trace.ladder}
-          pick={result?.pick}
-          pressure={trace.continuation ? undefined : trace.previous_pressure}
-        />
+        <SelectionStep ladder={trace.ladder} pick={result?.pick} />
       ) : null
     case 'effort':
       return trace?.effort ? (

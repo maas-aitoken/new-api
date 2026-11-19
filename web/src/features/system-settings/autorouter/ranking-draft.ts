@@ -16,9 +16,6 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { AUTO_PREFERENCES } from '@/features/keys/lib'
-
-import type { AutoPreference, CostWeights } from './settings'
 import type {
   AutoRouterRankedModel,
   AutoRouterRankedProfile,
@@ -49,7 +46,7 @@ export function parseScore(text: string): number | null | undefined {
 /**
  * The order an edited list is saved in: scored models by score, highest first
  * (ties keep their order), then models without a score in the order the admin
- * set. The router compares scored models by score and price; the order only
+ * set. The router compares quality, cost, capacity and success; the order only
  * decides when that comparison picks nothing, which is when unscored models are
  * tried.
  */
@@ -174,27 +171,6 @@ export function topServedScore(
     top = top === null ? entry.score : Math.max(top, entry.score)
   }
   return top
-}
-
-/**
- * The fixed preferences whose comparison a model with this score could enter:
- * the router compares the models within the preference's cost weight of the
- * best score it can use. Only the gateway's served models count, and prices,
- * allowlists and groups are left out, so this is an estimate.
- */
-export function reachablePreferences(
-  list: AutoRouterRankedModel[],
-  model: string,
-  score: number,
-  weights: CostWeights
-): AutoPreference[] {
-  const top = topServedScore(list, model)
-  if (top === null || score >= top) return [...AUTO_PREFERENCES]
-  return AUTO_PREFERENCES.filter((preference) => {
-    // 与后端一样把权重限制在 [0, 1]：库里被直接改坏的值不能让估算失真。
-    const weight = Math.min(Math.max(weights[preference], 0), 1)
-    return score >= top - weight
-  })
 }
 
 /** The profiles whose list differs from the loaded ranking, in profile order. */

@@ -69,15 +69,15 @@ type FinishInput struct {
 
 // Finish closes the attempt, classifies its outcome, and enqueues the record.
 // It is safe to call on a nil Attempt, and it is idempotent.
-func (a *Attempt) Finish(c *gin.Context, in FinishInput) {
+func (a *Attempt) Finish(c *gin.Context, in FinishInput) string {
 	if a == nil {
-		return
+		return ""
 	}
 
 	a.mu.Lock()
 	if a.finished {
 		a.mu.Unlock()
-		return
+		return ""
 	}
 	a.finished = true
 
@@ -101,6 +101,10 @@ func (a *Attempt) Finish(c *gin.Context, in FinishInput) {
 	}
 
 	outcome := Classify(classifyIn)
+	if !a.active {
+		a.mu.Unlock()
+		return outcome
+	}
 	record := a.buildRecord(c, in, classifyIn, outcome, httpStatus, endTime, firstTokenTime)
 	a.mu.Unlock()
 
@@ -108,6 +112,7 @@ func (a *Attempt) Finish(c *gin.Context, in FinishInput) {
 		common.SetContextKey(c, constant.ContextKeyRelayAttempt, nil)
 	}
 	enqueue(record)
+	return outcome
 }
 
 // resolveFirstTokenTime decides when this attempt produced its first token.
