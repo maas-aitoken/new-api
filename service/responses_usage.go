@@ -144,10 +144,22 @@ func ObserveResponsesOutcome(info *relaycommon.RelayInfo, event *dto.ResponsesSt
 			reason = event.Response.IncompleteDetails.Reason
 		}
 		info.StreamStatus.MarkIncomplete(reason)
+		MarkResponsesContentFilter(info, event.Response)
 	case event.Type == "response.cancelled" || event.Type == "response.canceled" || responseStatus == "cancelled":
 		info.StreamStatus.MarkCancelled()
 	case event.Type == "response.completed" || event.Type == "response.done" || responseStatus == "completed":
 		info.StreamStatus.MarkCompleted()
+	}
+}
+
+// MarkResponsesContentFilter 把 Responses 因内容过滤没写完（incomplete_details.reason=content_filter）
+// 记成上游拒答，和 Chat 的 finish_reason=content_filter 同一口径。要在写给客户端之前调用。
+func MarkResponsesContentFilter(info *relaycommon.RelayInfo, response *dto.OpenAIResponsesResponse) {
+	if info == nil || response == nil || response.IncompleteDetails == nil {
+		return
+	}
+	if response.IncompleteDetails.Reason == "content_filter" {
+		info.PerformanceBusinessRejection = true
 	}
 }
 
