@@ -16,169 +16,24 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import type { TFunction } from 'i18next'
 import { ListOrdered } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
-import {
-  StaticDataTable,
-  staticDataTableClassNames as tableStyles,
-  type StaticDataTableColumn,
-} from '@/components/data-table'
-import { formatBillingCurrencyFromUSD } from '@/lib/currency'
-import { cn } from '@/lib/utils'
+import { formatScore, ladderOutcomeLabel, skipReasonLabel } from './labels'
+import { PickTable } from './pick-table'
+import { routePickSchema, type RoutePresentationSchema } from './presentation'
+import { StepFrame } from './route-process-parts'
+import type {
+  RouteLogTruncation,
+  RoutePick,
+  RoutePreviousPressure,
+  RouteTraceStep,
+} from './types'
 
-import {
-  formatScore,
-  ladderOutcomeLabel,
-  previewNoteLabel,
-  previewOutcomeLabel,
-  skipReasonLabel,
-} from './labels'
-import { StepFrame, ToneBadge } from './route-process-parts'
-import type { RoutePick, RoutePickCandidate, RouteTraceStep } from './types'
-
-const priceFormat = { digitsLarge: 4, digitsSmall: 6, abbreviate: false }
-
-function costSourceLabel(t: TFunction, row: RoutePickCandidate): string {
-  switch (row.cost_source) {
-    case 'scheduler':
-      return t('Scheduler picks channel #{{id}}', { id: row.channel_id })
-    case 'affinity':
-      return t('Session bound to channel #{{id}}', { id: row.channel_id })
-    default:
-      if (row.channel_id) {
-        return t('Only channel #{{id}}', { id: row.channel_id })
-      }
-      return t('Expected over {{count}} channels', { count: row.channels ?? 0 })
-  }
-}
-
-function scoreColumn(
-  id: keyof RoutePickCandidate,
-  header: string
-): StaticDataTableColumn<RoutePickCandidate> {
-  return {
-    id,
-    header,
-    className: 'h-9 text-right',
-    cellClassName: tableStyles.topNumericCell,
-    cell: (row) => formatScore(Number(row[id] ?? 0)),
-  }
-}
-
-/** Every candidate's four dimensions, weighted utility and sampling probability. */
-export function PickTable(props: { pick: RoutePick }) {
-  const { t } = useTranslation()
-  const comparesCost = props.pick.band.some(
-    (row) => (row.cost_multiplier ?? 0) > 0
-  )
-  const previewOutcome = previewOutcomeLabel(t, props.pick.preview)
-  const columns: StaticDataTableColumn<RoutePickCandidate>[] = [
-    {
-      id: 'model',
-      header: t('Model'),
-      className: 'h-9',
-      cellClassName: 'py-2',
-      cell: (row) => (
-        <div className='flex flex-wrap items-center gap-1.5'>
-          <span className='font-mono'>{row.model}</span>
-          {row.model === props.pick.chosen && (
-            <ToneBadge tone='success' label={t('Chosen')} />
-          )}
-        </div>
-      ),
-    },
-    scoreColumn('score', t('Quality')),
-    {
-      id: 'price',
-      header: t('Price per million tokens'),
-      className: 'h-9 text-right',
-      cellClassName: tableStyles.topNumericCell,
-      cell: (row) => formatBillingCurrencyFromUSD(row.price, priceFormat),
-    },
-    ...(comparesCost
-      ? [
-          {
-            id: 'cost_multiplier',
-            header: t('Cost multiplier'),
-            className: 'h-9 text-right',
-            cellClassName: tableStyles.topNumericCell,
-            cell: (row: RoutePickCandidate) =>
-              row.cost_multiplier ? (
-                <div className='flex flex-col items-end'>
-                  <span>× {formatScore(row.cost_multiplier)}</span>
-                  <span className='text-muted-foreground text-xs font-normal'>
-                    {costSourceLabel(t, row)}
-                  </span>
-                  {row.preview && (
-                    <span className='text-muted-foreground text-xs font-normal'>
-                      {previewNoteLabel(t, row.preview)}
-                    </span>
-                  )}
-                </div>
-              ) : (
-                '-'
-              ),
-          },
-          {
-            id: 'cost',
-            header: t('Compared cost'),
-            className: 'h-9 text-right',
-            cellClassName: tableStyles.topNumericCell,
-            cell: (row: RoutePickCandidate) =>
-              formatBillingCurrencyFromUSD(
-                row.cost_multiplier ? (row.cost ?? 0) : row.price,
-                priceFormat
-              ),
-          },
-        ]
-      : []),
-    scoreColumn('cost_score', t('Cost score')),
-    scoreColumn('capacity', t('Capacity')),
-    scoreColumn('success', t('Success')),
-    {
-      ...scoreColumn('utility', t('Utility')),
-      cellClassName: cn(tableStyles.topNumericCell, 'font-semibold'),
-    },
-    scoreColumn('probability', t('Probability')),
-  ]
-
-  return (
-    <div className='space-y-1'>
-      <p className='text-muted-foreground text-xs'>
-        {t(
-          'Quality {{quality}}, cost {{cost}}, capacity {{capacity}} and success {{success}}; sampling temperature {{temperature}}.',
-          {
-            quality: formatScore(props.pick.dimensions.quality),
-            cost: formatScore(props.pick.dimensions.cost),
-            capacity: formatScore(props.pick.dimensions.capacity),
-            success: formatScore(props.pick.dimensions.success),
-            temperature: formatScore(props.pick.dimensions.temperature),
-          }
-        )}
-        {comparesCost
-          ? ` ${t('The cost multiplier never changes what the user is billed.')}`
-          : null}
-      </p>
-      {previewOutcome && (
-        <p className='text-muted-foreground text-xs'>{previewOutcome}</p>
-      )}
-      <StaticDataTable
-        className={tableStyles.sectionContainer}
-        headerRowClassName={tableStyles.mutedHeaderRow}
-        columns={columns}
-        data={props.pick.band}
-        getRowKey={(row) => row.model}
-        getRowClassName={(row) =>
-          cn(row.model === props.pick.chosen && 'bg-success/10')
-        }
-      />
-    </div>
-  )
-}
-
-function StepSummary(props: { step: RouteTraceStep }) {
+function StepSummary(props: {
+  step: RouteTraceStep
+  schema: RoutePresentationSchema
+}) {
   const { t } = useTranslation()
   const step = props.step
   const profile = step.profile || t('Default models')
@@ -193,7 +48,7 @@ function StepSummary(props: { step: RouteTraceStep }) {
           </span>
         ) : null}
         <span className='text-muted-foreground'>
-          {ladderOutcomeLabel(t, step.outcome)}
+          {ladderOutcomeLabel(t, step.outcome, props.schema)}
         </span>
         {step.model && (
           <span className='text-success font-mono font-medium'>
@@ -201,13 +56,12 @@ function StepSummary(props: { step: RouteTraceStep }) {
           </span>
         )}
       </div>
-      {step.skipped && step.skipped.length > 0 && (
+      {((step.skipped?.length ?? 0) > 0 || (step.skipped_more ?? 0) > 0) && (
         <ul className='text-muted-foreground space-y-0.5 ps-3 text-xs'>
-          {step.skipped.map((skipped) => (
+          {step.skipped?.map((skipped) => (
             <li key={skipped.model}>
               <span className='font-mono'>{skipped.model}</span> (
-              {formatScore(skipped.score)}):{' '}
-              {skipReasonLabel(t, skipped.reason)}
+              {formatScore(skipped.score)}): {skipReasonLabel(t, skipped.reason)}
             </li>
           ))}
           {step.skipped_more ? (
@@ -223,11 +77,14 @@ function StepSummary(props: { step: RouteTraceStep }) {
 export function SelectionStep(props: {
   ladder: RouteTraceStep[]
   pick?: RoutePick
+  pressure?: RoutePreviousPressure
+  truncated?: RouteLogTruncation
 }) {
   const { t } = useTranslation()
   const compared = props.ladder.find(
     (step) => step.outcome === 'compared' && step.model === props.pick?.chosen
   )
+  const schema = props.pick ? routePickSchema(props.pick) : 'partial'
   const seen = new Map<string, number>()
   const rows = props.ladder.map((step) => {
     const name = step.profile ?? 'default'
@@ -238,11 +95,30 @@ export function SelectionStep(props: {
 
   return (
     <StepFrame icon={ListOrdered} title={t('Model selection')}>
+      {props.pressure && !props.pressure.reused && (
+        <p className='text-muted-foreground text-xs'>
+          {t(
+            'Previous model {{model}} was not reused: pool pressure {{value}} exceeds the knee {{knee}}.',
+            {
+              model: props.pressure.model,
+              value: formatScore(props.pressure.pressure),
+              knee: formatScore(props.pressure.knee),
+            }
+          )}
+        </p>
+      )}
+      {props.pressure?.reused && (
+        <p className='text-muted-foreground text-xs'>
+          {t('Previous model {{model}} is within the no-premium knee.', {
+            model: props.pressure.model,
+          })}
+        </p>
+      )}
       {rows.map((row) => (
         <div key={row.key} className='space-y-2'>
-          <StepSummary step={row.step} />
+          <StepSummary step={row.step} schema={schema} />
           {row.step === compared && props.pick && (
-            <PickTable pick={props.pick} />
+            <PickTable pick={props.pick} truncated={props.truncated} />
           )}
         </div>
       ))}
