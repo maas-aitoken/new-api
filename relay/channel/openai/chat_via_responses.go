@@ -42,6 +42,7 @@ func OaiResponsesToChatHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 	}
 
 	info.ObserveResponseModel(responsesResp.Model)
+	service.MarkResponsesContentFilter(info, &responsesResp)
 	responseValue, usage, err := convertResponsesResponseForClient(c, info, &responsesResp)
 	if err != nil {
 		return nil, types.NewOpenAIError(err, types.ErrorCodeBadResponseBody, http.StatusInternalServerError)
@@ -278,6 +279,7 @@ func OaiResponsesToChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo
 
 		if streamResp.Response != nil {
 			info.ObserveResponseModel(streamResp.Response.Model)
+			service.MarkResponsesContentFilter(info, streamResp.Response)
 		}
 		if streamResp.Type == "response.error" || streamResp.Type == "response.failed" {
 			upstreamFailed = true

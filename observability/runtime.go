@@ -151,6 +151,10 @@ type traceState struct {
 	// streamAgg rebuilds the answer of a streamed response. It is chosen from
 	// the first recognized frame and owns every frame after that.
 	streamAgg streamAggregator
+
+	// billedUsage 跨尝试累计每次按用量结算的数值：被改判的拒答尝试也各扣一次费，
+	// 请求级 span 上的 usage/quota 要等于整单的真实扣费，而不是被最后一次覆盖。
+	billedUsage usageTotals
 }
 
 // BillingCostDetails describes the gateway-side USD amount associated with a
@@ -161,6 +165,47 @@ type BillingCostDetails struct {
 	InputUSD  *float64
 	OutputUSD *float64
 	TotalUSD  float64
+}
+
+// usageTotals 是跨尝试累计的结算数值。美元的 input/output 拆分只在提供了它的
+// 尝试之间累计，没有拆分的尝试只并进 total。
+type usageTotals struct {
+	promptTokens     int
+	completionTokens int
+	totalTokens      int
+	quota            int
+	costTotalUSD     float64
+	costInputUSD     float64
+	costOutputUSD    float64
+	costInputSeen    bool
+	costOutputSeen   bool
+}
+
+func (t *usageTotals) add(promptTokens, completionTokens, totalTokens, quota int, costs *BillingCostDetails) {
+	t.promptTokens += promptTokens
+	t.completionTokens += completionTokens
+	t.totalTokens += totalTokens
+	t.quota += quota
+	if costs == nil {
+		return
+	}
+	t.costTotalUSD += costs.TotalUSD
+	if costs.InputUSD != nil {
+		t.costInputUSD += *costs.InputUSD
+		t.costInputSeen = true
+	}
+	if costs.OutputUSD != nil {
+		t.costOutputUSD += *costs.OutputUSD
+		t.costOutputSeen = true
+	}
+}
+
+// addBilledUsage 把这次结算并进跨尝试累计，返回包含这次的累计值。
+func (s *traceState) addBilledUsage(promptTokens, completionTokens, totalTokens, quota int, costs *BillingCostDetails) usageTotals {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.billedUsage.add(promptTokens, completionTokens, totalTokens, quota, costs)
+	return s.billedUsage
 }
 
 func NewFromEnv() (*Runtime, error) {
@@ -354,6 +399,16 @@ func (r *Runtime) StartAttempt(ctx context.Context) (context.Context, trace.Span
 	if !r.Enabled() {
 		return ctx, trace.SpanFromContext(ctx)
 	}
+	// 每次尝试开始时丢掉上一次尝试留下的输出采集：重试常换上游协议，第一个识别到的
+	// 帧选定的流聚合器解析不了后续协议的帧，输出会停在失败那次的内容；被压住没发给
+	// 客户端的拒答也不该留在请求级 span 里。输入采集在每次 RecordInput 时本来就会覆盖。
+	if state := stateFromContext(ctx); state != nil {
+		state.mu.Lock()
+		state.output.Reset()
+		state.outputTrunc = false
+		state.streamAgg = nil
+		state.mu.Unlock()
+	}
 	ctx, span := r.tracer.Start(ctx, relayAttemptSpanName, trace.WithSpanKind(trace.SpanKindInternal))
 	setSessionID(span, sessionIDFromContext(ctx))
 	return context.WithValue(ctx, attemptContextKey{}, &attemptState{started: time.Now()}), span
@@ -474,11 +529,20 @@ func (r *Runtime) recordUsage(ctx context.Context, promptTokens, completionToken
 	if costs != nil && !validBillingCostDetails(costs) {
 		costs = nil
 	}
+	// 每次按用量结算都并进同一份累计：被改判的拒答尝试也各扣一次费，span 上的
+	// usage/quota 是整单的真实扣费，而不是被最后一次覆盖。model_price 仍取本次的，
+	// 它描述的是当前模型的价格。没有请求级状态（如 WebSocket 流量）时退回单次值。
+	var billed usageTotals
+	if state := stateFromContext(ctx); state != nil {
+		billed = state.addBilledUsage(promptTokens, completionTokens, totalTokens, quota, costs)
+	} else {
+		billed.add(promptTokens, completionTokens, totalTokens, quota, costs)
+	}
 	span.SetAttributes(
-		attribute.Int("gen_ai.usage.input_tokens", promptTokens),
-		attribute.Int("gen_ai.usage.output_tokens", completionTokens),
-		attribute.Int("gen_ai.usage.total_tokens", totalTokens),
-		attribute.Int("new_api.billing.quota", quota),
+		attribute.Int("gen_ai.usage.input_tokens", billed.promptTokens),
+		attribute.Int("gen_ai.usage.output_tokens", billed.completionTokens),
+		attribute.Int("gen_ai.usage.total_tokens", billed.totalTokens),
+		attribute.Int("new_api.billing.quota", billed.quota),
 		attribute.Float64("new_api.billing.model_price", modelPrice),
 		attribute.Bool("new_api.billing.use_price", usePrice),
 	)
@@ -486,23 +550,23 @@ func (r *Runtime) recordUsage(ctx context.Context, promptTokens, completionToken
 		span.SetAttributes(
 			attribute.String("new_api.billing.cost_semantics", "gateway_charge_usd"),
 		)
-		costDetails := map[string]float64{"total": costs.TotalUSD}
-		if costs.InputUSD != nil {
-			costDetails["input"] = *costs.InputUSD
+		costDetails := map[string]float64{"total": billed.costTotalUSD}
+		if billed.costInputSeen {
+			costDetails["input"] = billed.costInputUSD
 		}
-		if costs.OutputUSD != nil {
-			costDetails["output"] = *costs.OutputUSD
+		if billed.costOutputSeen {
+			costDetails["output"] = billed.costOutputUSD
 		}
 		if cost, err := common.Marshal(costDetails); err == nil {
 			span.SetAttributes(attribute.String("langfuse.observation.cost_details", string(cost)))
 		}
-	} else if quota > 0 && common.QuotaPerUnit > 0 && !math.IsNaN(common.QuotaPerUnit) && !math.IsInf(common.QuotaPerUnit, 0) {
+	} else if billed.quota > 0 && common.QuotaPerUnit > 0 && !math.IsNaN(common.QuotaPerUnit) && !math.IsInf(common.QuotaPerUnit, 0) {
 		span.SetAttributes(attribute.String("new_api.billing.cost_semantics", "gateway_charge_usd"))
 		// The settled quota is the only value that includes group, request,
 		// tool, cache, and other multipliers consistently across billing modes.
 		// Keep a total-only fallback for callers that do not have a reliable
 		// input/output decomposition.
-		if cost, err := common.Marshal(map[string]float64{"total": float64(quota) / common.QuotaPerUnit}); err == nil {
+		if cost, err := common.Marshal(map[string]float64{"total": float64(billed.quota) / common.QuotaPerUnit}); err == nil {
 			span.SetAttributes(attribute.String("langfuse.observation.cost_details", string(cost)))
 		}
 	}

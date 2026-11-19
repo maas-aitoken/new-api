@@ -35,7 +35,6 @@ import {
   type FactRow,
 } from './route-process-parts'
 import type {
-  RoutePreviousPressure,
   RouteTraceContinuation,
   RouteTraceMode,
   RouteTraceValidity,
@@ -67,17 +66,10 @@ export function ValidityStep(props: { validity: RouteTraceValidity }) {
 
 function continuationVerdict(
   t: (key: string) => string,
-  continuation: RouteTraceContinuation,
-  pressure?: RoutePreviousPressure
+  continuation: RouteTraceContinuation
 ): { tone: RouteTone; label: string } {
   if (continuation.continued) {
     return { tone: 'success', label: t('Continued the previous task') }
-  }
-  if (pressure && !pressure.reused) {
-    return {
-      tone: 'warning',
-      label: t('Compared again because the pool is busy'),
-    }
   }
   if (continuation.task_change >= continuation.threshold) {
     return { tone: 'info', label: t('A new task') }
@@ -87,11 +79,10 @@ function continuationVerdict(
 
 export function ContinuationStep(props: {
   continuation: RouteTraceContinuation
-  pressure?: RoutePreviousPressure
 }) {
   const { t } = useTranslation()
   const continuation = props.continuation
-  const verdict = continuationVerdict(t, continuation, props.pressure)
+  const verdict = continuationVerdict(t, continuation)
 
   return (
     <StepFrame icon={GitCompareArrows} title={t('Continuation check')}>
@@ -111,24 +102,13 @@ export function ContinuationStep(props: {
               threshold: formatScore(continuation.threshold),
             }),
           ],
-          ...(props.pressure
-            ? [
-                [
-                  t('Pool pressure'),
-                  t('{{value}} against a knee of {{knee}}', {
-                    value: formatScore(props.pressure.pressure),
-                    knee: formatScore(props.pressure.knee),
-                  }),
-                ] as FactRow,
-              ]
-            : []),
         ]}
       />
     </StepFrame>
   )
 }
 
-/** How an adaptive request got the cost weight its quality and price comparison used. */
+/** How an adaptive request got its policy for the four-dimensional comparison. */
 export function ModeStep(props: { mode: RouteTraceMode }) {
   const { t } = useTranslation()
   const mode = props.mode
@@ -137,17 +117,32 @@ export function ModeStep(props: { mode: RouteTraceMode }) {
     (preference) =>
       `${preferenceLabel(t, preference)} ${formatScore(mode.shares?.[preference] ?? 0)}`
   )
-  const tiers = AUTO_PREFERENCES.map(
-    (preference) =>
-      `${preferenceLabel(t, preference)} ${formatScore(mode.tiers[preference])}`
-  )
-  const facts: FactRow[] = [[t('Cost weight'), formatScore(mode.weight)]]
+  const tiers = AUTO_PREFERENCES.map((preference) => {
+    const weights = mode.tiers[preference]
+    return `${preferenceLabel(t, preference)} ${t(
+      'Quality {{quality}}, cost {{cost}}, capacity {{capacity}} and success {{success}}; sampling temperature {{temperature}}.',
+      {
+        quality: formatScore(weights.quality),
+        cost: formatScore(weights.cost),
+        capacity: formatScore(weights.capacity),
+        success: formatScore(weights.success),
+        temperature: formatScore(weights.temperature),
+      }
+    )}`
+  })
+  const facts: FactRow[] = [
+    [t('Quality weight'), formatScore(mode.weights.quality)],
+    [t('Cost weight'), formatScore(mode.weights.cost)],
+    [t('Capacity weight'), formatScore(mode.weights.capacity)],
+    [t('Success weight'), formatScore(mode.weights.success)],
+    [t('Sampling temperature'), formatScore(mode.weights.temperature)],
+  ]
   if (judged) {
     facts.unshift([t('Expected position'), formatScore(mode.position)])
   }
 
   return (
-    <StepFrame icon={Scale} title={t('Cost preference')}>
+    <StepFrame icon={Scale} title={t('Routing weights')}>
       <ToneBadge
         tone={judged ? 'success' : 'warning'}
         label={judged ? t('Judged from the request') : t('No usable judgment')}
@@ -162,16 +157,16 @@ export function ModeStep(props: { mode: RouteTraceMode }) {
       )}
       <Facts rows={facts} />
       <p className='text-muted-foreground text-xs'>
-        {t('Platform cost weights')}
+        {t('Platform preference policies')}
       </p>
       <Chips items={tiers} />
       <p className='text-muted-foreground text-xs'>
         {judged
           ? t(
-              'The expected position runs from 0 (capability first) through 1 (balanced) to 2 (cost first), and the cost weight is read from it along the line through the three platform weights.'
+              'The expected position runs from 0 (capability first) through 1 (balanced) to 2 (cost first). The four strengths and sampling temperature are read along the line through the three preference policies. The strengths are then normalized to sum to one; temperature remains independent.'
             )
           : t(
-              'The classifier gave no usable answer on cost, so the balanced weight applies.'
+              'The classifier gave no usable answer, so the balanced policy applies.'
             )}
       </p>
     </StepFrame>

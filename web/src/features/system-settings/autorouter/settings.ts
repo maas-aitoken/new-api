@@ -55,9 +55,15 @@ export function fractionBetween(t: TFunction) {
   return z.number().min(0, message).max(1, message)
 }
 
-/** A preference that carries a cost weight of its own. */
 export type AutoPreference = (typeof AUTO_PREFERENCES)[number]
-export type CostWeights = Record<AutoPreference, number>
+export type RoutingWeights = {
+  quality: number
+  cost: number
+  capacity: number
+  success: number
+  temperature: number
+}
+export type PreferenceWeights = Record<AutoPreference, RoutingWeights>
 /** What the platform default can be: a weighted preference, or deciding per request. */
 export type SelectableAutoPreference =
   (typeof SELECTABLE_AUTO_PREFERENCES)[number]
@@ -76,15 +82,33 @@ export const AUTO_ROUTER_EFFORTS: readonly string[] = [
 /** The judge scores difficulty on four rungs: simple, moderate, complex, very complex. */
 export const DIFFICULTY_RUNGS = 4
 
-/** The weights the router uses for a preference the option leaves out. */
-export const DEFAULT_COST_WEIGHTS: CostWeights = {
-  capability: 0,
-  balanced: 0.07,
-  cost: 0.3,
+/** The policy the router uses for a preference the option leaves out. */
+export const DEFAULT_PREFERENCE_WEIGHTS: PreferenceWeights = {
+  capability: {
+    quality: 0.6,
+    cost: 0,
+    capacity: 0.2,
+    success: 0.2,
+    temperature: 0.12,
+  },
+  balanced: {
+    quality: 0.4,
+    cost: 0.2,
+    capacity: 0.2,
+    success: 0.2,
+    temperature: 0.12,
+  },
+  cost: {
+    quality: 0.2,
+    cost: 0.4,
+    capacity: 0.2,
+    success: 0.2,
+    temperature: 0.12,
+  },
 }
 
-/** Reads the stored cost_weights JSON; a missing or malformed entry keeps its default. */
-export function parseCostWeights(raw: string): CostWeights {
+/** Reads the stored preference_weights JSON; invalid dimensions keep their defaults. */
+export function parsePreferenceWeights(raw: string): PreferenceWeights {
   let stored: Record<string, unknown> = {}
   try {
     const parsed: unknown = JSON.parse(raw)
@@ -94,83 +118,34 @@ export function parseCostWeights(raw: string): CostWeights {
   } catch {
     /* A malformed value falls back to the defaults. */
   }
-  const weights = { ...DEFAULT_COST_WEIGHTS }
+  const weights: PreferenceWeights = {
+    capability: { ...DEFAULT_PREFERENCE_WEIGHTS.capability },
+    balanced: { ...DEFAULT_PREFERENCE_WEIGHTS.balanced },
+    cost: { ...DEFAULT_PREFERENCE_WEIGHTS.cost },
+  }
   for (const preference of AUTO_PREFERENCES) {
-    const value = stored[preference]
-    if (typeof value === 'number' && Number.isFinite(value)) {
-      weights[preference] = value
+    const entry = stored[preference]
+    if (typeof entry !== 'object' || entry === null) continue
+    for (const dimension of [
+      'quality',
+      'cost',
+      'capacity',
+      'success',
+      'temperature',
+    ] as const) {
+      const value = (entry as Record<string, unknown>)[dimension]
+      if (typeof value === 'number' && Number.isFinite(value)) {
+        weights[preference][dimension] = value
+      }
     }
   }
   return weights
 }
 
-/** The stored form of the weights, always with every preference in a fixed order. */
-export function serializeCostWeights(weights: CostWeights): string {
-  return JSON.stringify(
-    Object.fromEntries(
-      AUTO_PREFERENCES.map((preference) => [preference, weights[preference]])
-    )
-  )
+/** The stored form of every preference's policy, in a fixed order. */
+export function serializePreferenceWeights(weights: PreferenceWeights): string {
+  return JSON.stringify(weights)
 }
-
-/** How busy a pool makes a model cost more, mirroring autorouter_setting.capacity_pricing. */
-export type CapacityPricing = {
-  enabled: boolean
-  knee: number
-  gamma: number
-  max_multiplier: number
-  saturated_multiplier: number
-  cache_seconds: number
-  smoothing_seconds: number
-}
-
-/** The curve the router uses for parameters the option leaves out. */
-export const DEFAULT_CAPACITY_PRICING: CapacityPricing = {
-  enabled: true,
-  knee: 0.5,
-  gamma: 1,
-  max_multiplier: 20,
-  saturated_multiplier: 100,
-  cache_seconds: 5,
-  smoothing_seconds: 30,
-}
-
-const CAPACITY_PRICING_KEYS = Object.keys(
-  DEFAULT_CAPACITY_PRICING
-) as (keyof CapacityPricing)[]
-
-/** Reads the stored capacity_pricing JSON; a missing or malformed entry keeps its default. */
-export function parseCapacityPricing(raw: string): CapacityPricing {
-  let stored: Record<string, unknown> = {}
-  try {
-    const parsed: unknown = JSON.parse(raw)
-    if (typeof parsed === 'object' && parsed !== null) {
-      stored = parsed as Record<string, unknown>
-    }
-  } catch {
-    /* A malformed value falls back to the defaults. */
-  }
-  const pricing = { ...DEFAULT_CAPACITY_PRICING }
-  for (const key of CAPACITY_PRICING_KEYS) {
-    const value = stored[key]
-    if (key === 'enabled') {
-      if (typeof value === 'boolean') pricing.enabled = value
-      continue
-    }
-    if (typeof value === 'number' && Number.isFinite(value)) {
-      pricing[key] = value
-    }
-  }
-  return pricing
-}
-
-/** The stored form of the curve, always with every parameter in a fixed order. */
-export function serializeCapacityPricing(pricing: CapacityPricing): string {
-  return JSON.stringify(
-    Object.fromEntries(CAPACITY_PRICING_KEYS.map((key) => [key, pricing[key]]))
-  )
-}
-
 /**
  * One effort per difficulty rung, the way the router reads the list: a rung past
  * the end reuses the last entry, and an unknown effort counts as medium.

@@ -3,6 +3,7 @@ package helper
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -15,6 +16,8 @@ import (
 
 	"github.com/QuantumNous/new-api/constant"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	"github.com/QuantumNous/new-api/relaykit/types"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
@@ -723,4 +726,59 @@ func TestSetEventStreamHeadersBoundsStreamWritesByBudget(t *testing.T) {
 	require.NotEmpty(t, recorder.deadlines)
 	assert.False(t, recorder.deadlines[0].Before(before.Add(streamWriteTimeout+450*time.Second)))
 	assert.Contains(t, recorder.Body.String(), "data: AAAA")
+}
+
+// 客户端已经收到响应正文后不能再重试，否则下一次尝试会接着写进同一个响应；只发过心跳时还能重试。
+func TestDecideRelayRetryStopsOnceResponseBodyReachedClient(t *testing.T) {
+	upstreamErr := types.NewOpenAIError(errors.New("overloaded"), types.ErrorCodeBadResponseStatusCode, http.StatusInternalServerError)
+	retry := service.PolicyDecision{Action: "retry", Reason: "retry_status_matched", Source: "global"}
+	stop := service.PolicyDecision{Action: "stop", Reason: "response_started", Source: "system"}
+	for _, tc := range []struct {
+		name  string
+		write func(t *testing.T, c *gin.Context)
+		want  service.PolicyDecision
+	}{
+		{name: "nothing written", write: func(*testing.T, *gin.Context) {}, want: retry},
+		{name: "heartbeats only", write: func(t *testing.T, c *gin.Context) {
+			SetEventStreamHeaders(c)
+			require.NoError(t, PingData(c))
+			require.NoError(t, PingData(c))
+		}, want: retry},
+		{name: "stream chunk after a heartbeat", write: func(t *testing.T, c *gin.Context) {
+			SetEventStreamHeaders(c)
+			require.NoError(t, PingData(c))
+			require.NoError(t, StringData(c, `{"type":"message_start"}`))
+		}, want: stop},
+		{name: "non-stream body", write: func(_ *testing.T, c *gin.Context) {
+			c.JSON(http.StatusOK, gin.H{"id": "chatcmpl-1"})
+		}, want: stop},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+			tc.write(t, c)
+			assert.Equal(t, tc.want, service.DecideRelayRetry(c, upstreamErr, 1))
+		})
+	}
+}
+
+// 请求级保活用复制出的上下文发心跳，记下的心跳数必须和原上下文是同一份，
+// 否则心跳会被当成正文，拦掉本该进行的重试。
+func TestDecideRelayRetryIgnoresRequestKeepAliveHeartbeats(t *testing.T) {
+	writer := &headerCommitWriter{ResponseRecorder: httptest.NewRecorder(), headerStarted: make(chan struct{})}
+	c, _ := gin.CreateTestContext(writer)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+	stop := StartStreamKeepAlive(c, time.Millisecond)
+	select {
+	case <-writer.headerStarted:
+	case <-time.After(time.Second):
+		t.Fatal("keepalive did not start")
+	}
+	stop()
+	require.True(t, strings.HasPrefix(writer.Body.String(), ": PING\n\n"))
+
+	upstreamErr := types.NewOpenAIError(errors.New("overloaded"), types.ErrorCodeBadResponseStatusCode, http.StatusInternalServerError)
+	assert.Equal(t, "retry", service.DecideRelayRetry(c, upstreamErr, 1).Action)
+	require.NoError(t, StringData(c, `{"type":"message_start"}`))
+	assert.Equal(t, service.PolicyDecision{Action: "stop", Reason: "response_started", Source: "system"}, service.DecideRelayRetry(c, upstreamErr, 1))
 }

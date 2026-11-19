@@ -470,7 +470,20 @@ func textBillingCostDetails(summary textQuotaSummary, hasActualUsage bool) *obse
 	}
 }
 
+// appendRefusedAttemptNote 给上游拒答、回答被压着没发给客户端的尝试的消费日志加一句说明：
+// 这次照常按用量计费，但客户端没收到这个回答，请求会按重试规则继续。
+func appendRefusedAttemptNote(relayInfo *relaycommon.RelayInfo, extraContent []*common.Message) []*common.Message {
+	if relayInfo == nil || !relayInfo.RefusedBeforeOutput() {
+		return extraContent
+	}
+	if text := strings.TrimSpace(relayInfo.HeldResponseText); text != "" {
+		return append(extraContent, common.NewMessage("Upstream refused; this answer was not sent to the client: {{text}}", map[string]any{"text": text}))
+	}
+	return append(extraContent, common.NewMessage("Upstream refused; this answer was not sent to the client"))
+}
+
 func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usage *dto.Usage, extraContent []*common.Message) {
+	extraContent = appendRefusedAttemptNote(relayInfo, extraContent)
 	RecordSchedulerUsage(ctx, usage, relayInfo != nil && relayInfo.IsStream && relayInfo.HasSendResponse())
 	originUsage := usage
 	billingUsage := effectiveBillingUsage(usage)

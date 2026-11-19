@@ -21,6 +21,10 @@ export function policyLabel(t: TFunction, value: string): string {
       return t('Unrecognized status code')
     case 'task_accepted':
       return t('The task was accepted; submission cannot be replayed')
+    case 'response_started':
+      return t('Part of the response was sent; it cannot be replayed')
+    case 'upstream_refusal':
+      return t('Upstream refused before any output')
     case 'pinned_channel':
       return t('Fixed channel constraint')
     case 'local_rejection':

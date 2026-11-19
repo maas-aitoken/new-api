@@ -25,6 +25,7 @@ import { toast } from 'sonner'
 import * as z from 'zod'
 
 import { Form } from '@/components/ui/form'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { SELECTABLE_AUTO_PREFERENCES } from '@/features/keys/lib'
 
 import {
@@ -37,12 +38,13 @@ import { useResetForm } from '../hooks/use-reset-form'
 import { NumberSettingField, SelectSettingField } from './fields'
 import { useSaveAutoRouterOptions } from './hooks'
 import {
-  DEFAULT_COST_WEIGHTS,
+  DEFAULT_PREFERENCE_WEIGHTS,
   changedOptions,
   fractionBetween,
-  parseCostWeights,
-  serializeCostWeights,
+  parsePreferenceWeights,
+  serializePreferenceWeights,
   type AutoPreference,
+  type RoutingWeights,
 } from './settings'
 import type { AutoRouterSettings } from './types'
 
@@ -50,9 +52,27 @@ function createSchema(t: TFunction) {
   return z.object({
     default_preference: z.enum(SELECTABLE_AUTO_PREFERENCES),
     weights: z.object({
-      capability: fractionBetween(t),
-      balanced: fractionBetween(t),
-      cost: fractionBetween(t),
+      capability: z.object({
+        quality: fractionBetween(t),
+        cost: fractionBetween(t),
+        capacity: fractionBetween(t),
+        success: fractionBetween(t),
+        temperature: fractionBetween(t),
+      }),
+      balanced: z.object({
+        quality: fractionBetween(t),
+        cost: fractionBetween(t),
+        capacity: fractionBetween(t),
+        success: fractionBetween(t),
+        temperature: fractionBetween(t),
+      }),
+      cost: z.object({
+        quality: fractionBetween(t),
+        cost: fractionBetween(t),
+        capacity: fractionBetween(t),
+        success: fractionBetween(t),
+        temperature: fractionBetween(t),
+      }),
     }),
   })
 }
@@ -63,7 +83,18 @@ type PreferenceSectionProps = {
   settings: AutoRouterSettings
 }
 
-/** What the router does when a key sets no preference, and how much each preference trades ranking for price. */
+const DIMENSIONS: ReadonlyArray<{
+  name: keyof RoutingWeights
+  label: string
+}> = [
+  { name: 'quality', label: 'Quality weight' },
+  { name: 'cost', label: 'Cost weight' },
+  { name: 'capacity', label: 'Capacity weight' },
+  { name: 'success', label: 'Success weight' },
+  { name: 'temperature', label: 'Sampling temperature' },
+]
+
+/** The default key preference and the model scoring policy of each fixed preference. */
 export function PreferenceSection(props: PreferenceSectionProps) {
   const { t } = useTranslation()
   const { save, saving } = useSaveAutoRouterOptions()
@@ -75,8 +106,8 @@ export function PreferenceSection(props: PreferenceSectionProps) {
         SELECTABLE_AUTO_PREFERENCES.find(
           (preference) => preference === stored
         ) ?? 'balanced',
-      weights: parseCostWeights(
-        props.settings['autorouter_setting.cost_weights']
+      weights: parsePreferenceWeights(
+        props.settings['autorouter_setting.preference_weights']
       ),
     }
   }, [props.settings])
@@ -86,7 +117,6 @@ export function PreferenceSection(props: PreferenceSectionProps) {
   })
   useResetForm(form, defaults)
 
-  // The three preferences that carry a cost weight, which the weights below edit.
   const tiers: Array<{
     value: AutoPreference
     label: string
@@ -95,23 +125,17 @@ export function PreferenceSection(props: PreferenceSectionProps) {
     {
       value: 'capability',
       label: t('Capability first'),
-      description: t(
-        'Always picks the best-ranked model for the task, whatever it costs.'
-      ),
+      description: t('Gives cost no weight in model selection.'),
     },
     {
       value: 'balanced',
       label: t('Balanced'),
-      description: t(
-        'Gives up a little ranking for a clearly lower price when the models are close.'
-      ),
+      description: t('Balances model quality against price.'),
     },
     {
       value: 'cost',
       label: t('Cost first'),
-      description: t(
-        'Prefers much cheaper models and accepts a weaker one to save money.'
-      ),
+      description: t('Gives lower-priced models more weight.'),
     },
   ]
   const options = [
@@ -120,7 +144,7 @@ export function PreferenceSection(props: PreferenceSectionProps) {
       value: 'adaptive',
       label: t('Decide per request'),
       description: t(
-        'Judges each request on whether it stresses result quality or cost, then reads the cost weight for that request from the three weights below.'
+        'Judges each request on whether it stresses result quality or cost, then reads the weights for that request from the three preferences below.'
       ),
     },
   ]
@@ -130,11 +154,11 @@ export function PreferenceSection(props: PreferenceSectionProps) {
     const updates = changedOptions(
       {
         default_preference: defaults.default_preference,
-        cost_weights: serializeCostWeights(defaults.weights),
+        preference_weights: serializePreferenceWeights(defaults.weights),
       },
       {
         default_preference: values.default_preference,
-        cost_weights: serializeCostWeights(values.weights),
+        preference_weights: serializePreferenceWeights(values.weights),
       }
     )
     if (updates.length === 0) {
@@ -163,31 +187,38 @@ export function PreferenceSection(props: PreferenceSectionProps) {
             options={options}
           />
 
-          <div data-settings-form-span='full' className='space-y-1'>
-            <h4 className='text-sm font-semibold'>{t('Cost weight')}</h4>
-            <p className='text-muted-foreground text-xs'>
-              {t(
-                'The most ranking score (0 to 1) a model may give up to be cheaper. It also sets how far below the best score a model can still be picked. 0 always picks the best-ranked model.'
-              )}
-            </p>
-          </div>
-
-          <SettingsFormGrid>
+          <Tabs defaultValue='balanced' data-settings-form-span='full'>
+            <TabsList className='w-full'>
+              {tiers.map((tier) => (
+                <TabsTrigger key={tier.value} value={tier.value}>
+                  {tier.label}
+                </TabsTrigger>
+              ))}
+            </TabsList>
             {tiers.map((tier) => (
-              <NumberSettingField
-                key={tier.value}
-                control={form.control}
-                name={`weights.${tier.value}`}
-                label={tier.label}
-                description={t('Built-in value: {{value}}', {
-                  value: DEFAULT_COST_WEIGHTS[tier.value],
-                })}
-                min={0}
-                max={1}
-                step={0.01}
-              />
+              <TabsContent key={tier.value} value={tier.value}>
+                <SettingsFormGrid>
+                  {DIMENSIONS.map((dimension) => (
+                    <NumberSettingField
+                      key={dimension.name}
+                      control={form.control}
+                      name={`weights.${tier.value}.${dimension.name}`}
+                      label={t(dimension.label)}
+                      description={t('Built-in value: {{value}}', {
+                        value:
+                          DEFAULT_PREFERENCE_WEIGHTS[tier.value][
+                            dimension.name
+                          ],
+                      })}
+                      min={0}
+                      max={1}
+                      step={0.01}
+                    />
+                  ))}
+                </SettingsFormGrid>
+              </TabsContent>
             ))}
-          </SettingsFormGrid>
+          </Tabs>
         </SettingsForm>
       </Form>
     </SettingsSection>

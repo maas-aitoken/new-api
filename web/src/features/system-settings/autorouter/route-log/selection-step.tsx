@@ -36,16 +36,10 @@ import {
   skipReasonLabel,
 } from './labels'
 import { StepFrame, ToneBadge } from './route-process-parts'
-import type {
-  RoutePick,
-  RoutePickCandidate,
-  RoutePreviousPressure,
-  RouteTraceStep,
-} from './types'
+import type { RoutePick, RoutePickCandidate, RouteTraceStep } from './types'
 
 const priceFormat = { digitsLarge: 4, digitsSmall: 6, abbreviate: false }
 
-/** 倍率从哪来：调度器预览、会话亲和绑定的渠道，或按原生选渠道规则的命中概率取的期望。 */
 function costSourceLabel(t: TFunction, row: RoutePickCandidate): string {
   switch (row.cost_source) {
     case 'scheduler':
@@ -60,76 +54,26 @@ function costSourceLabel(t: TFunction, row: RoutePickCandidate): string {
   }
 }
 
-/** The candidates the quality and price comparison weighed, the chosen one marked. */
+function scoreColumn(
+  id: keyof RoutePickCandidate,
+  header: string
+): StaticDataTableColumn<RoutePickCandidate> {
+  return {
+    id,
+    header,
+    className: 'h-9 text-right',
+    cellClassName: tableStyles.topNumericCell,
+    cell: (row) => formatScore(Number(row[id] ?? 0)),
+  }
+}
+
+/** Every candidate's four dimensions, weighted utility and sampling probability. */
 export function PickTable(props: { pick: RoutePick }) {
   const { t } = useTranslation()
-  // 有估算时比较的是"用户价 × 首次会落到的渠道的费用倍率"，多出两列；旧日志没有这两列。
   const comparesCost = props.pick.band.some(
     (row) => (row.cost_multiplier ?? 0) > 0
   )
-  // 有容量溢价时多一列：池子越接近额度上限，比较成本越贵。
-  const hasCapacityPremium = props.pick.band.some(
-    (row) => (row.capacity_premium ?? 0) > 0
-  )
-  // 这次没拿到调度器预览的回答时说明原因，所有倍率都按原生规则算。
   const previewOutcome = previewOutcomeLabel(t, props.pick.preview)
-  const costColumns: StaticDataTableColumn<RoutePickCandidate>[] = [
-    {
-      id: 'cost_multiplier',
-      header: t('Cost multiplier'),
-      className: 'h-9 text-right',
-      cellClassName: tableStyles.topNumericCell,
-      cell: (row) =>
-        row.cost_multiplier ? (
-          <div className='flex flex-col items-end'>
-            <span>× {formatScore(row.cost_multiplier)}</span>
-            <span className='text-muted-foreground text-xs font-normal'>
-              {costSourceLabel(t, row)}
-            </span>
-            {row.preview && (
-              <span className='text-muted-foreground text-xs font-normal'>
-                {previewNoteLabel(t, row.preview)}
-              </span>
-            )}
-          </div>
-        ) : (
-          '-'
-        ),
-    },
-    ...(hasCapacityPremium
-      ? [
-          {
-            id: 'capacity_premium',
-            header: t('Capacity premium'),
-            className: 'h-9 text-right',
-            cellClassName: tableStyles.topNumericCell,
-            cell: (row: RoutePickCandidate) =>
-              row.capacity_premium ? (
-                <div className='flex flex-col items-end'>
-                  <span>× {formatScore(row.capacity_premium)}</span>
-                  <span className='text-muted-foreground text-xs font-normal'>
-                    {t('Pool pressure')}{' '}
-                    {Math.round((row.capacity_pressure ?? 0) * 100)}%
-                  </span>
-                </div>
-              ) : (
-                '-'
-              ),
-          },
-        ]
-      : []),
-    {
-      id: 'cost',
-      header: t('Compared cost'),
-      className: 'h-9 text-right',
-      cellClassName: tableStyles.topNumericCell,
-      cell: (row) =>
-        formatBillingCurrencyFromUSD(
-          row.cost_multiplier ? (row.cost ?? 0) : row.price,
-          priceFormat
-        ),
-    },
-  ]
   const columns: StaticDataTableColumn<RoutePickCandidate>[] = [
     {
       id: 'model',
@@ -145,13 +89,7 @@ export function PickTable(props: { pick: RoutePick }) {
         </div>
       ),
     },
-    {
-      id: 'score',
-      header: t('Leaderboard score'),
-      className: 'h-9 text-right',
-      cellClassName: tableStyles.topNumericCell,
-      cell: (row) => formatScore(row.score),
-    },
+    scoreColumn('score', t('Quality')),
     {
       id: 'price',
       header: t('Price per million tokens'),
@@ -159,35 +97,68 @@ export function PickTable(props: { pick: RoutePick }) {
       cellClassName: tableStyles.topNumericCell,
       cell: (row) => formatBillingCurrencyFromUSD(row.price, priceFormat),
     },
-    ...(comparesCost ? costColumns : []),
+    ...(comparesCost
+      ? [
+          {
+            id: 'cost_multiplier',
+            header: t('Cost multiplier'),
+            className: 'h-9 text-right',
+            cellClassName: tableStyles.topNumericCell,
+            cell: (row: RoutePickCandidate) =>
+              row.cost_multiplier ? (
+                <div className='flex flex-col items-end'>
+                  <span>× {formatScore(row.cost_multiplier)}</span>
+                  <span className='text-muted-foreground text-xs font-normal'>
+                    {costSourceLabel(t, row)}
+                  </span>
+                  {row.preview && (
+                    <span className='text-muted-foreground text-xs font-normal'>
+                      {previewNoteLabel(t, row.preview)}
+                    </span>
+                  )}
+                </div>
+              ) : (
+                '-'
+              ),
+          },
+          {
+            id: 'cost',
+            header: t('Compared cost'),
+            className: 'h-9 text-right',
+            cellClassName: tableStyles.topNumericCell,
+            cell: (row: RoutePickCandidate) =>
+              formatBillingCurrencyFromUSD(
+                row.cost_multiplier ? (row.cost ?? 0) : row.price,
+                priceFormat
+              ),
+          },
+        ]
+      : []),
+    scoreColumn('cost_score', t('Cost score')),
+    scoreColumn('capacity', t('Capacity')),
+    scoreColumn('success', t('Success')),
     {
-      id: 'discount',
-      header: t('Price discount'),
-      className: 'h-9 text-right',
-      cellClassName: tableStyles.topNumericCell,
-      cell: (row) => formatScore(row.discount),
-    },
-    {
-      id: 'utility',
-      header: t('Score after discount'),
-      className: 'h-9 text-right',
+      ...scoreColumn('utility', t('Utility')),
       cellClassName: cn(tableStyles.topNumericCell, 'font-semibold'),
-      cell: (row) => formatScore(row.utility),
     },
+    scoreColumn('probability', t('Probability')),
   ]
 
   return (
     <div className='space-y-1'>
       <p className='text-muted-foreground text-xs'>
         {t(
-          'Candidates within {{weight}} of the best score, ranked by score after the price discount.',
-          { weight: formatScore(props.pick.weight) }
+          'Quality {{quality}}, cost {{cost}}, capacity {{capacity}} and success {{success}}; sampling temperature {{temperature}}.',
+          {
+            quality: formatScore(props.pick.dimensions.quality),
+            cost: formatScore(props.pick.dimensions.cost),
+            capacity: formatScore(props.pick.dimensions.capacity),
+            success: formatScore(props.pick.dimensions.success),
+            temperature: formatScore(props.pick.dimensions.temperature),
+          }
         )}
         {comparesCost
-          ? ` ${t('The discount uses the compared cost: the user price times the cost multiplier of the channel the first attempt lands on. The multiplier never changes what the user is billed.')}`
-          : null}
-        {hasCapacityPremium
-          ? ` ${t('The capacity premium raises the compared cost when the pool is close to its RPM, TPM or in-flight limit, so traffic shifts to models with headroom. Pools without a limit have no premium, and it never changes what the user is billed.')}`
+          ? ` ${t('The cost multiplier never changes what the user is billed.')}`
           : null}
       </p>
       {previewOutcome && (
@@ -252,14 +223,11 @@ function StepSummary(props: { step: RouteTraceStep }) {
 export function SelectionStep(props: {
   ladder: RouteTraceStep[]
   pick?: RoutePick
-  pressure?: RoutePreviousPressure
 }) {
   const { t } = useTranslation()
-  // A ranking that compares successfully ends the walk, so at most one step did.
   const compared = props.ladder.find(
     (step) => step.outcome === 'compared' && step.model === props.pick?.chosen
   )
-  // A ranking can be tried twice (its class, then the defaults), so repeats are numbered.
   const seen = new Map<string, number>()
   const rows = props.ladder.map((step) => {
     const name = step.profile ?? 'default'
@@ -270,25 +238,6 @@ export function SelectionStep(props: {
 
   return (
     <StepFrame icon={ListOrdered} title={t('Model selection')}>
-      {props.pressure && !props.pressure.reused && (
-        <p className='text-muted-foreground text-xs'>
-          {t(
-            'Previous model {{model}} was not reused: pool pressure {{value}} exceeds the knee {{knee}}.',
-            {
-              model: props.pressure.model,
-              value: formatScore(props.pressure.pressure),
-              knee: formatScore(props.pressure.knee),
-            }
-          )}
-        </p>
-      )}
-      {props.pressure?.reused && (
-        <p className='text-muted-foreground text-xs'>
-          {t('Previous model {{model}} is within the no-premium knee.', {
-            model: props.pressure.model,
-          })}
-        </p>
-      )}
       {rows.map((row) => (
         <div key={row.key} className='space-y-2'>
           <StepSummary step={row.step} />

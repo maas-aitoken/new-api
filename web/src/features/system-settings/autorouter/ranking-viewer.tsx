@@ -48,7 +48,6 @@ import {
   type RankingDraft,
 } from './ranking-draft'
 import { RankingTable } from './ranking-table'
-import type { CostWeights } from './settings'
 import type { AutoRouterRankedModel } from './types'
 
 /** An edit in progress: the ranking as loaded (with its times, for the save's conflict check) and the draft. */
@@ -58,15 +57,11 @@ type EditSession = {
   sources: Record<string, string> | null
 }
 
-type RankingViewerProps = {
-  costWeights: CostWeights
-}
-
 /**
  * The ranking the router routes by, one profile at a time; fetched only while
  * open. Editing works on a draft of every profile and saves them together.
  */
-export function RankingViewer(props: RankingViewerProps) {
+export function RankingViewer() {
   const { t } = useTranslation()
   const [open, setOpen] = useState(false)
   const [selected, setSelected] = useState('')
@@ -232,7 +227,7 @@ export function RankingViewer(props: RankingViewerProps) {
           {session ? (
             <p className='text-muted-foreground text-xs'>
               {t(
-                'Models with a score are ordered by score; the router compares them by score and price. Models without one are only a fallback, tried in the order shown. Saving turns periodic refresh off.'
+                'Models with a score are ordered by score; the router compares quality, cost, capacity and success. Models without one are only a fallback, tried in the order shown. Saving turns periodic refresh off.'
               )}
             </p>
           ) : null}
@@ -300,7 +295,6 @@ export function RankingViewer(props: RankingViewerProps) {
       {session && adding ? (
         <RankingAddDialog
           draft={session.draft}
-          costWeights={props.costWeights}
           onOpenChange={setAdding}
           onAdd={(model, served, scores) =>
             edit((draft) => addModel(draft, model, served, scores))

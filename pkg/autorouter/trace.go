@@ -69,16 +69,13 @@ type Trace struct {
 	Validity     *Validity     `json:"validity,omitempty"`
 	Mode         *ModeTrace    `json:"mode,omitempty"`
 	Continuation *Continuation `json:"continuation,omitempty"`
-	// PreviousPressure 是上一轮模型的池压力检查，只在有容量信号时记录：
-	// 超过膝点就不沿用，改为重新比较。延续与继承（jev 失败、只定档位）都记在这里。
-	PreviousPressure *PreviousPressure `json:"previous_pressure,omitempty"`
-	Effort           *EffortTrace      `json:"effort,omitempty"`
-	Ladder           []LadderStep      `json:"ladder,omitempty"`
+	Effort       *EffortTrace  `json:"effort,omitempty"`
+	Ladder       []LadderStep  `json:"ladder,omitempty"`
 }
 
-// ModeTrace is how an adaptive request got its cost weight. It is set only for an
-// adaptive request, and the weight matters only to a request that ran a quality and
-// price comparison: one that kept the previous model never used it.
+// ModeTrace is how an adaptive request got its four-dimensional policy. It is set
+// only for an adaptive request, and the policy matters only to a request that ran
+// a model comparison: one that kept the previous model never used it.
 type ModeTrace struct {
 	// Reason is empty when the weight was judged, ModeNoAnswer when it fell back to
 	// the balanced weight.
@@ -87,10 +84,12 @@ type ModeTrace struct {
 	Shares map[string]float64 `json:"shares,omitempty"`
 	// Position is the expected position on the capability (0), balanced (1), cost (2) scale.
 	Position float64 `json:"position"`
-	// Weight is the cost weight this request used.
+	// Weight is the normalized cost weight this request used.
 	Weight float64 `json:"weight"`
-	// Tiers are the platform's weights at the time, which the weight is read from.
-	Tiers TierWeights `json:"tiers"`
+	// Weights are the normalized four dimensions and the independent temperature.
+	Weights DimensionWeights `json:"weights"`
+	// Tiers are the platform's raw configured strengths, before interpolation and normalization.
+	Tiers PreferenceWeights `json:"tiers"`
 }
 
 // RequestTrace holds what the instruction looked like, never its text.
@@ -128,15 +127,6 @@ type Validity struct {
 }
 
 // Continuation is the check whether the request carries on the previous task.
-// PreviousPressure 是沿用上一轮模型前的池压力检查。
-type PreviousPressure struct {
-	Model    string  `json:"model"`
-	Pressure float64 `json:"pressure"`
-	Knee     float64 `json:"knee"`
-	// Reused 为 false 表示压力超过膝点，本次没有沿用上一轮模型，改为重新比较。
-	Reused bool `json:"reused"`
-}
-
 type Continuation struct {
 	Previous   string  `json:"previous"`
 	TaskChange float64 `json:"task_change"`

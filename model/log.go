@@ -424,6 +424,7 @@ func RecordConsumeLog(c *gin.Context, userId int, params RecordConsumeLogParams)
 	createdAt := common.GetTimestamp()
 	other := params.Other
 	content := other.setContent(params.Content)
+	listQuotaDelta := other.recordListQuotaDelta(params.Quota)
 	otherStr := other.JSONString()
 	// 判断是否需要记录 IP
 	needRecordIp := false
@@ -481,6 +482,7 @@ func RecordConsumeLog(c *gin.Context, userId int, params RecordConsumeLogParams)
 			Username:            username,
 			ModelName:           params.ModelName,
 			Quota:               params.Quota,
+			ListQuotaDelta:      listQuotaDelta,
 			CreatedAt:           createdAt,
 			TokenUsed:           tokenUsed,
 			UseGroup:            params.Group,
@@ -566,6 +568,10 @@ func RecordTaskBillingLog(params RecordTaskBillingLogParams) {
 	}
 	createdAt := common.GetTimestamp()
 	other := params.Other
+	listQuotaDelta := 0
+	if params.LogType == LogTypeConsume {
+		listQuotaDelta = other.recordListQuotaDelta(params.Quota)
+	}
 	log := &Log{
 		UserId:    params.UserId,
 		Username:  username,
@@ -590,15 +596,16 @@ func RecordTaskBillingLog(params RecordTaskBillingLogParams) {
 			nodeName = common.NodeName
 		}
 		LogQuotaData(QuotaDataLogParams{
-			UserID:    params.UserId,
-			Username:  username,
-			ModelName: params.ModelName,
-			Quota:     params.Quota,
-			CreatedAt: createdAt,
-			UseGroup:  params.Group,
-			TokenID:   params.TokenId,
-			ChannelID: params.ChannelId,
-			NodeName:  nodeName,
+			UserID:         params.UserId,
+			Username:       username,
+			ModelName:      params.ModelName,
+			Quota:          params.Quota,
+			ListQuotaDelta: listQuotaDelta,
+			CreatedAt:      createdAt,
+			UseGroup:       params.Group,
+			TokenID:        params.TokenId,
+			ChannelID:      params.ChannelId,
+			NodeName:       nodeName,
 		})
 	}
 }
