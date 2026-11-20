@@ -131,7 +131,7 @@ export function ModeStep(props: { mode: RouteTraceMode }) {
     )}`
   })
   const facts: FactRow[] = [
-    [t('Quality weight'), formatScore(mode.weights.quality)],
+    [t('Capability weight'), formatScore(mode.weights.quality)],
     [t('Cost weight'), formatScore(mode.weights.cost)],
     [t('Capacity weight'), formatScore(mode.weights.capacity)],
     [t('Success weight'), formatScore(mode.weights.success)],

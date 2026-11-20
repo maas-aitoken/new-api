@@ -179,12 +179,18 @@ func TestPickModelsScoresAllDimensionsAndSamples(t *testing.T) {
 	price := func(string) (float64, bool) { return 1, true }
 	metrics := func([]string) map[string]MetricSample {
 		return map[string]MetricSample{
-			"busy": {Requests: 80, Successes: 0, Failures: 100},
-			"idle": {Requests: 20, Successes: 100},
+			"busy": {Successes: 0, Failures: 100},
+			"idle": {Successes: 100},
 		}
 	}
+	costs := func([]string) (map[string]Cost, *PreviewOutcome) {
+		return map[string]Cost{
+			"busy": {Capacity: 0.2, CapacityKnown: true},
+			"idle": {Capacity: 0.8, CapacityKnown: true},
+		}, nil
+	}
 	pick, ok := pickModels(models, scores, DimensionWeights{Quality: 0.4, Cost: 0.1, Capacity: 0.2, Success: 0.3, Temperature: 0.1},
-		func(string) bool { return true }, price, nil, metrics, func() float64 { return 0 }, nil)
+		func(string) bool { return true }, price, costs, metrics, func() float64 { return 0 }, nil)
 	require.True(t, ok)
 	require.Len(t, pick.Band, 2)
 	busy, idle := pick.Band[0], pick.Band[1]
@@ -192,7 +198,6 @@ func TestPickModelsScoresAllDimensionsAndSamples(t *testing.T) {
 	assert.InDelta(t, 0.8, idle.Capacity, 1e-9)
 	assert.InDelta(t, 4.0/104, busy.Success, 1e-9)
 	assert.InDelta(t, 104.0/104, idle.Success, 1e-9)
-	assert.Equal(t, int64(80), busy.Requests)
 	assert.Equal(t, int64(100), busy.Samples)
 	assert.InDelta(t, 0.4*busy.Score+0.1+0.2*busy.Capacity+0.3*busy.Success, busy.Utility, 1e-9)
 	assert.InDelta(t, 0.4*idle.Score+0.1+0.2*idle.Capacity+0.3*idle.Success, idle.Utility, 1e-9)
@@ -217,6 +222,17 @@ func TestPickModelsScoresAllDimensionsAndSamples(t *testing.T) {
 		pick.Band[0].Model: pick.Band[0].Probability,
 		pick.Band[1].Model: pick.Band[1].Probability,
 	})
+}
+
+func TestAggregateCapacityUsesWeightedLimitsAndBottleneck(t *testing.T) {
+	capacity := AggregateCapacity([]CapacitySample{
+		{Share: 0.75, RPMLimit: 100, RPMUsed: 25, TPMLimit: 1000, TPMUsed: 100, ConcurrencyLimit: 10, ConcurrencyUsed: 2},
+		{Share: 0.25, RPMLimit: 20, RPMUsed: 10, TPMLimit: 200, TPMUsed: 100, ConcurrencyLimit: 4, ConcurrencyUsed: 4},
+	})
+	assert.InDelta(t, 6.0/8.5, capacity, 1e-9)
+
+	assert.Equal(t, 1.0, AggregateCapacity([]CapacitySample{{Share: 1, RPMUsed: 100}}))
+	assert.Equal(t, 0.0, AggregateCapacity([]CapacitySample{{Share: 1, Exhausted: true}}))
 }
 
 func TestPickModelsNormalizesFourDimensionWeights(t *testing.T) {
@@ -948,12 +964,10 @@ func TestResolveVariant(t *testing.T) {
 func TestMemoryMetricsWindow(t *testing.T) {
 	now := time.Date(2026, 11, 18, 0, 0, 0, 0, time.UTC)
 	metrics := NewMemoryMetricsClock(5*time.Minute, func() time.Time { return now })
-	metrics.Begin("a")
 	metrics.Finish("a", true)
 	now = now.Add(2 * time.Minute)
-	metrics.Begin("a")
 	metrics.Finish("a", false)
-	assert.Equal(t, map[string]MetricSample{"a": {Requests: 2, Successes: 1, Failures: 1}}, metrics.Snapshot([]string{"a", "b"}))
+	assert.Equal(t, map[string]MetricSample{"a": {Successes: 1, Failures: 1}}, metrics.Snapshot([]string{"a", "b"}))
 	now = now.Add(5 * time.Minute)
 	assert.Empty(t, metrics.Snapshot([]string{"a"}))
 }

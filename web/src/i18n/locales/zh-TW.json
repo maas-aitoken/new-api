@@ -8372,6 +8372,12 @@
     "Not refreshed": "未重新整理",
     "Rate limited": "限流中",
     "By clicking sign in, you agree to our": "點擊登入即表示您同意我們的",
-    "By creating an account, you agree to our": "建立帳戶即表示您同意我們的"
+    "By creating an account, you agree to our": "建立帳戶即表示您同意我們的",
+    "Capability weight": "能力權重",
+    "The weight given to model capability and answer quality.": "模型能力與回答品質所占的權重。",
+    "The weight given to model cost; higher values favor cheaper models.": "模型成本所占的權重；值越高越傾向選擇更便宜的模型。",
+    "The weight given to available capacity; higher values favor less-loaded models.": "可用容量所占的權重；值越高越傾向選擇負載較低的模型。",
+    "The weight given to recent request success rate.": "最近請求成功率所占的權重。",
+    "Sampling temperature controls score variability; lower values produce more stable routing.": "採樣溫度控制評分的波動程度；值越低，路由越穩定。"
   }
 }

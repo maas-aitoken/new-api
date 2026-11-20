@@ -94,7 +94,6 @@ function candidate(
     cost_score: model === 'sonnet' ? 0.4 : 1,
     capacity: model === 'sonnet' ? 0.5 : 0.5,
     success: model === 'sonnet' ? 0.98 : 0.96,
-    requests: 1,
     samples: 20,
     utility: score,
     probability,
@@ -839,7 +838,7 @@ test('an adaptive request shows its four weights and temperature, between the va
     '0.0981'
   )
   expect(
-    screen.getByText('Quality weight').nextElementSibling
+    screen.getByText('Capability weight').nextElementSibling
   ).toHaveTextContent('0.6712')
   expect(screen.getByText('Preference').nextElementSibling).toHaveTextContent(
     'Decide per request'

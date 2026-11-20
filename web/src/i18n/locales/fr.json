@@ -8372,6 +8372,12 @@
     "Not refreshed": "Non actualisé",
     "Rate limited": "Limité",
     "By clicking sign in, you agree to our": "En cliquant sur se connecter, vous acceptez nos",
-    "By creating an account, you agree to our": "En créant un compte, vous acceptez nos"
+    "By creating an account, you agree to our": "En créant un compte, vous acceptez nos",
+    "Capability weight": "Poids de la capacité",
+    "The weight given to model capability and answer quality.": "Poids accordé aux capacités du modèle et à la qualité des réponses.",
+    "The weight given to model cost; higher values favor cheaper models.": "Poids accordé au coût du modèle ; une valeur plus élevée favorise les modèles moins chers.",
+    "The weight given to available capacity; higher values favor less-loaded models.": "Poids accordé à la capacité disponible ; une valeur plus élevée favorise les modèles moins chargés.",
+    "The weight given to recent request success rate.": "Poids accordé au taux de réussite récent des requêtes.",
+    "Sampling temperature controls score variability; lower values produce more stable routing.": "La température d'échantillonnage contrôle la variabilité du score ; une valeur plus basse rend le routage plus stable."
   }
 }

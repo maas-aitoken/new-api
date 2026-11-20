@@ -8372,6 +8372,12 @@
     "Not refreshed": "未更新",
     "Rate limited": "レート制限中",
     "By clicking sign in, you agree to our": "サインインをクリックすると、以下に同意したことになります：",
-    "By creating an account, you agree to our": "アカウントを作成すると、以下に同意したことになります："
+    "By creating an account, you agree to our": "アカウントを作成すると、以下に同意したことになります：",
+    "Capability weight": "能力の重み",
+    "The weight given to model capability and answer quality.": "モデルの能力と回答品質に与える重みです。",
+    "The weight given to model cost; higher values favor cheaper models.": "モデルのコストに与える重みです。値が大きいほど、安価なモデルを優先します。",
+    "The weight given to available capacity; higher values favor less-loaded models.": "利用可能な容量に与える重みです。値が大きいほど、負荷の低いモデルを優先します。",
+    "The weight given to recent request success rate.": "最近のリクエスト成功率に与える重みです。",
+    "Sampling temperature controls score variability; lower values produce more stable routing.": "サンプリング温度はスコアの変動性を制御します。値が低いほどルーティングが安定します。"
   }
 }

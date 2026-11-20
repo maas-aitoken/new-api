@@ -8372,6 +8372,12 @@
     "Not refreshed": "Не обновлено",
     "Rate limited": "Ограничено",
     "By clicking sign in, you agree to our": "Нажимая «Войти», вы соглашаетесь с нашими",
-    "By creating an account, you agree to our": "Создавая аккаунт, вы соглашаетесь с нашими"
+    "By creating an account, you agree to our": "Создавая аккаунт, вы соглашаетесь с нашими",
+    "Capability weight": "Вес способности",
+    "The weight given to model capability and answer quality.": "Вес, придаваемый возможностям модели и качеству ответа.",
+    "The weight given to model cost; higher values favor cheaper models.": "Вес, придаваемый стоимости модели; большее значение предпочитает более дешёвые модели.",
+    "The weight given to available capacity; higher values favor less-loaded models.": "Вес, придаваемый доступной ёмкости; большее значение предпочитает менее загруженные модели.",
+    "The weight given to recent request success rate.": "Вес, придаваемый недавней доле успешных запросов.",
+    "Sampling temperature controls score variability; lower values produce more stable routing.": "Температура сэмплирования управляет изменчивостью оценки; меньшее значение делает маршрутизацию стабильнее."
   }
 }

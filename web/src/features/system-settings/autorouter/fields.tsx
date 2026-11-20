@@ -18,6 +18,7 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import type { Control, FieldPath, FieldValues } from 'react-hook-form'
 
+import { LearnMore } from '@/components/learn-more'
 import {
   FormControl,
   FormDescription,
@@ -41,6 +42,7 @@ type SettingFieldProps<TFieldValues extends FieldValues> = {
   control: Control<TFieldValues>
   name: FieldPath<TFieldValues>
   label: string
+  helpText?: string
   description?: string
 }
 
@@ -66,7 +68,10 @@ export function NumberSettingField<TFieldValues extends FieldValues>(
       name={props.name}
       render={({ field }) => (
         <FormItem>
-          <FormLabel>{props.label}</FormLabel>
+          <div className='flex items-center gap-2'>
+            <FormLabel>{props.label}</FormLabel>
+            {props.helpText ? <LearnMore>{props.helpText}</LearnMore> : null}
+          </div>
           <FormControl>
             <Input
               type='number'
