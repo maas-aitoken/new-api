@@ -16,6 +16,12 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+import type { QueryClient } from '@tanstack/react-query'
+
+import {
+  capabilityTargetsQueryKeys,
+  channelModelCapabilityQueryKeys,
+} from '../../models/lib'
 import type { ResourcePoolProvider } from '../api'
 
 /** 一个 provider 的容量池列表与实时余量共用前缀，保存或改成员后一起失效。 */
@@ -26,4 +32,22 @@ export const capacityPoolQueryKeys = {
     ['resource-pools', 'capacity-pools', provider, 'list'] as const,
   capacity: (provider: ResourcePoolProvider) =>
     ['resource-pools', 'capacity-pools', provider, 'capacity'] as const,
+}
+
+/** 容量池配置或成员变化后，同时刷新本页和模型能力设置页的容量池绑定信息。 */
+export async function invalidateCapacityPoolQueries(
+  queryClient: QueryClient,
+  provider: ResourcePoolProvider
+): Promise<void> {
+  await Promise.all([
+    queryClient.invalidateQueries({
+      queryKey: capacityPoolQueryKeys.provider(provider),
+    }),
+    queryClient.invalidateQueries({
+      queryKey: capabilityTargetsQueryKeys.all,
+    }),
+    queryClient.invalidateQueries({
+      queryKey: channelModelCapabilityQueryKeys.all,
+    }),
+  ])
 }

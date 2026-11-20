@@ -333,6 +333,19 @@ func GetAllTokens(c *gin.Context) {
 	common.ApiSuccess(c, pageInfo)
 }
 
+func ListOverviewApiKeys(c *gin.Context) {
+	tokens, _, err := model.ListTokens(model.TokenFilter{UserId: c.GetInt("id"), Scope: common.TokenScopePersonal}, 0, 100)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	items := make([]gin.H, 0, len(tokens))
+	for _, token := range tokens {
+		items = append(items, gin.H{"id": token.Id, "name": token.Name})
+	}
+	common.ApiSuccess(c, gin.H{"items": items})
+}
+
 func SearchTokens(c *gin.Context) {
 	filter, ok := parseTokenFilter(c)
 	if !ok {

@@ -304,7 +304,7 @@ func printSummary(items []*item) {
 			continue
 		}
 		// The platform's tier weights do not matter here, only the judged shares and position.
-		if mode := (autorouter.TierWeights{}).Blend(it.Decision.ModeProbabilities); mode.Reason != "" {
+		if mode := (autorouter.PreferenceWeights{}).Blend(it.Decision.ModeProbabilities); mode.Reason != "" {
 			modeUnjudged++
 		} else {
 			likeliest := autorouter.Preferences[0]

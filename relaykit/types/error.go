@@ -78,6 +78,10 @@ const (
 	ErrorCodeAwsInvokeError         ErrorCode = "aws_invoke_error"
 	ErrorCodeModelNotFound          ErrorCode = "model_not_found"
 	ErrorCodePromptBlocked          ErrorCode = "prompt_blocked"
+	// ErrorCodeUpstreamRefusal marks an attempt the gateway turned into a
+	// failure because the upstream refused before any output reached the
+	// client; the refused answer was withheld so the request can be retried.
+	ErrorCodeUpstreamRefusal ErrorCode = "upstream_refusal"
 
 	// sql error
 	ErrorCodeQueryDataError  ErrorCode = "query_data_error"

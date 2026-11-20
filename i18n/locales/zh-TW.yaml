@@ -46,6 +46,7 @@ relay.retry_get_channel_failed: "獲取分組 {{.Group}} 下模型 {{.Model}} �
 relay.retry_no_available_channel: "分組 {{.Group}} 下模型 {{.Model}} 的可用管道不存在（retry）"
 relay.access_token_unsupported: "暫不支援使用 access token"
 relay.smart_key_responses_websocket_unsupported: "該令牌為智慧路由，不支援 Responses WebSocket，請透過 HTTP 呼叫 /v1/responses，或使用鎖定模型的令牌"
+relay.upstream_refused: "上游模型拒絕回答"
 
 # Emails and the name of the token created at registration
 user.default_token_name: "{{.Username}}的初始令牌"

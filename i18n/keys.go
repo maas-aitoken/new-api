@@ -54,6 +54,7 @@ const (
 	MsgRelayRetryNoAvailableChannel        = "relay.retry_no_available_channel"
 	MsgRelayAccessTokenUnsupported         = "relay.access_token_unsupported"
 	MsgRelaySmartKeyResponsesWSUnsupported = "relay.smart_key_responses_websocket_unsupported"
+	MsgRelayUpstreamRefused                = "relay.upstream_refused"
 )
 
 // Emails and the name of the token created at registration, in the

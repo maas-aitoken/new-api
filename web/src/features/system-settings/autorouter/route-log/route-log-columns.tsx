@@ -89,7 +89,8 @@ export function useRouteLogColumns(
       id: 'preference',
       header: t('Preference'),
       cellClassName: 'text-xs',
-      cell: (row) => (row.preference ? preferenceLabel(t, row.preference) : '-'),
+      cell: (row) =>
+        row.preference ? preferenceLabel(t, row.preference) : '-',
     },
     {
       id: 'request-params',

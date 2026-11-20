@@ -63,6 +63,10 @@ type Pricing struct {
 type Attempt struct {
 	mu sync.Mutex
 
+	// active controls telemetry persistence; outcome classification remains
+	// available for auto-routing metrics when logging is disabled or unsampled.
+	active bool
+
 	features RequestFeatures
 	target   ChannelTarget
 
@@ -117,11 +121,12 @@ func BeginRequest(features RequestFeatures) *RequestScope {
 // layer can annotate it. Finish must be called exactly once for every non-nil
 // return.
 func (s *RequestScope) BeginAttempt(c *gin.Context, attemptIndex int, target ChannelTarget, pricing *Pricing) *Attempt {
-	if s == nil || !s.active {
+	if s == nil {
 		return nil
 	}
 
 	attempt := &Attempt{
+		active:       s.active,
 		features:     s.features,
 		target:       target,
 		attemptId:    common.GetUUID(),

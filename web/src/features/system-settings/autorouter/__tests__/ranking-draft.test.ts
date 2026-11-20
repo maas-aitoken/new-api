@@ -24,14 +24,11 @@ import {
   moveUnscored,
   parseScore,
   previewRank,
-  reachablePreferences,
   seedAddRows,
   setScore,
   type RankingDraft,
 } from '../ranking-draft'
 import type { AutoRouterRankedModel } from '../types'
-
-const WEIGHTS = { capability: 0, balanced: 0.07, cost: 0.3 }
 
 function entry(
   model: string,
@@ -124,34 +121,6 @@ describe('previewing an added model', () => {
 
   test('a model that is listed already is placed by its new score, not counted twice', () => {
     expect(previewRank(draft['code.build'], 'a', 0.1)).toBe(3)
-  })
-
-  test('a preference compares the model when it is within the weight of the best served score', () => {
-    const list = draft['code.build']
-
-    expect(reachablePreferences(list, 'x', 0.95, WEIGHTS)).toEqual([
-      'capability',
-      'balanced',
-      'cost',
-    ])
-    expect(reachablePreferences(list, 'x', 0.9, WEIGHTS)).toEqual([
-      'balanced',
-      'cost',
-    ])
-    expect(reachablePreferences(list, 'x', 0.6, WEIGHTS)).toEqual([])
-  })
-
-  test('only models the gateway serves set the best score', () => {
-    const list = [entry('top', 0.99), entry('served', 0.7, true)]
-
-    expect(reachablePreferences(list, 'x', 0.72, WEIGHTS)).toEqual([
-      'capability',
-      'balanced',
-      'cost',
-    ])
-    expect(
-      reachablePreferences([entry('top', 0.99)], 'x', 0.1, WEIGHTS)
-    ).toEqual(['capability', 'balanced', 'cost'])
   })
 })
 

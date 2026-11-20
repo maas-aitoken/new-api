@@ -197,6 +197,9 @@ func InitOptionMap() {
 	common.OptionMap["SensitiveWords"] = setting.SensitiveWordsToString()
 	common.OptionMap["StreamCacheQueueLength"] = strconv.Itoa(setting.StreamCacheQueueLength)
 	common.OptionMap["AutomaticDisableKeywords"] = operation_setting.AutomaticDisableKeywordsToString()
+	common.OptionMap["UpstreamRefusalRetryEnabled"] = strconv.FormatBool(operation_setting.UpstreamRefusalRetryEnabled)
+	common.OptionMap["UpstreamRefusalRetryAutoOnly"] = strconv.FormatBool(operation_setting.UpstreamRefusalRetryAutoOnly)
+	common.OptionMap["UpstreamRefusalOpeningTexts"] = operation_setting.UpstreamRefusalOpeningTextsToString()
 	common.OptionMap["AutomaticDisableStatusCodes"] = operation_setting.AutomaticDisableStatusCodesToString()
 	common.OptionMap["AutomaticRetryStatusCodes"] = operation_setting.AutomaticRetryStatusCodesToString()
 	common.OptionMap["ExposeRatioEnabled"] = strconv.FormatBool(ratio_setting.IsExposeRatioEnabled())
@@ -512,7 +515,7 @@ func updateOptionMap(key string, value string) (err error) {
 			common.ImageDownloadPermission = intValue
 		}
 	}
-	if strings.HasSuffix(key, "Enabled") || key == "DefaultCollapseSidebar" || key == "DefaultUseAutoGroup" || key == "SMTPForceAuthLogin" || key == "SMTPInsecureSkipVerify" {
+	if strings.HasSuffix(key, "Enabled") || key == "DefaultCollapseSidebar" || key == "DefaultUseAutoGroup" || key == "SMTPForceAuthLogin" || key == "SMTPInsecureSkipVerify" || key == "UpstreamRefusalRetryAutoOnly" {
 		boolValue := value == "true"
 		switch key {
 		case "PasswordRegisterEnabled":
@@ -541,6 +544,10 @@ func updateOptionMap(key string, value string) (err error) {
 			common.AutomaticDisableChannelEnabled = boolValue
 		case "AutomaticEnableChannelEnabled":
 			common.AutomaticEnableChannelEnabled = boolValue
+		case "UpstreamRefusalRetryEnabled":
+			operation_setting.UpstreamRefusalRetryEnabled = boolValue
+		case "UpstreamRefusalRetryAutoOnly":
+			operation_setting.UpstreamRefusalRetryAutoOnly = boolValue
 		case "QuotaRemindEnabled":
 			common.QuotaRemindEnabled = boolValue
 		case "LogConsumeEnabled":
@@ -815,6 +822,8 @@ func updateOptionMap(key string, value string) (err error) {
 		setting.SensitiveWordsFromString(value)
 	case "AutomaticDisableKeywords":
 		operation_setting.AutomaticDisableKeywordsFromString(value)
+	case "UpstreamRefusalOpeningTexts":
+		operation_setting.UpstreamRefusalOpeningTextsFromString(value)
 	case "AutomaticDisableStatusCodes":
 		err = operation_setting.AutomaticDisableStatusCodesFromString(value)
 	case "AutomaticRetryStatusCodes":

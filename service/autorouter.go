@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"math/rand/v2"
 	"net/http"
 	"slices"
 	"strconv"
@@ -49,10 +50,15 @@ type autoRouterEntry struct {
 }
 
 var (
-	autoRouterCacheOnce sync.Once
-	autoRouterCache     *cachex.HybridCache[autoRouterEntry]
-	autoRouterClient    = &http.Client{}
+	autoRouterCacheOnce   sync.Once
+	autoRouterCache       *cachex.HybridCache[autoRouterEntry]
+	autoRouterClient      = &http.Client{}
+	autoModelMetricsStore = newAutoModelMetrics()
 )
+
+func init() {
+	autorouter.SetMetrics(autoModelMetricsStore)
+}
 
 func getAutoRouterCache() *cachex.HybridCache[autoRouterEntry] {
 	autoRouterCacheOnce.Do(func() {
@@ -141,12 +147,26 @@ type AutoCandidates struct {
 	// Price 返回候选模型的混合用户价（美元/百万 token）；ok 为 false 表示没有价格
 	// 或按次计价，没法按 token 比较。为 nil 时不比价，按榜单顺序取第一个可用的。
 	Price func(name string) (price float64, ok bool)
-	// Costs 给候选带里的模型估算比较成本（用户价 × 首次会落到的渠道的费用倍率），连同这次问调度器
+	// Costs 给候选模型估算比较成本（用户价 × 首次会落到的渠道的费用倍率），连同这次问调度器
 	// 预览的结果，见 autorouter.Candidates.Costs。为 nil 时只比较用户价。
-	Costs func(names []string, effort string, ignoreClientReasoning bool) (map[string]autorouter.Cost, *autorouter.PreviewOutcome)
-	// CapacityPressure 只读地返回一个模型首次会落到的池子的压力，沿用上一轮模型前用它
-	// 判断要不要改为重新比较，见 autorouter.Candidates.CapacityPressure。为 nil 时照旧沿用。
-	CapacityPressure func(name string, effort string, ignoreClientReasoning bool) (pressure float64, known bool)
+	Costs   func(names []string, effort string, ignoreClientReasoning bool) (map[string]autorouter.Cost, *autorouter.PreviewOutcome)
+	Metrics func(models []string) map[string]autorouter.MetricSample
+	Random  func() float64
+}
+
+// rememberAutoRoute records the route the next instruction and its sub-agents inherit.
+// The caller decides whether the route is initial or actually answered successfully.
+func rememberAutoRoute(c *gin.Context, instruction autorouter.Instruction, result *autorouter.Result) {
+	if result == nil || instruction.Auxiliary || instruction.Text == "" {
+		return
+	}
+	cache := getAutoRouterCache()
+	tokenID := common.GetContextKeyInt(c, constant.ContextKeyTokenId)
+	ttl := time.Duration(autorouter_setting.GetAutoRouterSetting().CacheTTLSeconds) * time.Second
+	_ = cache.SetWithTTL(autoRouterCacheKey("r", tokenID, instruction.Text), autoRouterEntry{Route: result.Route}, ttl)
+	if instruction.Session != "" && !instruction.Agent {
+		_ = cache.SetWithTTL(autoRouterCacheKey("s", tokenID, instruction.Session), autoRouterEntry{Route: result.Route, EffortOverride: result.EffortOverride}, ttl)
+	}
 }
 
 // ResolveAutoModel picks the model and reasoning effort for an "auto" request.
@@ -161,7 +181,16 @@ func ResolveAutoModel(c *gin.Context, candidates AutoCandidates) (*autorouter.Re
 	result := &autorouter.Result{Source: autorouter.SourceDefault, Preference: policy.Preference}
 	available := func(name string) bool { return candidates.Serves(name, false) }
 	overridable := func(name string) bool { return candidates.Serves(name, true) }
-	routing := autorouter.Candidates{Available: available, Overridable: overridable, Price: candidates.Price, Why: candidates.Why, Costs: candidates.Costs, CapacityPressure: candidates.CapacityPressure}
+	routing := autorouter.Candidates{
+		Available: available, Overridable: overridable, Price: candidates.Price,
+		Why: candidates.Why, Costs: candidates.Costs, Metrics: candidates.Metrics, Random: candidates.Random,
+	}
+	if routing.Metrics == nil {
+		routing.Metrics = autoModelMetricsStore.Snapshot
+	}
+	if routing.Random == nil {
+		routing.Random = rand.Float64
+	}
 	trace := &autorouter.Trace{Judgment: autorouter.JudgmentNoInstruction}
 	result.Trace = trace
 
@@ -224,7 +253,6 @@ func ResolveAutoModel(c *gin.Context, candidates AutoCandidates) (*autorouter.Re
 			}
 		}
 		decisionKey := autoRouterCacheKey("d", tokenID, autorouter.QuestionsVersion, state["current_task"], state["previous_task"])
-		routeKey := autoRouterCacheKey("r", tokenID, instruction.Text)
 
 		var previous *autorouter.Route
 		if instruction.Previous != "" {
@@ -304,12 +332,7 @@ func ResolveAutoModel(c *gin.Context, candidates AutoCandidates) (*autorouter.Re
 		}
 		// 兜底路由也记下来，下一条指令才能沿用同一个模型，agent 循环不会来回换模型。
 		if ok {
-			_ = cache.SetWithTTL(routeKey, autoRouterEntry{Route: result.Route}, ttl)
-		}
-		// The session remembers its latest human instruction's route for the
-		// sub-agents whose task arrives without readable text.
-		if ok && instruction.Session != "" && !instruction.Agent {
-			_ = cache.SetWithTTL(autoRouterCacheKey("s", tokenID, instruction.Session), autoRouterEntry{Route: result.Route, EffortOverride: !inherited}, ttl)
+			rememberAutoRoute(c, instruction, result)
 		}
 	}
 	if !ok {

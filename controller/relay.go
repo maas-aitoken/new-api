@@ -18,6 +18,7 @@ import (
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/observability"
 	"github.com/QuantumNous/new-api/pkg/attemptlog"
+	"github.com/QuantumNous/new-api/pkg/autorouter"
 	channelcapacity "github.com/QuantumNous/new-api/pkg/channel_capacity"
 	channelmetrics "github.com/QuantumNous/new-api/pkg/channel_metrics"
 	pluginruntime "github.com/QuantumNous/new-api/pkg/jsplugin"
@@ -62,6 +63,24 @@ func relayHandler(c *gin.Context, info *relaycommon.RelayInfo) *types.NewAPIErro
 		err = relay.TextHelper(c, info)
 	}
 	return err
+}
+
+// isTextGenerationRelay 表示这次请求会生成文字回答（Chat、Completions、Responses、Claude
+// Messages、Gemini generateContent），上游拒答时重试只作用于这些请求。
+func isTextGenerationRelay(c *gin.Context, relayFormat types.RelayFormat, info *relaycommon.RelayInfo) bool {
+	switch relayFormat {
+	case types.RelayFormatOpenAIRealtime:
+		return false
+	case types.RelayFormatClaude:
+		return true
+	case types.RelayFormatGemini:
+		return !strings.Contains(c.Request.URL.Path, "embed")
+	}
+	switch info.RelayMode {
+	case relayconstant.RelayModeChatCompletions, relayconstant.RelayModeCompletions, relayconstant.RelayModeResponses:
+		return true
+	}
+	return false
 }
 
 func geminiRelayHandler(c *gin.Context, info *relaycommon.RelayInfo) *types.NewAPIError {
@@ -178,6 +197,17 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		}
 	}()
 
+	// 上游拒答时重试：每次尝试写给客户端的数据先压着，拒答的尝试才能丢掉重来。
+	// 要装在心跳之前，处在最里层，写超时和心跳都包在它外面。「仅 auto」下锁定模型的
+	// 请求不装：拒答照原样透传，不重试。
+	var responseHold *helper.ResponseHold
+	if service.RefusalRetryApplies(c) && isTextGenerationRelay(c, relayFormat, relayInfo) {
+		responseHold = helper.InstallResponseHold(c, relayInfo)
+	}
+	// 开关打开但这个请求不参与拒答重试（「仅 auto」下的锁定模型请求）：拒答透传给
+	// 客户端后补一条错误日志，让拒答在使用日志的错误页里也能看到。
+	lockedRefusalPassthrough := operation_setting.UpstreamRefusalRetryEnabled && !service.RefusalRetryApplies(c)
+
 	generalSettings := operation_setting.GetGeneralSetting()
 	if relayFormat == types.RelayFormatClaude && relayInfo.IsStream && generalSettings.PingIntervalEnabled {
 		stopKeepAlive := helper.StartStreamKeepAlive(c, time.Duration(generalSettings.PingIntervalSeconds)*time.Second)
@@ -218,6 +248,8 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 	for ; retryParam.GetRetry() <= common.RetryTimes || common.GetContextKeyBool(c, constant.ContextKeyAutoRouted); retryParam.IncreaseRetry() {
 		relayInfo.StreamStatus = nil
 		relayInfo.PerformanceBusinessRejection = false
+		// 拒答原因按尝试记：上一次被改判的拒答不能带进这次成功的消费日志。
+		common.SetContextKey(c, constant.ContextKeyAdminRejectReason, "")
 		relayInfo.PerformanceOutputTokens = 0
 		relayInfo.RetryIndex = retryParam.GetRetry()
 		if retryParam.GetRetry() > 0 && common.GetContextKeyBool(c, constant.ContextKeyAutoRouted) {
@@ -303,6 +335,12 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			ModelPrice:      priceData.ModelPrice,
 			UsePrice:        priceData.UsePrice,
 		})
+		autoRoute := service.GetAutoRouterResult(c)
+		autoModel := ""
+		if common.GetContextKeyBool(c, constant.ContextKeyAutoRouted) && autoRoute != nil {
+			autoModel = autoRoute.Route.Model
+			autorouter.BeginModelRequest(autoModel)
+		}
 
 		// The closure keeps the in-flight counter balanced even when the relay
 		// panics, because the deferred decrement still runs while unwinding.
@@ -317,6 +355,10 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			defer func() { c.Request = c.Request.WithContext(attemptParentCtx) }()
 			channelmetrics.IncInFlight(channel.Id)
 			defer channelmetrics.DecInFlight(channel.Id)
+			if responseHold != nil {
+				responseHold.Begin()
+				defer responseHold.Abandon()
+			}
 
 			switch relayFormat {
 			case types.RelayFormatOpenAIRealtime:
@@ -328,7 +370,14 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			default:
 				newAPIError = relayHandler(c, relayInfo)
 			}
+			if responseHold != nil {
+				newAPIError = responseHold.Finish(c, newAPIError)
+			}
 		}()
+		if newAPIError != nil && newAPIError.GetErrorCode() == types.ErrorCodeUpstreamRefusal {
+			// 被改判的尝试已经照常结算；下一次尝试新开计费会话，最终失败时也不会退掉这次的费用。
+			service.CloseSettledAttemptBilling(relayInfo)
+		}
 		attemptStatus := http.StatusOK
 		if newAPIError != nil {
 			attemptStatus = newAPIError.StatusCode
@@ -360,12 +409,38 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			common.GetContextKeyInt(c, constant.ContextKeySchedulerInputTokens),
 			common.GetContextKeyInt(c, constant.ContextKeySchedulerOutputTokens))
 
-		attempt.Finish(c, finishInputFor(c, relayInfo, newAPIError))
+		outcome := attempt.Finish(c, finishInputFor(c, relayInfo, newAPIError))
+		if autoModel != "" {
+			switch outcome {
+			case attemptlog.OutcomeClientCancelled, attemptlog.OutcomeInvalidRequest,
+				attemptlog.OutcomeContextLengthExceeded, attemptlog.OutcomeQuotaExhausted:
+			default:
+				autorouter.FinishModelRequest(autoModel, outcome == attemptlog.OutcomeOK)
+			}
+		}
 
 		if newAPIError == nil {
+			if retryParam.GetRetry() > 0 {
+				service.RememberAutoRetrySuccess(c)
+			}
 			service.ResetChannelModelFailureConsecutive(channel.Id, relayInfo.OriginModelName)
 			service.MarkRequestPolicySuccess(c, relayInfo.StreamStatus)
 			relayInfo.LastError = nil
+			// 「仅 auto」下锁定模型的请求拒答照原样透传（200、照常计费）；补一条错误日志留痕。
+			if lockedRefusalPassthrough && relayInfo.PerformanceBusinessRejection && constant.ErrorLogEnabled {
+				other := model.NewLogOther()
+				other.SetPublic("error_type", "upstream_refusal")
+				other.SetPublic("error_code", "upstream_refusal_passthrough")
+				other.SetPublic("status_code", http.StatusOK)
+				service.AppendRelayLogAdminInfo(c, relayInfo, other)
+				startTime := common.GetContextKeyTime(c, constant.ContextKeyRequestStartTime)
+				if startTime.IsZero() {
+					startTime = time.Now()
+				}
+				model.RecordErrorLog(c, relayInfo.UserId, channel.Id, relayInfo.OriginModelName, c.GetString("token_name"),
+					"upstream refusal passed through without retry: "+common.GetContextKeyString(c, constant.ContextKeyAdminRejectReason),
+					relayInfo.TokenId, int(time.Since(startTime).Seconds()), relayInfo.IsStream, relayInfo.UsingGroup, other)
+			}
 			return
 		}
 

@@ -27,7 +27,6 @@ import {
 import { EmptyState } from '@/components/empty-state'
 import { ErrorState } from '@/components/error-state'
 import { Alert, AlertDescription } from '@/components/ui/alert'
-import { Skeleton } from '@/components/ui/skeleton'
 import {
   Sheet,
   SheetContent,
@@ -35,10 +34,11 @@ import {
   SheetHeader,
   SheetTitle,
 } from '@/components/ui/sheet'
+import { Skeleton } from '@/components/ui/skeleton'
 import { formatTimestampToDate } from '@/lib/format'
 
-import { outcomeLabel, outcomeTone } from './labels'
 import { useRouteLog } from './hooks'
+import { outcomeLabel, outcomeTone } from './labels'
 import { RouteProcess } from './route-process'
 import { Facts, ToneBadge } from './route-process-parts'
 import type { RouteLog, RouteLogScope, RouteResult } from './types'

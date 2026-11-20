@@ -47,7 +47,8 @@ export function useAutoRouterStatus() {
     queryFn: async () => requireServerSuccess(await getAutoRouterStatus()),
     refetchInterval: (query) => {
       const refresh = query.state.data?.data.rank_refresh
-      const active = refresh?.status === 'pending' || refresh?.status === 'running'
+      const active =
+        refresh?.status === 'pending' || refresh?.status === 'running'
       return active ? REFRESH_POLL_MS : false
     },
   })

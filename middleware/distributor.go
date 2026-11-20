@@ -288,8 +288,7 @@ func Distribute() func(c *gin.Context) {
 							quote := quoteOf(candidate)
 							return quote.PricePerMillion, quote.Kind == helper.RoutingPerToken
 						},
-						Costs:            costs.estimate,
-						CapacityPressure: costs.pressure,
+						Costs: costs.estimate,
 					}
 					result, err := service.ResolveAutoModel(c, candidates)
 					if capabilityGate != nil {

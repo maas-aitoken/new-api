@@ -1,6 +1,7 @@
 package service
 
 import (
+	"math/rand/v2"
 	"slices"
 	"strings"
 
@@ -37,7 +38,16 @@ func ResolveAutoRetryModel(c *gin.Context, candidates AutoCandidates) (*autorout
 		return !excluded(name) && candidates.Serves(name, true)
 	}
 	policy := autorouter_setting.GetAutoRouterSetting().Policy(common.GetContextKeyString(c, constant.ContextKeyTokenAutoPreference))
-	routing := autorouter.Candidates{Available: available, Overridable: overridable, Price: candidates.Price, Why: candidates.Why, Costs: candidates.Costs}
+	routing := autorouter.Candidates{
+		Available: available, Overridable: overridable, Price: candidates.Price,
+		Why: candidates.Why, Costs: candidates.Costs, Metrics: candidates.Metrics, Random: candidates.Random,
+	}
+	if routing.Metrics == nil {
+		routing.Metrics = autoModelMetricsStore.Snapshot
+	}
+	if routing.Random == nil {
+		routing.Random = rand.Float64
+	}
 	initial := GetAutoRouterResult(c)
 	var decision *autorouter.Decision
 	if initial != nil {
@@ -67,6 +77,27 @@ func ResolveAutoRetryModel(c *gin.Context, candidates AutoCandidates) (*autorout
 	}
 	c.Set(ginKeyAutoRouterResult, result)
 	return result, true
+}
+
+// RememberAutoRetrySuccess replaces the optimistically cached route with the
+// route that actually answered. Cache failures remain best-effort after success.
+func RememberAutoRetrySuccess(c *gin.Context) {
+	if !common.GetContextKeyBool(c, constant.ContextKeyAutoRouted) {
+		return
+	}
+	result := GetAutoRouterResult(c)
+	if result == nil {
+		return
+	}
+	storage, err := common.GetBodyStorage(c)
+	if err != nil {
+		return
+	}
+	body, err := storage.Bytes()
+	if err != nil {
+		return
+	}
+	rememberAutoRoute(c, autorouter.ExtractInstruction(body), result)
 }
 
 // ExcludeAutoModel remembers the ranked base model for this request only.

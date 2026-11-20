@@ -78,7 +78,9 @@ test('refresh is unavailable and says why while the leaderboard keys are missing
   mockStatus({ rankKeysReady: false })
   renderStatus()
 
-  expect(await screen.findByRole('button', { name: 'Refresh now' })).toBeDisabled()
+  expect(
+    await screen.findByRole('button', { name: 'Refresh now' })
+  ).toBeDisabled()
   expect(
     screen.getByText(
       'Set the Artificial Analysis key and either the Design Arena or the OpenRouter key below to refresh.'
@@ -90,7 +92,10 @@ test('refresh now starts the refresh task', async () => {
   const user = userEvent.setup()
   mockStatus()
   vi.spyOn(api, 'post').mockResolvedValue({
-    data: { success: true, data: { created: true, task: { task_id: 'systask_2' } } },
+    data: {
+      success: true,
+      data: { created: true, task: { task_id: 'systask_2' } },
+    },
   })
   renderStatus()
 
@@ -105,7 +110,9 @@ test('both actions are disabled while a refresh is running', async () => {
   mockStatus({ refresh: { status: 'running' } })
   renderStatus()
 
-  expect(await screen.findByRole('button', { name: 'Refresh now' })).toBeDisabled()
+  expect(
+    await screen.findByRole('button', { name: 'Refresh now' })
+  ).toBeDisabled()
   expect(
     screen.getByRole('button', { name: 'Restore built-in ranking' })
   ).toBeDisabled()
@@ -136,7 +143,10 @@ test('a hand-edited ranking is flagged, and refreshing over it asks first', asyn
   const user = userEvent.setup()
   mockStatus({ edited: true })
   vi.spyOn(api, 'post').mockResolvedValue({
-    data: { success: true, data: { created: true, task: { task_id: 'systask_2' } } },
+    data: {
+      success: true,
+      data: { created: true, task: { task_id: 'systask_2' } },
+    },
   })
   renderStatus()
 
@@ -161,7 +171,9 @@ test('a stored ranking from an older taxonomy is flagged as out of date', async 
 })
 
 test('a failed refresh shows its error next to the failed status', async () => {
-  mockStatus({ refresh: { status: 'failed', error: 'livebench: 502 bad gateway' } })
+  mockStatus({
+    refresh: { status: 'failed', error: 'livebench: 502 bad gateway' },
+  })
   renderStatus()
 
   expect(await screen.findByText('failed')).toBeVisible()

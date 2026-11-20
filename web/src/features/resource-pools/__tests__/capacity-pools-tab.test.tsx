@@ -110,7 +110,7 @@ const dynamic: CapacityPoolCapacity = {
   },
   status: { status: 'ok', attempt_at: 1_800_000_000 },
   rpm_used: 40,
-  tpm_used: 0,
+  tpm_used: 12_500,
   in_flight: 3,
   remaining: { rpm: 260, tpm: null, concurrency: null },
   members: [
@@ -118,7 +118,7 @@ const dynamic: CapacityPoolCapacity = {
       channel_id: 12,
       upstream_model: 'claude-sonnet',
       rpm_used: 40,
-      tpm_used: 0,
+      tpm_used: 12_500,
       in_flight: 3,
     },
   ],
@@ -215,6 +215,8 @@ it('shows the dynamic limit, its breakdown and each member with live usage', asy
   const active = screen.getByText('#12 main').closest('tr') as HTMLElement
   expect(within(active).getByText('sonnet, sonnet-latest')).toBeVisible()
   expect(within(active).getByText('40')).toBeVisible()
+  expect(within(active).getByText('12.5K')).toBeVisible()
+  expect(within(active).getByText('3')).toBeVisible()
   const stale = screen.getByText('#19 backup').closest('tr') as HTMLElement
   expect(within(stale).getByText('No model maps here any more')).toBeVisible()
 })
@@ -346,6 +348,103 @@ it('adds the checked models of a channel to the pool', async () => {
     expect(post).toHaveBeenCalledWith(
       '/api/channel/resource_pools/capacity_pools/3/members',
       { channel_id: 7, models: ['claude-opus'] }
+    )
+  )
+})
+
+it('uses unlimited placeholders on Claude pools and saves a TPM-only configuration after accounts load', async () => {
+  vi.spyOn(api, 'get').mockResolvedValue({ data: { success: true, data: [] } })
+  const post = vi
+    .spyOn(api, 'post')
+    .mockResolvedValue({ data: { success: true, data: { id: 9 } } })
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  })
+  clients.push(client)
+  const sources = [
+    {
+      id: 1,
+      provider: 'claude' as const,
+      name: 'kiro',
+      endpoint: 'https://k.example.com',
+      admin_password: '',
+      group_name: '',
+      enabled: true,
+      snapshot_at: 0,
+    },
+  ]
+  const view = render(
+    <QueryClientProvider client={client}>
+      <CapacityPoolsTab
+        provider='claude'
+        sources={sources}
+        accounts={[]}
+        locale='en-US'
+        now={1_800_000_060_000}
+      />
+    </QueryClientProvider>
+  )
+  const user = userEvent.setup()
+  await user.click(
+    await screen.findByRole('button', { name: 'Create capacity pool' })
+  )
+
+  const dialog = await screen.findByRole('dialog')
+  expect(within(dialog).getByLabelText('Default RPM')).toHaveAttribute(
+    'placeholder',
+    '∞'
+  )
+  expect(within(dialog).getByLabelText('Default TPM')).toHaveAttribute(
+    'placeholder',
+    '∞'
+  )
+
+  view.rerender(
+    <QueryClientProvider client={client}>
+      <CapacityPoolsTab
+        provider='claude'
+        sources={sources}
+        accounts={[
+          {
+            id: '1',
+            email: 'a@example.com',
+            enabled: true,
+            subscription_type: 'POWER',
+            usage_current: 0,
+            usage_limit: 10000,
+            usage_percentage: 0,
+            source_id: 1,
+            source_name: 'kiro',
+            source_endpoint: 'https://k.example.com',
+          },
+        ]}
+        locale='en-US'
+        now={1_800_000_060_000}
+      />
+    </QueryClientProvider>
+  )
+
+  const powerTpm = await within(dialog).findByLabelText('POWER TPM')
+  await user.type(within(dialog).getByLabelText(/Name/), 'tpm-only')
+  await user.click(within(dialog).getByLabelText('Select sources'))
+  await user.click(await screen.findByText('kiro'))
+  await user.type(powerTpm, '300000')
+  await user.click(within(dialog).getByRole('button', { name: 'Save' }))
+
+  await waitFor(() =>
+    expect(post).toHaveBeenCalledWith(
+      '/api/channel/resource_pools/capacity_pools',
+      expect.objectContaining({
+        name: 'tpm-only',
+        provider: 'claude',
+        config: expect.objectContaining({
+          source_ids: [1],
+          default_rate: { rpm: 0, tpm: 0, max_concurrency: 0 },
+          plan_rates: {
+            POWER: { rpm: 0, tpm: 300000, max_concurrency: 0 },
+          },
+        }),
+      })
     )
   )
 })

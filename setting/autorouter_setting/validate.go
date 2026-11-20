@@ -69,44 +69,22 @@ func ValidateOption(key, value string) error {
 		}
 	case "route_log_retention_days":
 		return integerInRange(value, 1, MaxRouteLogRetentionDays)
-	case "cost_weights":
-		var weights map[string]float64
+	case "preference_weights":
+		var weights autorouter.PreferenceWeights
 		if !decodeJSON(value, &weights) {
-			return common.NewMessage("Must be a JSON object that maps preferences to numbers between 0 and 1")
+			return common.NewMessage("Must be a JSON object that maps preferences to routing weights between 0 and 1")
 		}
-		for preference, weight := range weights {
+		for preference, policy := range weights {
 			if !slices.Contains(autorouter.Preferences, preference) {
 				return common.NewMessage("Unknown preference {{preference}}", map[string]any{"preference": preference})
 			}
-			if weight < 0 || weight > 1 {
-				return common.NewMessage("Must be a JSON object that maps preferences to numbers between 0 and 1")
+			if math.IsNaN(policy.Quality) || policy.Quality < 0 || policy.Quality > 1 ||
+				math.IsNaN(policy.Cost) || policy.Cost < 0 || policy.Cost > 1 ||
+				math.IsNaN(policy.Capacity) || policy.Capacity < 0 || policy.Capacity > 1 ||
+				math.IsNaN(policy.Success) || policy.Success < 0 || policy.Success > 1 ||
+				math.IsNaN(policy.Temperature) || policy.Temperature < 0 || policy.Temperature > 1 {
+				return common.NewMessage("Must be a JSON object that maps preferences to routing weights between 0 and 1")
 			}
-		}
-	case "capacity_pricing":
-		// 允许只写部分字段（比如只关开关），没写的按默认值；写出的值必须合法，
-		// 否则存下去也只会被静默换回默认值，管理员看不出来。
-		var pricing autorouter.CapacityPricing
-		if !decodeJSON(value, &pricing) {
-			return common.NewMessage("Must be a JSON object with the capacity pricing settings")
-		}
-		invalid := common.NewMessage("Must be a JSON object with the capacity pricing settings")
-		if math.IsNaN(pricing.Knee) || pricing.Knee < 0 || pricing.Knee >= 1 {
-			return invalid
-		}
-		if pricing.Gamma != 0 && (math.IsNaN(pricing.Gamma) || pricing.Gamma < 0 || pricing.Gamma > 8) {
-			return invalid
-		}
-		if pricing.MaxMultiplier != 0 && (math.IsNaN(pricing.MaxMultiplier) || math.IsInf(pricing.MaxMultiplier, 0) || pricing.MaxMultiplier < 1) {
-			return invalid
-		}
-		if pricing.SaturatedMultiplier != 0 && (math.IsNaN(pricing.SaturatedMultiplier) || math.IsInf(pricing.SaturatedMultiplier, 0) || pricing.SaturatedMultiplier < 1) {
-			return invalid
-		}
-		if pricing.MaxMultiplier > 0 && pricing.SaturatedMultiplier > 0 && pricing.SaturatedMultiplier < pricing.MaxMultiplier {
-			return invalid
-		}
-		if pricing.CacheSeconds < 0 || pricing.CacheSeconds > 300 || pricing.SmoothingSeconds < 0 || pricing.SmoothingSeconds > 3600 {
-			return invalid
 		}
 	case "task_models":
 		return decodesAs[map[string][]string](value)

@@ -129,6 +129,20 @@ func (s *BillingSession) Refund(c *gin.Context) {
 	})
 }
 
+// CloseSettledAttemptBilling 在一次已按用量结算的尝试被改判为失败（上游拒答）后调用：
+// 卸下这个已结算的会话，下一次尝试重新预扣、单独结算，最终失败时也不会去退它。
+// 会话里同步到 RelayInfo 的字段一并清掉，免得被下一次尝试的日志或预扣沿用。
+func CloseSettledAttemptBilling(info *relaycommon.RelayInfo) {
+	info.Billing = nil
+	info.BillingSessionIndex++
+	info.FinalPreConsumedQuota = 0
+	info.QuotaClamp = nil
+	info.BillingSource = ""
+	info.SubscriptionId = 0
+	info.SubscriptionPreConsumed = 0
+	info.SubscriptionPostDelta = 0
+}
+
 // NeedsRefund 返回是否存在需要退还的预扣状态。
 func (s *BillingSession) NeedsRefund() bool {
 	s.mu.Lock()
@@ -446,11 +460,16 @@ func NewBillingSession(c *gin.Context, relayInfo *relaycommon.RelayInfo, preCons
 		if subConsume <= 0 {
 			subConsume = 1
 		}
+		// 订阅预扣按请求 ID 去重；拒答改判后新开的会话要换一个键，否则会拿到上一个会话已结算的预扣记录。
+		requestId := relayInfo.RequestId
+		if relayInfo.BillingSessionIndex > 0 {
+			requestId = fmt.Sprintf("%s#%d", relayInfo.RequestId, relayInfo.BillingSessionIndex)
+		}
 		session := &BillingSession{
 			relayInfo: relayInfo,
 			lang:      i18n.StatedLang(c),
 			funding: &SubscriptionFunding{
-				requestId:  relayInfo.RequestId,
+				requestId:  requestId,
 				userId:     relayInfo.UserId,
 				modelName:  relayInfo.GetBillingModelName(),
 				autoRouted: common.GetContextKeyBool(c, constant.ContextKeyAutoRouted),

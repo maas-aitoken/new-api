@@ -2,6 +2,7 @@ package model
 
 import (
 	"errors"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -113,6 +114,60 @@ func ListUserAccessTokens(userID int) ([]UserAccessToken, error) {
 	tokens := make([]UserAccessToken, 0)
 	err := DB.Where("user_id = ?", userID).Order("created_at DESC").Order("id DESC").Find(&tokens).Error
 	return tokens, err
+}
+
+// MigrateUserAccessTokenNavigationScopes preserves grants when page permissions
+// are split into independent resources. The migration is safe to rerun.
+func MigrateUserAccessTokenNavigationScopes() error {
+	const batchSize = 500
+	lastID, migrated := 0, 0
+	for {
+		var tokens []UserAccessToken
+		if err := DB.Select("id", "scopes").
+			Where("id > ? AND (scopes LIKE ? OR scopes LIKE ? OR scopes LIKE ? OR scopes LIKE ?)",
+				lastID, "%\"usage:read\"%", "%\"log:read\"%", "%\"channel:read\"%", "%\"channel:write\"%").
+			Order("id").Limit(batchSize).Find(&tokens).Error; err != nil {
+			return err
+		}
+		if len(tokens) == 0 {
+			if migrated > 0 {
+				common.SysLog(common.LogText("migrated navigation scopes for %d access tokens", migrated))
+			}
+			return nil
+		}
+		for i := range tokens {
+			token := &tokens[i]
+			lastID = token.Id
+			scopes := token.GetScopes()
+			originalCount := len(scopes)
+			previous := token.Scopes
+			for _, mapping := range [][2]string{
+				{"usage:read", "log_self:read"},
+				{"log:read", "dashboard:read"},
+				{"log:read", "usage_all:read"},
+				{"channel:read", "resource_pool:read"},
+				{"channel:write", "resource_pool:write"},
+			} {
+				if slices.Contains(scopes, mapping[0]) && !slices.Contains(scopes, mapping[1]) {
+					scopes = append(scopes, mapping[1])
+				}
+			}
+			if len(scopes) == originalCount {
+				continue
+			}
+			slices.Sort(scopes)
+			if err := token.SetScopes(scopes); err != nil {
+				return err
+			}
+			result := DB.Model(&UserAccessToken{}).
+				Where("id = ? AND scopes = ?", token.Id, previous).
+				Update("scopes", token.Scopes)
+			if result.Error != nil {
+				return result.Error
+			}
+			migrated += int(result.RowsAffected)
+		}
+	}
 }
 
 // CreateUserAccessToken inserts a token while holding the owner's users row, so

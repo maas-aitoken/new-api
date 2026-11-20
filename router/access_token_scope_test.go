@@ -4,6 +4,9 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"maps"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -148,6 +151,32 @@ func TestAccessTokenRouteRulesCoverEveryDashboardRoute(t *testing.T) {
 	}
 }
 
+func TestModelSquareRoutesRespectRequiredAuthentication(t *testing.T) {
+	common.OptionMapRWMutex.Lock()
+	previous := common.OptionMap
+	common.OptionMap = maps.Clone(previous)
+	if common.OptionMap == nil {
+		common.OptionMap = make(map[string]string)
+	}
+	common.OptionMap["HeaderNavModules"] = `{"pricing":{"enabled":true,"requireAuth":true}}`
+	common.OptionMapRWMutex.Unlock()
+	t.Cleanup(func() {
+		common.OptionMapRWMutex.Lock()
+		common.OptionMap = previous
+		common.OptionMapRWMutex.Unlock()
+	})
+	engine := newAccessTokenScopeTestEngine(t)
+	for _, path := range []string{
+		"/api/model-square", "/api/model-square/1",
+		"/api/perf-metrics/summary", "/api/perf-metrics/availability", "/api/perf-metrics/health",
+	} {
+		request := httptest.NewRequest(http.MethodGet, path, nil)
+		response := httptest.NewRecorder()
+		engine.ServeHTTP(response, request)
+		assert.Equal(t, http.StatusUnauthorized, response.Code, path)
+	}
+}
+
 func TestAccessTokenCatalogCoversEveryPermission(t *testing.T) {
 	catalog := service.AccessTokenCatalog(1, common.RoleRootUser)
 	scopes := map[string]bool{}
@@ -166,6 +195,29 @@ func TestAccessTokenCatalogCoversEveryPermission(t *testing.T) {
 	for resource, count := range resources {
 		assert.Equal(t, 1, count, "resource %s appears in more than one catalog entry", resource)
 	}
+}
+
+func TestAccessTokenPersonalCatalogSeparatesUsageAndLogs(t *testing.T) {
+	catalog := service.AccessTokenCatalog(1, common.RoleCommonUser)
+	scopes := map[string]bool{}
+	for _, group := range catalog {
+		for _, resource := range group.Resources {
+			for _, action := range resource.Actions {
+				scopes[resource.Resource+":"+action.Action] = true
+			}
+		}
+	}
+	assert.True(t, scopes["usage:read"])
+	assert.True(t, scopes["overview:read"])
+	assert.True(t, scopes["model_square:read"])
+	assert.True(t, scopes["log_self:read"])
+	assert.False(t, scopes["log:read"])
+	assert.False(t, scopes["wallet:read"])
+	assert.False(t, scopes["wallet:write"])
+	assert.False(t, scopes["redemption:read"])
+	assert.True(t, service.AccessTokenScopeGranted([]string{"usage_all:read"}, "usage:read"))
+	_, err := service.NormalizeAccessTokenScopes(1, common.RoleCommonUser, []string{"wallet:read"})
+	assert.ErrorIs(t, err, service.ErrAccessTokenScopeForbidden)
 }
 
 func TestAccessTokenVerificationScopesAreAllListed(t *testing.T) {
