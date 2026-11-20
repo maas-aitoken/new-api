@@ -163,7 +163,7 @@ export function ModeStep(props: { mode: RouteTraceMode }) {
   let facts: FactRow[] = []
   if (schema === 'current' && mode.weights) {
     facts = [
-      [t('Quality weight'), formatScore(mode.weights.quality)],
+      [t('Capability weight'), formatScore(mode.weights.quality)],
       [t('Cost weight'), formatScore(mode.weights.cost)],
       [t('Capacity weight'), formatScore(mode.weights.capacity)],
       [t('Success weight'), formatScore(mode.weights.success)],

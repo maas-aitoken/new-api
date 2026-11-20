@@ -118,6 +118,7 @@ func TestRelayAutoRetriesNextModelBeyondChannelRetryBudget(t *testing.T) {
 		common.SetContextKey(c, constant.ContextKeyUsingGroup, "default")
 		common.SetContextKey(c, constant.ContextKeyUserGroup, "default")
 		common.SetContextKey(c, constant.ContextKeyUserId, 1)
+		common.SetContextKey(c, constant.ContextKeyTokenId, 7301)
 		c.Set("id", 1)
 	}, middleware.Distribute(), func(c *gin.Context) {
 		Relay(c, types.RelayFormatOpenAI)
@@ -131,6 +132,15 @@ func TestRelayAutoRetriesNextModelBeyondChannelRetryBudget(t *testing.T) {
 	assert.Contains(t, requests[0], `"model":"failed-model"`)
 	assert.Contains(t, requests[1], `"model":"available-model"`)
 	assert.Contains(t, requests[2], `"model":"last-model"`)
+
+	requests = nil
+	response = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"auto","messages":[{"role":"user","content":"hello"},{"role":"assistant","content":"ok"},{"role":"user","content":"continue"}]}`))
+	request.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(response, request)
+	require.Equal(t, http.StatusOK, response.Code, response.Body.String())
+	require.Len(t, requests, 1, "a continuation must start with the model that actually answered the previous request")
+	assert.Contains(t, requests[0], `"model":"last-model"`)
 
 	requests = nil
 	response = httptest.NewRecorder()

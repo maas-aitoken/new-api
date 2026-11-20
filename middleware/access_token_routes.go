@@ -20,6 +20,8 @@ const (
 	accessTokenRuleAny
 	// accessTokenRuleSession rejects every access token, legacy ones included.
 	accessTokenRuleSession
+	// accessTokenRuleUsageViewer uses the caller's role to select the usage scope.
+	accessTokenRuleUsageViewer
 )
 
 type accessTokenRouteRule struct {
@@ -28,8 +30,9 @@ type accessTokenRouteRule struct {
 }
 
 var (
-	accessTokenAnyRule     = accessTokenRouteRule{kind: accessTokenRuleAny}
-	accessTokenSessionRule = accessTokenRouteRule{kind: accessTokenRuleSession}
+	accessTokenAnyRule         = accessTokenRouteRule{kind: accessTokenRuleAny}
+	accessTokenSessionRule     = accessTokenRouteRule{kind: accessTokenRuleSession}
+	accessTokenUsageViewerRule = accessTokenRouteRule{kind: accessTokenRuleUsageViewer}
 )
 
 func accessTokenScopeRule(scope string) accessTokenRouteRule {
@@ -45,10 +48,10 @@ var accessTokenRouteRules = map[string]accessTokenRouteRule{
 	"GET /api/models":                     accessTokenScopeRule("profile:read"),
 	"GET /api/status/test":                accessTokenScopeRule("log:read"),
 	"GET /api/pricing":                    accessTokenAnyRule,
-	"GET /api/model-square":               accessTokenAnyRule,
-	"GET /api/model-square/:id":           accessTokenAnyRule,
-	"GET /api/perf-metrics/summary":       accessTokenAnyRule,
-	"GET /api/perf-metrics":               accessTokenAnyRule,
+	"GET /api/model-square":               accessTokenScopeRule("model_square:read"),
+	"GET /api/model-square/:id":           accessTokenScopeRule("model_square:read"),
+	"GET /api/perf-metrics/summary":       accessTokenScopeRule("model_square:read"),
+	"GET /api/perf-metrics":               accessTokenScopeRule("model_square:read"),
 	"GET /api/rankings":                   accessTokenAnyRule,
 	"POST /api/oauth/state":               accessTokenSessionRule,
 	"POST /api/oauth/email/bind/start":    accessTokenScopeRule("account_security:write"),
@@ -273,32 +276,45 @@ var accessTokenRouteRules = map[string]accessTokenRouteRule{
 	"DELETE /api/redemption/:id":     accessTokenScopeRule("redemption:write"),
 
 	// router/api-router.go: /api/audit, /api/log, /api/data
-	"GET /api/audit/self":                       accessTokenScopeRule("usage:read"),
+	"GET /api/audit/self":                       accessTokenScopeRule("log_self:read"),
 	"GET /api/log/":                             accessTokenScopeRule("log:read"),
 	"GET /api/log/stat":                         accessTokenScopeRule("log:read"),
-	"GET /api/log/self/stat":                    accessTokenScopeRule("usage:read"),
+	"GET /api/log/self/stat":                    accessTokenScopeRule("log_self:read"),
 	"GET /api/log/channel_affinity_usage_cache": accessTokenScopeRule("log:read"),
 	"GET /api/log/search":                       accessTokenScopeRule("log:read"),
-	"GET /api/log/self":                         accessTokenScopeRule("usage:read"),
-	"GET /api/log/self/search":                  accessTokenScopeRule("usage:read"),
+	"GET /api/log/self":                         accessTokenScopeRule("log_self:read"),
+	"GET /api/log/self/search":                  accessTokenScopeRule("log_self:read"),
 	"GET /api/log/export":                       accessTokenScopeRule("log:read"),
-	"GET /api/log/self/export":                  accessTokenScopeRule("usage:read"),
-	"GET /api/data/":                            accessTokenScopeRule("log:read"),
-	"GET /api/data/users":                       accessTokenScopeRule("log:read"),
+	"GET /api/log/self/export":                  accessTokenScopeRule("log_self:read"),
+	"GET /api/data/":                            accessTokenScopeRule("dashboard:read"),
+	"GET /api/data/users":                       accessTokenScopeRule("dashboard:read"),
 	"GET /api/data/self":                        accessTokenScopeRule("usage:read"),
-	"GET /api/data/flow":                        accessTokenScopeRule("log:read"),
+	"GET /api/data/flow":                        accessTokenScopeRule("dashboard:read"),
 	"GET /api/data/flow/self":                   accessTokenScopeRule("usage:read"),
+	"GET /api/overview/data":                    accessTokenScopeRule("overview:read"),
+	"GET /api/overview/flow":                    accessTokenScopeRule("overview:read"),
+	"GET /api/overview/iself":                   accessTokenScopeRule("overview:read"),
+	"GET /api/overview/platforms":               accessTokenScopeRule("overview:read"),
+	"GET /api/overview/api-keys":                accessTokenScopeRule("overview:read"),
+	"GET /api/overview/profile":                 accessTokenScopeRule("overview:read"),
+	"GET /api/overview/subscription":            accessTokenScopeRule("overview:read"),
+	"GET /api/overview/quota-notices":           accessTokenScopeRule("overview:read"),
+	"POST /api/overview/quota-increase":         accessTokenScopeRule("overview:write"),
+	"GET /api/profile/summary":                  accessTokenScopeRule("profile:read"),
+	"GET /api/profile/data":                     accessTokenScopeRule("profile:read"),
+	"GET /api/profile/subscription":             accessTokenScopeRule("profile:read"),
+	"POST /api/profile/quota-increase":          accessTokenScopeRule("profile:write"),
 	"GET /api/data/scope":                       accessTokenScopeRule("usage:read"),
 	"GET /api/data/platforms":                   accessTokenScopeRule("usage:read"),
-	"GET /api/data/analytics":                   accessTokenScopeRule("log:read"),
+	"GET /api/data/analytics":                   accessTokenUsageViewerRule,
 	"GET /api/data/analytics/self":              accessTokenScopeRule("usage:read"),
-	"GET /api/data/org-options":                 accessTokenScopeRule("log:read"),
-	"GET /api/data/iself":                       accessTokenScopeRule("log:read"),
+	"GET /api/data/org-options":                 accessTokenUsageViewerRule,
+	"GET /api/data/iself":                       accessTokenScopeRule("dashboard:read"),
 	"GET /api/data/iself/self":                  accessTokenScopeRule("usage:read"),
-	"GET /api/data/peak-tpm":                    accessTokenScopeRule("log:read"),
+	"GET /api/data/peak-tpm":                    accessTokenUsageViewerRule,
 	"GET /api/data/peak-tpm/self":               accessTokenScopeRule("usage:read"),
-	"GET /api/perf-metrics/availability":        accessTokenAnyRule,
-	"GET /api/perf-metrics/health":              accessTokenAnyRule,
+	"GET /api/perf-metrics/availability":        accessTokenScopeRule("model_square:read"),
+	"GET /api/perf-metrics/health":              accessTokenScopeRule("model_square:read"),
 
 	// router/api-router.go: /api/group, /api/prefill_group
 	"GET /api/group/":               accessTokenScopeRule("group:read"),
@@ -308,11 +324,11 @@ var accessTokenRouteRules = map[string]accessTokenRouteRule{
 	"DELETE /api/prefill_group/:id": accessTokenScopeRule("group:write"),
 
 	// router/api-router.go: /api/mj, /api/task
-	"GET /api/mj/self":                 accessTokenScopeRule("usage:read"),
+	"GET /api/mj/self":                 accessTokenScopeRule("log_self:read"),
 	"GET /api/mj/":                     accessTokenScopeRule("log:read"),
-	"GET /api/task/self":               accessTokenScopeRule("usage:read"),
+	"GET /api/task/self":               accessTokenScopeRule("log_self:read"),
 	"GET /api/task":                    accessTokenScopeRule("log:read"),
-	"GET /api/task/:task_id/artifacts": accessTokenScopeRule("usage:read"),
+	"GET /api/task/:task_id/artifacts": accessTokenScopeRule("log_self:read"),
 
 	// router/api-router.go: /api/vendors, /api/models (admin)
 	"POST /api/vendors/operations/preview":                accessTokenScopeRule("model:read"),

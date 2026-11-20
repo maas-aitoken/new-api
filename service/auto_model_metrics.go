@@ -13,22 +13,18 @@ import (
 const autoModelMetricsTTL = 10 * time.Minute
 
 var autoModelMetricsScript = redis.NewScript(`
-for i = 1, 2 do
-  local fields = redis.call('HKEYS', KEYS[i])
-  for _, field in ipairs(fields) do
-    local second = string.match(field, '^(%d+):[sf]$') or field
-    if (tonumber(second) or 0) <= tonumber(ARGV[1]) then
-      redis.call('HDEL', KEYS[i], field)
-    end
+local fields = redis.call('HKEYS', KEYS[1])
+for _, field in ipairs(fields) do
+  local second = string.match(field, '^(%d+):[sf]$') or field
+  if (tonumber(second) or 0) <= tonumber(ARGV[1]) then
+    redis.call('HDEL', KEYS[1], field)
   end
-  redis.call('PEXPIRE', KEYS[i], ARGV[3])
 end
-if ARGV[2] == 'begin' then
-  redis.call('HINCRBY', KEYS[1], ARGV[4], 1)
-elseif ARGV[2] == 'success' then
-  redis.call('HINCRBY', KEYS[2], ARGV[4] .. ':s', 1)
+redis.call('PEXPIRE', KEYS[1], ARGV[3])
+if ARGV[2] == 'success' then
+  redis.call('HINCRBY', KEYS[1], ARGV[4] .. ':s', 1)
 else
-  redis.call('HINCRBY', KEYS[2], ARGV[4] .. ':f', 1)
+  redis.call('HINCRBY', KEYS[1], ARGV[4] .. ':f', 1)
 end
 return 1
 `)
@@ -53,16 +49,11 @@ func (m *autoModelMetrics) update(model, outcome string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
 	defer cancel()
 	err := autoModelMetricsScript.Run(ctx, common.RDB,
-		[]string{autoModelMetricsKey(model, "requests"), autoModelMetricsKey(model, "outcomes")},
+		[]string{autoModelMetricsKey(model, "outcomes")},
 		now.Unix()-300, outcome, autoModelMetricsTTL.Milliseconds(), now.Unix()).Err()
 	if err != nil {
 		common.SysError("auto model metrics: " + err.Error())
 	}
-}
-
-func (m *autoModelMetrics) Begin(model string) {
-	m.fallback.Begin(model)
-	m.update(model, "begin")
 }
 
 func (m *autoModelMetrics) Finish(model string, success bool) {
@@ -82,14 +73,12 @@ func (m *autoModelMetrics) Snapshot(models []string) map[string]autorouter.Metri
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
 	type commands struct {
-		requests *redis.StringStringMapCmd
 		outcomes *redis.StringStringMapCmd
 	}
 	cmds := make(map[string]commands, len(models))
 	_, err := common.RDB.Pipelined(ctx, func(pipe redis.Pipeliner) error {
 		for _, model := range models {
 			cmds[model] = commands{
-				requests: pipe.HGetAll(ctx, autoModelMetricsKey(model, "requests")),
 				outcomes: pipe.HGetAll(ctx, autoModelMetricsKey(model, "outcomes")),
 			}
 		}
@@ -103,12 +92,6 @@ func (m *autoModelMetrics) Snapshot(models []string) map[string]autorouter.Metri
 	result := make(map[string]autorouter.MetricSample, len(models))
 	for model, cmd := range cmds {
 		var sample autorouter.MetricSample
-		for field, value := range cmd.requests.Val() {
-			second, err := strconv.ParseInt(field, 10, 64)
-			if err == nil && second > cutoff {
-				sample.Requests += redisCount(value)
-			}
-		}
 		for field, value := range cmd.outcomes.Val() {
 			second, outcome, found := parseAutoModelOutcome(field)
 			if !found || second <= cutoff {
@@ -120,7 +103,7 @@ func (m *autoModelMetrics) Snapshot(models []string) map[string]autorouter.Metri
 				sample.Failures += redisCount(value)
 			}
 		}
-		if sample.Requests > 0 || sample.Successes > 0 || sample.Failures > 0 {
+		if sample.Successes > 0 || sample.Failures > 0 {
 			result[model] = sample
 		}
 	}

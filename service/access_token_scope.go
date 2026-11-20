@@ -53,17 +53,27 @@ func accessTokenEdit(description string) authz.ActionDefinition {
 // Casbin permission. Casbin resources come from authz.Catalog() at runtime and
 // must never be duplicated here.
 var accessTokenStaticResources = []AccessTokenResource{
+	{Resource: "model_square", LabelKey: "Model Square", group: AccessTokenGroupPersonal, minRole: common.RoleCommonUser, Actions: []authz.ActionDefinition{
+		accessTokenView("View the model catalog and model square performance."),
+	}},
 	{Resource: "profile", LabelKey: "Profile", group: AccessTokenGroupPersonal, minRole: common.RoleCommonUser, Actions: []authz.ActionDefinition{
 		accessTokenView("View your profile, groups, and available models."),
 		accessTokenEdit("Change your display name and personal settings."),
 	}},
-	{Resource: "api_key", LabelKey: "API keys", group: AccessTokenGroupPersonal, minRole: common.RoleCommonUser, Actions: []authz.ActionDefinition{
+	{Resource: "api_key", LabelKey: "API Key", group: AccessTokenGroupPersonal, minRole: common.RoleCommonUser, Actions: []authz.ActionDefinition{
 		accessTokenView("View API keys and their settings without the full key."),
 		accessTokenEdit("Create, edit, and delete API keys."),
 		{Action: accessTokenActionReveal, LabelKey: "Reveal full keys", DescriptionKey: "View complete API keys."},
 	}},
-	{Resource: "usage", LabelKey: "Usage", group: AccessTokenGroupPersonal, minRole: common.RoleCommonUser, Actions: []authz.ActionDefinition{
-		accessTokenView("View your usage logs, statistics, tasks, and audit logs."),
+	{Resource: "overview", LabelKey: "Overview", group: AccessTokenGroupPersonal, minRole: common.RoleCommonUser, Actions: []authz.ActionDefinition{
+		accessTokenView("View your account overview."),
+		accessTokenEdit("Request a quota increase from the overview."),
+	}},
+	{Resource: "usage", LabelKey: "My usage", group: AccessTokenGroupPersonal, minRole: common.RoleCommonUser, Actions: []authz.ActionDefinition{
+		accessTokenView("View your usage statistics."),
+	}},
+	{Resource: "log_self", LabelKey: "Logs", group: AccessTokenGroupPersonal, minRole: common.RoleCommonUser, Actions: []authz.ActionDefinition{
+		accessTokenView("View your usage logs, tasks, and audit logs."),
 	}},
 	{Resource: "wallet", LabelKey: "Wallet", group: AccessTokenGroupPersonal, minRole: common.RoleCommonUser, Actions: []authz.ActionDefinition{
 		accessTokenView("View balance, top-up records, subscriptions, and referral information."),
@@ -73,11 +83,17 @@ var accessTokenStaticResources = []AccessTokenResource{
 		accessTokenView("View Passkey, two-factor, and sign-in binding status."),
 		accessTokenEdit("Includes changes that require security verification, such as password, two-factor settings, and account deletion."),
 	}},
+	{Resource: "dashboard", LabelKey: "Data Dashboard", group: AccessTokenGroupAdmin, minRole: common.RoleAdminUser, Actions: []authz.ActionDefinition{
+		accessTokenView("View aggregate user statistics."),
+	}},
+	{Resource: "usage_all", LabelKey: "All users", group: AccessTokenGroupAdmin, minRole: common.RoleAdminUser, Actions: []authz.ActionDefinition{
+		accessTokenView("View all usage available to your administrator account."),
+	}},
 	{Resource: "user", LabelKey: "Users", group: AccessTokenGroupAdmin, minRole: common.RoleAdminUser, Actions: []authz.ActionDefinition{
 		accessTokenView("View users, their sign-in bindings, and permission settings."),
 		accessTokenEdit("Create, edit, disable, and delete users, and reset their security settings."),
 	}},
-	{Resource: "billing", LabelKey: "Billing management", group: AccessTokenGroupAdmin, minRole: common.RoleAdminUser, Actions: []authz.ActionDefinition{
+	{Resource: "billing", LabelKey: "Subscriptions", group: AccessTokenGroupAdmin, minRole: common.RoleAdminUser, Actions: []authz.ActionDefinition{
 		accessTokenView("View all top-up records, subscription plans, and user subscriptions."),
 		accessTokenEdit("Complete top-up orders and manage subscription plans and user subscriptions."),
 	}},
@@ -89,7 +105,7 @@ var accessTokenStaticResources = []AccessTokenResource{
 		accessTokenView("View deployments and price estimates."),
 		accessTokenEdit("Create, edit, and delete deployments, and test connections."),
 	}},
-	{Resource: "log", LabelKey: "Logs", group: AccessTokenGroupAdmin, minRole: common.RoleAdminUser, Actions: []authz.ActionDefinition{
+	{Resource: "log", LabelKey: "Usage Logs", group: AccessTokenGroupAdmin, minRole: common.RoleAdminUser, Actions: []authz.ActionDefinition{
 		accessTokenView("View all users' usage logs, statistics, and tasks."),
 	}},
 	{Resource: "redemption", LabelKey: "Redemption codes", group: AccessTokenGroupAdmin, minRole: common.RoleAdminUser, Actions: []authz.ActionDefinition{
@@ -108,7 +124,7 @@ var accessTokenStaticResources = []AccessTokenResource{
 		accessTokenView("View installed task plugins and their settings."),
 		accessTokenEdit("Install, configure, test, and remove task plugins."),
 	}},
-	{Resource: "ops", LabelKey: "Operations", group: AccessTokenGroupSystem, minRole: common.RoleRootUser, Actions: []authz.ActionDefinition{
+	{Resource: "ops", LabelKey: "System Info", group: AccessTokenGroupSystem, minRole: common.RoleRootUser, Actions: []authz.ActionDefinition{
 		accessTokenView("View performance, system tasks, and system information."),
 		accessTokenEdit("Run and manage maintenance tasks and performance settings."),
 	}},
@@ -125,7 +141,8 @@ func AccessTokenScopeOf(permission authz.Permission) string {
 func AccessTokenCatalog(userID, role int) []AccessTokenCatalogGroup {
 	resources := map[string][]AccessTokenResource{}
 	for _, resource := range accessTokenStaticResources {
-		if role < resource.minRole {
+		// Existing wallet grants remain recognizable but cannot be issued again.
+		if role < resource.minRole || resource.Resource == "wallet" || resource.Resource == "redemption" {
 			continue
 		}
 		resource.Actions = slices.Clone(resource.Actions)
@@ -210,7 +227,8 @@ func knownAccessTokenScope(scope string) bool {
 }
 
 func AccessTokenScopeGranted(scopes []string, scope string) bool {
-	return scope != "" && slices.Contains(scopes, scope)
+	return scope != "" && (slices.Contains(scopes, scope) ||
+		scope == "usage:read" && slices.Contains(scopes, "usage_all:read"))
 }
 
 // accessTokenVerificationScopes maps every verification scope to the token

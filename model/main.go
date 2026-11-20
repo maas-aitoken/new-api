@@ -406,6 +406,9 @@ func migrateDB() error {
 	if err := InitializeUserAuthVersions(); err != nil {
 		return err
 	}
+	if err := MigrateUserAccessTokenNavigationScopes(); err != nil {
+		return fmt.Errorf("migrate access token navigation scopes: %w", err)
+	}
 	if err := EnsureLegacyAccessTokenRetireAt(common.GetTimestamp()); err != nil {
 		return fmt.Errorf("initialize legacy access token deadline: %w", err)
 	}

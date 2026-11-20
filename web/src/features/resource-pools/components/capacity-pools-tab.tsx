@@ -62,7 +62,10 @@ import {
 import { formatResetDistance } from '../pool-metrics'
 import { CapacityPoolDialog } from './capacity-pool-dialog'
 import { CapacityPoolMemberDialog } from './capacity-pool-member-dialog'
-import { capacityPoolQueryKeys } from './capacity-pool-query-keys'
+import {
+  capacityPoolQueryKeys,
+  invalidateCapacityPoolQueries,
+} from './capacity-pool-query-keys'
 
 const EXCLUDED_REASON_LABELS: Record<string, string> = {
   disabled: 'Disabled',
@@ -177,9 +180,7 @@ function CapacityPoolCard(props: {
   const pool = props.pool
   const capacity = props.capacity
   const invalidate = () =>
-    queryClient.invalidateQueries({
-      queryKey: capacityPoolQueryKeys.provider(pool.provider),
-    })
+    invalidateCapacityPoolQueries(queryClient, pool.provider)
   const remove = useMutation({
     mutationFn: () => deleteCapacityPool(pool.id),
     onSuccess: async () => {
@@ -298,6 +299,7 @@ function CapacityPoolCard(props: {
                 <TableHead>{t('Upstream')}</TableHead>
                 <TableHead>{t('Models')}</TableHead>
                 <TableHead className='text-right'>RPM</TableHead>
+                <TableHead className='text-right'>TPM</TableHead>
                 <TableHead className='text-right'>{t('In flight')}</TableHead>
                 <TableHead className='w-12'>
                   <span className='sr-only'>{t('Actions')}</span>
@@ -330,6 +332,9 @@ function CapacityPoolCard(props: {
                     </TableCell>
                     <TableCell className='text-right tabular-nums'>
                       {formatCompactNumber(usage?.rpm_used ?? 0, props.locale)}
+                    </TableCell>
+                    <TableCell className='text-right tabular-nums'>
+                      {formatCompactNumber(usage?.tpm_used ?? 0, props.locale)}
                     </TableCell>
                     <TableCell className='text-right tabular-nums'>
                       {usage?.in_flight ?? 0}

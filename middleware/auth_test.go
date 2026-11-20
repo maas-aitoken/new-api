@@ -167,7 +167,7 @@ func TestDashboardAuthRejectsRedisRoleTampering(t *testing.T) {
 			require.NoError(t, model.DB.Model(user).Update("role", role).Error)
 			bundle, err := service.CreateLoginSession(user.Id, "password", "127.0.0.1", "cache-integrity-test")
 			require.NoError(t, err)
-			pat, _ := createMiddlewareScopedToken(t, user.Id, 0, "profile:read", "user:read")
+			pat, _ := createMiddlewareScopedToken(t, user.Id, 0, "profile:read", "user:read", "model_square:read")
 
 			router := gin.New()
 			router.GET("/api/perf-metrics", RootAuth(), func(c *gin.Context) { c.Status(http.StatusNoContent) })
@@ -395,13 +395,24 @@ func TestUserAuthAppliesAccessTokenRouteRules(t *testing.T) {
 	require.NoError(t, authz.Init(model.DB))
 	// The channel router declares this rule when it registers the route.
 	DeclareAccessTokenPermissionRoute(http.MethodGet, "/api/channel/", authz.ChannelRead)
+	DeclareAccessTokenPermissionRoute(http.MethodGet, "/api/channel/resource_pools/sources", authz.ResourcePoolRead)
 
 	legacy := "middleware-legacy-token"
 	admin := createMiddlewarePATUser(t, "route-rule-admin", legacy)
 	require.NoError(t, model.DB.Model(admin).Update("role", common.RoleAdminUser).Error)
 	profile, _ := createMiddlewareScopedToken(t, admin.Id, 0, "profile:read")
-	channel, _ := createMiddlewareScopedToken(t, admin.Id, time.Now().Unix()+3600, "channel:read")
+	channel, channelGrant := createMiddlewareScopedToken(t, admin.Id, time.Now().Unix()+3600, "channel:read")
+	pool, _ := createMiddlewareScopedToken(t, admin.Id, 0, "resource_pool:read")
 	expired, _ := createMiddlewareScopedToken(t, admin.Id, time.Now().Unix()-1, "profile:read")
+	adminUsage, _ := createMiddlewareScopedToken(t, admin.Id, 0, "usage:read")
+	adminUsageAll, _ := createMiddlewareScopedToken(t, admin.Id, 0, "usage_all:read")
+	adminDashboard, _ := createMiddlewareScopedToken(t, admin.Id, 0, "dashboard:read")
+	adminLogs, adminLogGrant := createMiddlewareScopedToken(t, admin.Id, 0, "log:read")
+	viewer := createMiddlewarePATUser(t, "route-rule-viewer", "")
+	viewerUsage, _ := createMiddlewareScopedToken(t, viewer.Id, 0, "usage:read")
+	viewerSquare, _ := createMiddlewareScopedToken(t, viewer.Id, 0, "model_square:read")
+	viewerOverview, _ := createMiddlewareScopedToken(t, viewer.Id, 0, "overview:read")
+	viewerLogs, _ := createMiddlewareScopedToken(t, viewer.Id, 0, "log_self:read")
 
 	ok := func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"id": c.GetInt("id")}) }
 	router := gin.New()
@@ -409,7 +420,19 @@ func TestUserAuthAppliesAccessTokenRouteRules(t *testing.T) {
 	router.GET("/api/user/access_tokens", UserAuth(), ok)
 	router.GET("/api/undeclared", UserAuth(), ok)
 	router.GET("/api/channel/", AdminAuth(), RequirePermission(authz.ChannelRead), ok)
+	router.GET("/api/channel/resource_pools/sources", AdminAuth(), RequirePermission(authz.ResourcePoolRead), ok)
 	router.GET("/api/pricing", TryUserAuth(), ok)
+	router.GET("/api/data/analytics", UserAuth(), ok)
+	router.GET("/api/data/org-options", UserAuth(), ok)
+	router.GET("/api/data/peak-tpm", UserAuth(), ok)
+	router.GET("/api/data/users", AdminAuth(), ok)
+	router.GET("/api/log/", AdminAuth(), ok)
+	router.GET("/api/log/self", UserAuth(), ok)
+	router.GET("/api/overview/data", UserAuth(), ok)
+	router.GET("/api/model-square", UserAuth(), ok)
+	router.GET("/api/perf-metrics/summary", UserAuth(), ok)
+	router.GET("/api/audit/self", UserAuth(), ok)
+	router.GET("/api/profile/data", UserAuth(), ok)
 
 	for _, test := range []struct {
 		name, path, token, code, reason string
@@ -421,6 +444,32 @@ func TestUserAuthAppliesAccessTokenRouteRules(t *testing.T) {
 		{name: "session route", path: "/api/user/access_tokens", token: profile, status: http.StatusForbidden, code: "AUTH_SESSION_REQUIRED", reason: "session_required"},
 		{name: "permission route with its scope", path: "/api/channel/", token: channel, status: http.StatusOK},
 		{name: "permission route without its scope", path: "/api/channel/", token: profile, status: http.StatusForbidden, code: "ACCESS_TOKEN_SCOPE_DENIED", reason: "scope_denied"},
+		{name: "pool scope reads pool", path: "/api/channel/resource_pools/sources", token: pool, status: http.StatusOK},
+		{name: "channel scope cannot read pool", path: "/api/channel/resource_pools/sources", token: channel, status: http.StatusForbidden, code: "ACCESS_TOKEN_SCOPE_DENIED", reason: "scope_denied"},
+		{name: "pool scope cannot read channel", path: "/api/channel/", token: pool, status: http.StatusForbidden, code: "ACCESS_TOKEN_SCOPE_DENIED", reason: "scope_denied"},
+		{name: "overview scope reads overview", path: "/api/overview/data", token: viewerOverview, status: http.StatusOK},
+		{name: "usage scope cannot read overview", path: "/api/overview/data", token: viewerUsage, status: http.StatusForbidden, code: "ACCESS_TOKEN_SCOPE_DENIED", reason: "scope_denied"},
+		{name: "overview scope cannot read analytics", path: "/api/data/analytics", token: viewerOverview, status: http.StatusForbidden, code: "ACCESS_TOKEN_SCOPE_DENIED", reason: "scope_denied"},
+		{name: "model square scope reads catalog", path: "/api/model-square", token: viewerSquare, status: http.StatusOK},
+		{name: "model square scope reads performance", path: "/api/perf-metrics/summary", token: viewerSquare, status: http.StatusOK},
+		{name: "usage scope cannot read model square", path: "/api/model-square", token: viewerUsage, status: http.StatusForbidden, code: "ACCESS_TOKEN_SCOPE_DENIED", reason: "scope_denied"},
+		{name: "profile scope reads profile summary data", path: "/api/profile/data", token: profile, status: http.StatusOK},
+		{name: "overview scope cannot read profile data", path: "/api/profile/data", token: viewerOverview, status: http.StatusForbidden, code: "ACCESS_TOKEN_SCOPE_DENIED", reason: "scope_denied"},
+		{name: "viewer usage analytics", path: "/api/data/analytics", token: viewerUsage, status: http.StatusOK},
+		{name: "viewer organization options", path: "/api/data/org-options", token: viewerUsage, status: http.StatusOK},
+		{name: "viewer peak tpm", path: "/api/data/peak-tpm", token: viewerUsage, status: http.StatusOK},
+		{name: "viewer logs denied by usage", path: "/api/log/self", token: viewerUsage, status: http.StatusForbidden, code: "ACCESS_TOKEN_SCOPE_DENIED", reason: "scope_denied"},
+		{name: "viewer personal logs", path: "/api/log/self", token: viewerLogs, status: http.StatusOK},
+		{name: "viewer personal audit logs", path: "/api/audit/self", token: viewerLogs, status: http.StatusOK},
+		{name: "viewer logs cannot read model square", path: "/api/model-square", token: viewerLogs, status: http.StatusForbidden, code: "ACCESS_TOKEN_SCOPE_DENIED", reason: "scope_denied"},
+		{name: "viewer analytics denied by logs", path: "/api/data/analytics", token: viewerLogs, status: http.StatusForbidden, code: "ACCESS_TOKEN_SCOPE_DENIED", reason: "scope_denied"},
+		{name: "admin usage cannot read global analytics", path: "/api/data/analytics", token: adminUsage, status: http.StatusForbidden, code: "ACCESS_TOKEN_SCOPE_DENIED", reason: "scope_denied"},
+		{name: "admin all usage can read global analytics", path: "/api/data/analytics", token: adminUsageAll, status: http.StatusOK},
+		{name: "admin logs cannot read global analytics", path: "/api/data/analytics", token: adminLogs, status: http.StatusForbidden, code: "ACCESS_TOKEN_SCOPE_DENIED", reason: "scope_denied"},
+		{name: "admin dashboard can read user statistics", path: "/api/data/users", token: adminDashboard, status: http.StatusOK},
+		{name: "admin logs cannot read dashboard", path: "/api/data/users", token: adminLogs, status: http.StatusForbidden, code: "ACCESS_TOKEN_SCOPE_DENIED", reason: "scope_denied"},
+		{name: "admin logs can read usage records", path: "/api/log/", token: adminLogs, status: http.StatusOK},
+		{name: "admin dashboard cannot read usage records", path: "/api/log/", token: adminDashboard, status: http.StatusForbidden, code: "ACCESS_TOKEN_SCOPE_DENIED", reason: "scope_denied"},
 		{name: "expired token", path: "/api/user/self", token: expired, status: http.StatusUnauthorized, code: "ACCESS_TOKEN_EXPIRED", reason: "expired"},
 		{name: "legacy token before the deadline", path: "/api/user/self", token: legacy, status: http.StatusOK},
 		{name: "legacy token on a session route", path: "/api/user/access_tokens", token: legacy, status: http.StatusForbidden, code: "AUTH_SESSION_REQUIRED", reason: "session_required"},
@@ -454,6 +503,9 @@ func TestUserAuthAppliesAccessTokenRouteRules(t *testing.T) {
 	response := middlewareBearerRequest(router, "/api/channel/", channel)
 	assert.Equal(t, http.StatusForbidden, response.Code)
 	assert.NotContains(t, response.Body.String(), "ACCESS_TOKEN_SCOPE_DENIED")
+	response = middlewareBearerRequest(router, "/api/channel/resource_pools/sources", pool)
+	assert.Equal(t, http.StatusForbidden, response.Code)
+	assert.NotContains(t, response.Body.String(), "ACCESS_TOKEN_SCOPE_DENIED")
 
 	require.NoError(t, model.DB.Model(admin).Update("status", common.UserStatusDisabled).Error)
 	response = middlewareBearerRequest(router, "/api/user/self", profile)
@@ -471,6 +523,16 @@ func TestUserAuthAppliesAccessTokenRouteRules(t *testing.T) {
 	assert.Equal(t, http.StatusOK, response.Code)
 	assert.JSONEq(t, `{"id":0}`, response.Body.String(), "optional authentication treats a retired token as anonymous")
 	assert.Equal(t, http.StatusOK, middlewareBearerRequest(router, "/api/user/self", profile).Code, "the deadline only retires legacy tokens")
+	require.NoError(t, model.MigrateUserAccessTokenNavigationScopes())
+	require.NoError(t, model.MigrateUserAccessTokenNavigationScopes())
+	assert.Equal(t, http.StatusOK, middlewareBearerRequest(router, "/api/log/self", viewerUsage).Code, "existing usage grants keep their former personal log access")
+	migratedChannel, err := model.GetUserAccessToken(admin.Id, channelGrant.Id)
+	require.NoError(t, err)
+	assert.Contains(t, migratedChannel.GetScopes(), "resource_pool:read")
+	migratedLogs, err := model.GetUserAccessToken(admin.Id, adminLogGrant.Id)
+	require.NoError(t, err)
+	assert.Contains(t, migratedLogs.GetScopes(), "dashboard:read")
+	assert.Contains(t, migratedLogs.GetScopes(), "usage_all:read")
 }
 
 func TestAccessTokenIdentityAndSingleLookup(t *testing.T) {

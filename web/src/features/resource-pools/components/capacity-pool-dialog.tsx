@@ -69,7 +69,7 @@ import {
   type CapacityPoolFormValues,
 } from '../lib/capacity-pool-form'
 import { accountGroup } from '../pool-metrics'
-import { capacityPoolQueryKeys } from './capacity-pool-query-keys'
+import { invalidateCapacityPoolQueries } from './capacity-pool-query-keys'
 
 type FormInput = z.input<typeof capacityPoolFormSchema>
 type NumberPath = FieldPath<FormInput>
@@ -123,17 +123,28 @@ export function CapacityPoolDialog(props: {
   const sourceIds = useWatch({ control: form.control, name: 'source_ids' })
   const groups = useWatch({ control: form.control, name: 'groups' })
 
-  // 只在打开或换了池时重置；账号列表每分钟刷新，不能冲掉正在填的值。
+  // 打开或换了池时重置；未开始编辑前若账号列表刚加载出套餐，补齐套餐行；
+  // 正在填写时账号每分钟刷新不能冲掉输入。
   const loadedKey = useRef('')
+  const loadedPlanKey = useRef('')
   useEffect(() => {
     if (!props.open) {
       loadedKey.current = ''
+      loadedPlanKey.current = ''
       return
     }
     const key = String(props.pool?.id ?? 'new')
-    if (loadedKey.current === key) return
+    const defaults = capacityPoolFormDefaults(props.pool, props.accounts)
+    const planKey = defaults.plan_rates.map((row) => row.plan).join('\u0000')
+    if (
+      loadedKey.current === key &&
+      (form.formState.isDirty || loadedPlanKey.current === planKey)
+    ) {
+      return
+    }
     loadedKey.current = key
-    form.reset(capacityPoolFormDefaults(props.pool, props.accounts))
+    loadedPlanKey.current = planKey
+    form.reset(defaults)
   }, [props.open, props.pool, props.accounts, form])
 
   const groupOptions = [
@@ -162,16 +173,12 @@ export function CapacityPoolDialog(props: {
         config: capacityPoolConfigFromForm(values),
       }),
     onSuccess: async () => {
-      await queryClient.invalidateQueries({
-        queryKey: capacityPoolQueryKeys.provider(props.provider),
-      })
+      await invalidateCapacityPoolQueries(queryClient, props.provider)
       toast.success(t('Capacity pool saved'))
       props.onOpenChange(false)
     },
   })
 
-  const rpmHint =
-    props.provider === 'claude' ? t('Account rpm_limit') : undefined
   const columns = [
     { key: 'rpm', label: 'RPM' },
     { key: 'tpm', label: 'TPM' },
@@ -294,7 +301,6 @@ export function CapacityPoolDialog(props: {
                         control={form.control}
                         name={`default_rate.${column.key}`}
                         label={`${t('Default')} ${column.label}`}
-                        placeholder={column.key === 'rpm' ? rpmHint : undefined}
                       />
                     </TableCell>
                   ))}

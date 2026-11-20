@@ -40,8 +40,7 @@ type CapacityPoolConfig struct {
 	// PlanRates 按套餐（codex2api 的 plan_type、Kiro 的 subscription_type）填单账号速率，
 	// 某一项为 0 表示回落到 DefaultRate。
 	PlanRates map[string]dto.ModelLimit `json:"plan_rates,omitempty"`
-	// DefaultRate 是没列出的套餐用的单账号速率。某一项仍为 0 时，Kiro 的 RPM
-	// 用账号自己报的 rpm_limit，其它情况这一项池子不限。
+	// DefaultRate 是没列出的套餐用的单账号速率；仍为 0 的项表示这一项池子不限。
 	DefaultRate dto.ModelLimit `json:"default_rate"`
 	// ThresholdPercent 是额度用到多少就不再计入可用，默认 95。
 	ThresholdPercent float64 `json:"threshold_percent"`
@@ -166,6 +165,22 @@ func GetCapacityPools(provider string) ([]*CapacityPool, error) {
 	var pools []*CapacityPool
 	err := query.Order("provider asc, id asc").Find(&pools).Error
 	return pools, err
+}
+
+// capacityPoolExists 在给定连接/事务上判断容量池是否存在，避免写事务内走全局 DB 触发 SQLite 锁等待。
+func capacityPoolExists(tx *gorm.DB, id int) (bool, error) {
+	if id <= 0 {
+		return false, nil
+	}
+	var existingId int
+	err := tx.Model(&CapacityPool{}).Select("id").Where("id = ?", id).Take(&existingId).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // GetCapacityPoolById 读取一个容量池，不存在时返回 ErrCapacityPoolNotFound。
@@ -443,7 +458,11 @@ func AddCapacityPoolMembers(poolID, channelID int, publicModels []string) ([]str
 				continue
 			}
 			if current != 0 {
-				if _, err := GetCapacityPoolById(current); err == nil {
+				exists, err := capacityPoolExists(tx, current)
+				if err != nil {
+					return err
+				}
+				if exists {
 					return fmt.Errorf("upstream model %q of channel #%d is already in capacity pool #%d", upstream, channelID, current)
 				}
 				// 指向已不存在的池的残留绑定，直接改绑。
