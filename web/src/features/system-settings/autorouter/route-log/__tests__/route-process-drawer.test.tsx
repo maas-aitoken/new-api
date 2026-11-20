@@ -94,7 +94,6 @@ function candidate(
     cost_score: model === 'sonnet' ? 0.4 : 1,
     capacity: model === 'sonnet' ? 0.5 : 0.5,
     success: model === 'sonnet' ? 0.98 : 0.96,
-    requests: 1,
     samples: 20,
     utility: score,
     probability,

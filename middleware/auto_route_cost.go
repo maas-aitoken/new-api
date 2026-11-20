@@ -9,6 +9,7 @@ import (
 	taskdto "github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/pkg/autorouter"
+	channelcapacity "github.com/QuantumNous/new-api/pkg/channel_capacity"
 	"github.com/QuantumNous/new-api/relay/helper"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/service"
@@ -16,9 +17,10 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// autoRouteCost 给 auto 候选里的模型估算比较成本：首次请求命中的分组下的用户价，乘上会落到的
-// 渠道的费用倍率。费用倍率按用户请求一侧的模型名配，和计费乘的是同一个倍率。
-// 调度预览只提供当前可服务性和渠道成本估算，不参与质量、成功率评分。
+// autoRouteCost 给 auto 候选里的模型估算比较成本和剩余容量：成本是首次请求命中的分组下的
+// 用户价乘上会落到的渠道费用倍率；容量来自同一批首次落点渠道的模型-渠道能力设置。
+// 费用倍率按用户请求一侧的模型名配，和计费乘的是同一个倍率；容量按上游模型名配，和容量计数用同一池。
+// 调度预览只提供当前可服务性、渠道成本和确定的渠道落点，不参与质量、成功率评分。
 //
 // 落到哪个渠道：这次请求由调度器决定渠道（强制模式或金丝雀命中）时问调度器的只读预览；
 // 预览不可用或某个模型没有答案时按原生选渠道的规则算：会话亲和命中就是那个渠道，否则按分组
@@ -106,6 +108,7 @@ func (a autoRouteCost) estimate(names []string, effort string, ignoreClientReaso
 	}
 
 	estimates := make(map[string]autorouter.Cost, len(targets))
+	capacities := a.capacityScores(targets, plans)
 	for i, target := range targets {
 		if excluded[i] {
 			estimates[target.name] = autorouter.Cost{Excluded: true, Reason: autorouter.ReasonSchedulerNoCandidate}
@@ -121,6 +124,9 @@ func (a autoRouteCost) estimate(names []string, effort string, ignoreClientReaso
 			Source:   plan.source,
 			Preview:  plan.note,
 		}
+		if capacity, ok := capacities[target.name]; ok {
+			cost.Capacity, cost.CapacityKnown = capacity, true
+		}
 		multiplier := 0.0
 		for _, share := range plan.shares {
 			multiplier += share.Probability * channelCostMultiplier(share.Channel, target.serving)
@@ -135,6 +141,133 @@ func (a autoRouteCost) estimate(names []string, effort string, ignoreClientReaso
 		return estimates, nil
 	}
 	return estimates, &autorouter.PreviewOutcome{Status: previewed.Status, HTTPStatus: previewed.HTTPStatus}
+}
+
+type autoCapacityReference struct {
+	share          float64
+	channelID      int
+	upstreamModel  string
+	limit          dto.ModelLimit
+	capacityPoolID int
+}
+
+type autoCapacityBucket struct {
+	limit     dto.ModelLimit
+	usage     channelcapacity.Usage
+	exhausted bool
+}
+
+func (a autoRouteCost) capacityScores(targets []autoCostTarget, plans []autoCostPlan) map[string]float64 {
+	references := make([][]autoCapacityReference, len(targets))
+	capacityPoolIDs := make(map[int]struct{})
+	for i, target := range targets {
+		for _, share := range plans[i].shares {
+			if share.Channel == nil || share.Probability <= 0 {
+				continue
+			}
+			settingRaw := ""
+			if share.Channel.Setting != nil {
+				settingRaw = *share.Channel.Setting
+			}
+			capacityModel := model.ChannelCapacityModel(share.Channel.GetModels(), share.Channel.GetModelMapping(), target.serving)
+			capacity := model.ChannelModelCapacityOf(settingRaw, share.Channel.GetModelMapping(), capacityModel)
+			references[i] = append(references[i], autoCapacityReference{
+				share:          share.Probability,
+				channelID:      share.Channel.Id,
+				upstreamModel:  capacity.UpstreamModel,
+				limit:          capacity.Limit,
+				capacityPoolID: capacity.CapacityPoolId,
+			})
+			if capacity.CapacityPoolId > 0 {
+				capacityPoolIDs[capacity.CapacityPoolId] = struct{}{}
+			}
+		}
+	}
+
+	pools := make(map[int]*model.CapacityPool, len(capacityPoolIDs))
+	if len(capacityPoolIDs) > 0 {
+		allPools, err := model.GetCapacityPools("")
+		if err != nil {
+			return nil
+		}
+		for _, pool := range allPools {
+			if _, needed := capacityPoolIDs[pool.Id]; needed {
+				pools[pool.Id] = pool
+			}
+		}
+	}
+
+	poolViews := make(map[int]service.CapacityPoolLimitView, len(pools))
+	if len(pools) > 0 {
+		poolList := make([]*model.CapacityPool, 0, len(pools))
+		for _, pool := range pools {
+			poolList = append(poolList, pool)
+		}
+		views, err := service.ResolveCapacityPoolLimits(poolList)
+		if err != nil {
+			return nil
+		}
+		poolViews = views
+	}
+
+	buckets := make(map[string]autoCapacityBucket)
+	targetShares := make([]map[string]float64, len(targets))
+	for i, refs := range references {
+		targetShares[i] = make(map[string]float64)
+		for _, reference := range refs {
+			key := channelcapacity.PoolID(reference.channelID, reference.upstreamModel)
+			bucket := autoCapacityBucket{limit: reference.limit}
+			if _, bound := pools[reference.capacityPoolID]; bound {
+				key = channelcapacity.CapacityPoolID(reference.capacityPoolID)
+				view := poolViews[reference.capacityPoolID]
+				bucket.limit, bucket.exhausted = view.Limit, view.Exhausted
+			}
+			if existing, found := buckets[key]; found {
+				bucket = existing
+			}
+			buckets[key] = bucket
+			targetShares[i][key] += reference.share
+		}
+	}
+
+	poolIDs := make([]string, 0, len(buckets))
+	for key, bucket := range buckets {
+		if bucket.limit.IsZero() && !bucket.exhausted {
+			continue
+		}
+		poolIDs = append(poolIDs, key)
+	}
+	usages, err := channelcapacity.Snapshot(poolIDs)
+	if err != nil {
+		return nil
+	}
+	for key, bucket := range buckets {
+		bucket.usage = usages[key]
+		buckets[key] = bucket
+	}
+
+	result := make(map[string]float64, len(targets))
+	for i, target := range targets {
+		samples := make([]autorouter.CapacitySample, 0, len(targetShares[i]))
+		for key, share := range targetShares[i] {
+			bucket, found := buckets[key]
+			if !found || (bucket.limit.IsZero() && !bucket.exhausted) {
+				continue
+			}
+			samples = append(samples, autorouter.CapacitySample{
+				Share:            share,
+				RPMLimit:         float64(bucket.limit.RPM),
+				RPMUsed:          float64(bucket.usage.RPM),
+				TPMLimit:         float64(bucket.limit.TPM),
+				TPMUsed:          float64(bucket.usage.TPM),
+				ConcurrencyLimit: float64(bucket.limit.MaxConcurrency),
+				ConcurrencyUsed:  float64(bucket.usage.InFlight),
+				Exhausted:        bucket.exhausted,
+			})
+		}
+		result[target.name] = autorouter.AggregateCapacity(samples)
+	}
+	return result
 }
 
 func (a autoRouteCost) perToken(name, group string) bool {

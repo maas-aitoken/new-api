@@ -91,8 +91,7 @@ export type RoutePickCandidate = {
   channels?: number
   cost_source?: RouteCostSource
   preview?: string
-  /** Five-minute request count and successful/failed outcome samples. */
-  requests: number
+  /** Five-minute successful/failed outcome samples. */
   samples: number
   /** The four normalized routing dimensions. */
   cost_score: number

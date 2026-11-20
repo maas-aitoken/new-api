@@ -335,7 +335,6 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		autoModel := ""
 		if common.GetContextKeyBool(c, constant.ContextKeyAutoRouted) && autoRoute != nil {
 			autoModel = autoRoute.Route.Model
-			autorouter.BeginModelRequest(autoModel)
 		}
 
 		// The closure keeps the in-flight counter balanced even when the relay

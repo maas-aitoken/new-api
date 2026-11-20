@@ -177,6 +177,10 @@ type Cost struct {
 	// 给的渠道没法报价、超过一次能问的个数），这个模型按原生规则估算。整次没拿到回答时为空，
 	// 原因在 PreviewOutcome 里。
 	Preview string
+	// Capacity 是首次请求实际落点的剩余容量评分。
+	Capacity float64
+	// CapacityKnown 表示 Capacity 已按渠道能力配置计算。
+	CapacityKnown bool
 }
 
 // PreviewOutcome 是一次比价问调度器预览的结果，写进选路留痕：没用上预览时据此知道为什么。
@@ -210,7 +214,6 @@ type Candidate struct {
 	CostScore      float64 `json:"cost_score"`
 	Capacity       float64 `json:"capacity"`
 	Success        float64 `json:"success"`
-	Requests       int64   `json:"requests"`
 	Samples        int64   `json:"samples"`
 	Utility        float64 `json:"utility"`
 	Probability    float64 `json:"probability"`
@@ -276,8 +279,10 @@ func pickModels(models []string, scores map[string]float64, weights DimensionWei
 	if len(pick.Band) == 0 {
 		return pick, false
 	}
+	estimated := map[string]Cost{}
 	if costs != nil {
-		estimated, preview := costs(names)
+		var preview *PreviewOutcome
+		estimated, preview = costs(names)
 		pick.Preview = preview
 		kept := pick.Band[:0]
 		for _, candidate := range pick.Band {
@@ -316,10 +321,6 @@ func pickModels(models []string, scores map[string]float64, weights DimensionWei
 	if metrics != nil {
 		samples = metrics(names)
 	}
-	totalRequests := int64(0)
-	for _, sample := range samples {
-		totalRequests += max(sample.Requests, 0)
-	}
 	for i := range pick.Band {
 		candidate := &pick.Band[i]
 		cost := candidate.compared()
@@ -329,10 +330,9 @@ func pickModels(models []string, scores map[string]float64, weights DimensionWei
 		}
 		candidate.Capacity = 1
 		sample := samples[candidate.Model]
-		candidate.Requests = sample.Requests
 		candidate.Samples = sample.Successes + sample.Failures
-		if totalRequests > 0 {
-			candidate.Capacity = 1 - float64(max(sample.Requests, 0))/float64(totalRequests)
+		if cost, found := estimated[candidate.Model]; found && cost.CapacityKnown {
+			candidate.Capacity = clampCapacity(cost.Capacity)
 		}
 		// Four prior successes keep a new model competitive without overwhelming
 		// measured failure once enough outcomes have accumulated.
