@@ -79,6 +79,27 @@ func ResolveAutoRetryModel(c *gin.Context, candidates AutoCandidates) (*autorout
 	return result, true
 }
 
+// RememberAutoRetrySuccess replaces the optimistically cached route with the
+// route that actually answered. Cache failures remain best-effort after success.
+func RememberAutoRetrySuccess(c *gin.Context) {
+	if !common.GetContextKeyBool(c, constant.ContextKeyAutoRouted) {
+		return
+	}
+	result := GetAutoRouterResult(c)
+	if result == nil {
+		return
+	}
+	storage, err := common.GetBodyStorage(c)
+	if err != nil {
+		return
+	}
+	body, err := storage.Bytes()
+	if err != nil {
+		return
+	}
+	rememberAutoRoute(c, autorouter.ExtractInstruction(body), result)
+}
+
 // ExcludeAutoModel remembers the ranked base model for this request only.
 // All its effort variants are excluded without affecting other requests.
 func ExcludeAutoModel(c *gin.Context, modelName string) {

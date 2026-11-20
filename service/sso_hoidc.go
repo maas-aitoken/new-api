@@ -207,6 +207,8 @@ func ProvisionSsoUser(
 	}
 
 	username := generateSsoUsername(email)
+	// Tiers off: new-user quota and never auto-bound later. Tiers on: the lowest tier.
+	quotaTier := operation_setting.IsQuotaTierEnabled()
 	newUser := &model.User{
 		Email:                 email,
 		Username:              username,
@@ -228,18 +230,22 @@ func ProvisionSsoUser(
 		DottedLineManagerUid:     dottedLineManagerUid,
 		OrganizationOid:          organizationOid,
 		DepartmentOid:            departmentOid,
-		QuotaTierAutoAssign:      true,
+		QuotaTierAutoAssign:      quotaTier,
 	}
 	if isCharge != nil {
 		newUser.IsCharge = *isCharge
 	}
+	if !quotaTier {
+		if err := newUser.Insert(0); err != nil {
+			return nil, fmt.Errorf("failed to create SSO user: %w", err)
+		}
+		return newUser, nil
+	}
 	if err := newUser.InsertSso(0); err != nil {
 		return nil, fmt.Errorf("failed to create SSO user: %w", err)
 	}
-	if operation_setting.IsQuotaTierEnabled() {
-		if _, err := model.EnsureUserQuotaTier(newUser.Id); err != nil {
-			common.SysError(common.LogText("failed to assign the quota tier of new SSO user %d: %s", newUser.Id, err.Error()))
-		}
+	if _, err := model.EnsureUserQuotaTier(newUser.Id); err != nil {
+		common.SysError(common.LogText("failed to assign the quota tier of new SSO user %d: %s", newUser.Id, err.Error()))
 	}
 	return newUser, nil
 }

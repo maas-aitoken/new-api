@@ -27,9 +27,14 @@ import {
   routeSourceLabel,
   skipReasonLabel,
 } from './labels'
+import { PickTable } from './pick-table'
 import { Chips, Facts, StepFrame, type FactRow } from './route-process-parts'
-import { PickTable } from './selection-step'
-import type { RoutePick, RouteResult, RouteTraceEffort } from './types'
+import type {
+  RouteLogTruncation,
+  RoutePick,
+  RouteResult,
+  RouteTraceEffort,
+} from './types'
 
 /** How difficulty became the reasoning effort, and how that effort reached the model. */
 export function EffortStep(props: {
@@ -80,6 +85,7 @@ export function ResultStep(props: {
   unroutable?: { reason: string; count: number; examples?: string[] }[]
   /** Shown here only when there is no selection step to hold the comparison. */
   pick?: RoutePick
+  truncated?: RouteLogTruncation
 }) {
   const { t } = useTranslation()
   const result = props.result
@@ -130,7 +136,9 @@ export function ResultStep(props: {
   return (
     <StepFrame icon={CircleCheck} title={t('Result')}>
       <Facts rows={rows} />
-      {props.pick && <PickTable pick={props.pick} />}
+      {props.pick && (
+        <PickTable pick={props.pick} truncated={props.truncated} />
+      )}
     </StepFrame>
   )
 }

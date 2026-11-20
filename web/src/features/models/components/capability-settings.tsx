@@ -502,10 +502,14 @@ function CapacityPoolFollowNote(props: {
       ) : null}
       {pool ? (
         <span className='tabular-nums'>
-          {t('This channel: RPM {{rpm}}, in flight {{inFlight}}', {
-            rpm: formatCompactNumber(pool.member_rpm_used, locale),
-            inFlight: pool.member_in_flight,
-          })}
+          {t(
+            'This channel: RPM {{rpm}}, TPM {{tpm}}, in flight {{inFlight}}',
+            {
+              rpm: formatCompactNumber(pool.member_rpm_used, locale),
+              tpm: formatCompactNumber(pool.member_tpm_used, locale),
+              inFlight: pool.member_in_flight,
+            }
+          )}
         </span>
       ) : null}
       <Link to='/resource-pools' className='text-primary hover:underline'>

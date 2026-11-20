@@ -54,13 +54,14 @@ func TestComputeCapacityPoolLimitBurstAndUsability(t *testing.T) {
 	assert.True(t, limit.Exhausted)
 	assert.Zero(t, detail.Usable)
 
-	// Kiro：RPM 格子都空时用账号自己报的 rpm_limit；套餐行只填了 RPM 时并发仍回落到默认行。
+	// Kiro：只设 TPM 和并发、RPM 留空时，RPM 与其它 provider 一样保持不限（0），不用账号自己的 rpm_limit。
 	kiro := model.CapacityPoolConfig{ThresholdPercent: 95, PlanRates: map[string]dto.ModelLimit{"POWER": {TPM: 5000}}, DefaultRate: dto.ModelLimit{MaxConcurrency: 1}}
-	limit, _ = computeCapacityPoolLimit(kiro, []capacityAccount{
-		{plan: "POWER", enabled: true, used: 100, limit: 10000, creditUnit: true, rpmLimit: 1000, resetAt: future},
-		{plan: "POWER", enabled: true, used: 9600, limit: 10000, creditUnit: true, rpmLimit: 1000, resetAt: future},
+	limit, detail = computeCapacityPoolLimit(kiro, []capacityAccount{
+		capacityAccountOf(&model.ResourcePoolAccount{Id: "1", SubscriptionType: "POWER", Enabled: true, UsageCurrent: 100, UsageLimit: 10000, RpMLimit: 1000, NextResetDate: future.Format(time.DateOnly)}, false),
+		capacityAccountOf(&model.ResourcePoolAccount{Id: "2", SubscriptionType: "POWER", Enabled: true, UsageCurrent: 9600, UsageLimit: 10000, RpMLimit: 1000, NextResetDate: future.Format(time.DateOnly)}, false),
 	}, nil, now)
-	assert.Equal(t, channelcapacity.PublishedLimit{RPM: 1000, TPM: 5000, MaxConcurrency: 1, ComputedAt: now.Unix()}, limit, "96% 的账号不计入")
+	assert.Equal(t, channelcapacity.PublishedLimit{RPM: 0, TPM: 5000, MaxConcurrency: 1, ComputedAt: now.Unix()}, limit, "96% 的账号不计入，没设的 RPM 保持不限")
+	assert.True(t, detail.RPM.Unbounded)
 }
 
 func TestComputeCapacityPoolLimitPacing(t *testing.T) {
@@ -69,12 +70,31 @@ func TestComputeCapacityPoolLimitPacing(t *testing.T) {
 
 	// 上游累计数：用了 20%，7 天 200 次请求 / 200 万 token → 每个百分点 10 次 / 10 万 token。
 	// 剩余 75 个百分点、离重置 600 分钟、b=2 → 每分钟 75/600×2=0.25 个百分点 → 2.5 RPM / 25000 TPM。
+	// 只设了 RPM、没设 TPM 时，配速只压已设置的 RPM，TPM 保持不限。
 	codex := capacityAccount{plan: "pro", enabled: true, used: 20, limit: 100, resetAt: now.Add(600 * time.Minute), requests7d: 200, tokens7d: 2_000_000}
 	limit, detail := computeCapacityPoolLimit(config, []capacityAccount{codex, codex}, nil, now)
 	assert.Equal(t, int64(5), limit.RPM, "每个账号取 min(100, 2.5)")
-	assert.Equal(t, int64(50000), limit.TPM, "TPM 没有突发上限，配速就是上限")
+	assert.Zero(t, limit.TPM, "没设置单账号 TPM 时配速也不能给 TPM 加上限")
+	assert.True(t, detail.TPM.Unbounded)
 	assert.Equal(t, 2, detail.UpstreamFactorAccounts)
 	assert.Equal(t, CapacityDimensionDetail{Burst: 200, Pace: 5, PacedAccounts: 2, Computed: 5}, detail.RPM)
+
+	// 只设 TPM、RPM 和并发不设时：TPM 取 min(突发, 配速)，RPM 和并发保持不限；
+	// 若上游只有 requests_7d 没有 tokens_7d，不计入启用维度的上游换算账号数。
+	tpmOnly := model.CapacityPoolConfig{ThresholdPercent: 95, PacingEnabled: true, BurstFactor: 2, DefaultRate: dto.ModelLimit{TPM: 100_000}}
+	limit, detail = computeCapacityPoolLimit(tpmOnly, []capacityAccount{codex, codex}, nil, now)
+	assert.Zero(t, limit.RPM)
+	assert.Equal(t, int64(50_000), limit.TPM, "每个账号取 min(100000, 25000)")
+	assert.Zero(t, limit.MaxConcurrency)
+	assert.True(t, detail.RPM.Unbounded)
+	assert.True(t, detail.Concurrency.Unbounded)
+	assert.Equal(t, CapacityDimensionDetail{Burst: 200_000, Pace: 50_000, PacedAccounts: 2, Computed: 50_000}, detail.TPM)
+
+	noUpstreamTokens := codex
+	noUpstreamTokens.tokens7d = 0
+	limit, detail = computeCapacityPoolLimit(tpmOnly, []capacityAccount{noUpstreamTokens}, nil, now)
+	assert.Equal(t, int64(100_000), limit.TPM)
+	assert.Zero(t, detail.UpstreamFactorAccounts)
 
 	// 用量低于 5% 时上游累计数不准，也还没学到比例：不配速，只看突发上限。
 	early := codex
@@ -86,18 +106,19 @@ func TestComputeCapacityPoolLimitPacing(t *testing.T) {
 
 	// Kiro 用学到的比例：剩 500 credits、离重置 1000 分钟、b=2 → 每分钟 1 credit；
 	// 每 credit 0.5 次请求 / 2000 token → 每个账号 0.5 RPM / 2000 TPM，两个账号向上取整。
+	both := model.CapacityPoolConfig{ThresholdPercent: 95, PacingEnabled: true, BurstFactor: 2, DefaultRate: dto.ModelLimit{RPM: 100, TPM: 10_000}}
 	kiro := capacityAccount{plan: "POWER", enabled: true, used: 9000, limit: 10000, creditUnit: true, resetAt: now.Add(1000 * time.Minute)}
 	learned := &capacityFactor{requests: 0.5, tokens: 2000, creditUnit: true}
-	limit, _ = computeCapacityPoolLimit(config, []capacityAccount{kiro, kiro}, learned, now)
+	limit, _ = computeCapacityPoolLimit(both, []capacityAccount{kiro, kiro}, learned, now)
 	assert.Equal(t, int64(1), limit.RPM)
 	assert.Equal(t, int64(4000), limit.TPM)
 
 	// 单位对不上的比例不用；关了配速也不用。
-	limit, _ = computeCapacityPoolLimit(config, []capacityAccount{kiro}, &capacityFactor{requests: 0.5, tokens: 2000}, now)
-	assert.Equal(t, channelcapacity.PublishedLimit{RPM: 100, ComputedAt: now.Unix()}, limit)
-	config.PacingEnabled = false
-	limit, _ = computeCapacityPoolLimit(config, []capacityAccount{kiro}, learned, now)
-	assert.Equal(t, channelcapacity.PublishedLimit{RPM: 100, ComputedAt: now.Unix()}, limit)
+	limit, _ = computeCapacityPoolLimit(both, []capacityAccount{kiro}, &capacityFactor{requests: 0.5, tokens: 2000}, now)
+	assert.Equal(t, channelcapacity.PublishedLimit{RPM: 100, TPM: 10_000, ComputedAt: now.Unix()}, limit)
+	both.PacingEnabled = false
+	limit, _ = computeCapacityPoolLimit(both, []capacityAccount{kiro}, learned, now)
+	assert.Equal(t, channelcapacity.PublishedLimit{RPM: 100, TPM: 10_000, ComputedAt: now.Unix()}, limit)
 }
 
 func TestCapacityAccountOfNormalizesProviders(t *testing.T) {
@@ -129,7 +150,6 @@ func TestCapacityAccountOfNormalizesProviders(t *testing.T) {
 	assert.Equal(t, 10000.0, kiro.limit)
 	assert.True(t, kiro.creditUnit)
 	assert.True(t, kiro.resetAt.Equal(time.Date(2026, 11, 2, 0, 0, 0, 0, time.UTC)), "只有日期时按当天结束算")
-	assert.Equal(t, int64(1000), kiro.rpmLimit)
 }
 
 func TestSmoothCapacityLimit(t *testing.T) {
@@ -357,11 +377,11 @@ func TestResetCapacityPoolDropsLearnedFactorAndSmoothing(t *testing.T) {
 	refreshCapacityPool(pool, accounts(10), nil, now)
 	assert.Equal(t, dto.ModelLimit{RPM: 200}, resolve().Limit, "还没学到比例，按突发上限")
 
-	// 两个账号各涨 20 个百分点，我们只记到一个请求：每个百分点 0.025 次请求，配速压到 1。
+	// 两个账号各涨 20 个百分点，我们只记到一个请求：每个百分点 0.025 次请求，已设置的 RPM 配速被压到 1，没设置的 TPM 保持不限。
 	channelcapacity.Finish(channelcapacity.Begin(5, "grok-4", pool.Id, 1000), true, 1000, 0)
 	refreshCapacityPool(pool, accounts(30), nil, now.Add(time.Minute))
 	view := resolve()
-	assert.Equal(t, dto.ModelLimit{RPM: 1, TPM: 1}, view.Limit)
+	assert.Equal(t, dto.ModelLimit{RPM: 1}, view.Limit)
 	require.NotNil(t, view.Detail)
 	require.NotNil(t, view.Detail.Learned)
 

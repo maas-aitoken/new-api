@@ -390,3 +390,28 @@ func GetAuditLogs(c *gin.Context) {
 	page.SetTotal(int(total))
 	common.ApiSuccess(c, page)
 }
+
+func ListOverviewQuotaNotices(c *gin.Context) {
+	filter := model.AuditLogFilter{
+		SelfView: true, UserId: c.GetInt("id"), Category: model.AuditCategoryOperation,
+	}
+	logs, _, err := model.GetAuditLogs(filter, 0, 100, c.GetInt("role"))
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	items := make([]gin.H, 0)
+	for _, log := range logs {
+		if log.Action == "subscription.quota_increase" {
+			var amount any
+			if log.Other.Op != nil {
+				amount = log.Other.Op.Params["amount"]
+			}
+			items = append(items, gin.H{
+				"created_at": log.CreatedAt, "action": log.Action,
+				"other": gin.H{"op": gin.H{"params": gin.H{"amount": amount}}},
+			})
+		}
+	}
+	common.ApiSuccess(c, gin.H{"items": items, "total": len(items)})
+}

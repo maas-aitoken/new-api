@@ -50,8 +50,6 @@ type capacityAccount struct {
 	resetAt   time.Time
 	percent5h *float64
 	reset5hAt time.Time
-	// rpmLimit 是 Kiro 账号自己报的 rpm_limit。
-	rpmLimit int64
 	// requests7d / tokens7d 是 codex2api 报的 7 天累计数，配速优先用它换算。
 	requests7d, tokens7d int64
 }
@@ -65,7 +63,6 @@ func capacityAccountOf(account *model.ResourcePoolAccount, windowed bool) capaci
 		enabled:    account.Enabled,
 		status:     strings.ToLower(strings.TrimSpace(account.Status)),
 		percent5h:  account.UsagePercent5h,
-		rpmLimit:   account.RpMLimit,
 		requests7d: account.Requests7d,
 		tokens7d:   account.Tokens7d,
 	}
@@ -146,7 +143,7 @@ type capacityFactor struct {
 }
 
 // capacityAccountRate 返回账号的单账号速率：套餐行的非零项优先，其余用默认行；
-// RPM 仍为 0 时用 Kiro 账号自己报的 rpm_limit。为 0 的项表示池子不限这一项。
+// 仍为 0 的项表示池子不限这一项。
 func capacityAccountRate(config model.CapacityPoolConfig, account capacityAccount) dto.ModelLimit {
 	rate := config.DefaultRate
 	if planRate, ok := config.PlanRates[account.plan]; ok {
@@ -160,19 +157,17 @@ func capacityAccountRate(config model.CapacityPoolConfig, account capacityAccoun
 			rate.MaxConcurrency = planRate.MaxConcurrency
 		}
 	}
-	if rate.RPM == 0 && account.rpmLimit > 0 {
-		rate.RPM = int(min(account.rpmLimit, dto.MaxModelLimitValue))
-	}
 	return rate
 }
 
-// capacityAccountPace 返回账号按配速可用的 RPM / TPM：
+// capacityAccountPace 返回账号在已设置单账号上限的维度上按配速可用的 RPM / TPM：
 // 阈值内剩余额度 × 换算比例 ÷ 距重置分钟数 × 放宽系数。
+// 未设置单账号上限（rate 对应项为 0）的维度保持不限，不由配速单独生出上限。
 // 每一项的换算比例优先用上游累计数（codex2api 的 7 天请求/token 数 ÷ 7 天用量百分比），
 // 其次用池子学到的比例。没开配速、重置时间未知或已过、两种比例都没有时这一项算不出。
 // 7 天累计数与用量百分比的窗口不一定对齐（滚动 7 天 vs 固定周期），周期刚开始时偏松。
-func capacityAccountPace(config model.CapacityPoolConfig, account capacityAccount, learned *capacityFactor, now time.Time) (rpm, tpm float64, rpmKnown, tpmKnown, upstream bool) {
-	if !config.PacingEnabled || account.limit <= 0 || account.resetAt.IsZero() || !account.resetAt.After(now) {
+func capacityAccountPace(config model.CapacityPoolConfig, rate dto.ModelLimit, account capacityAccount, learned *capacityFactor, now time.Time) (rpm, tpm float64, rpmKnown, tpmKnown, upstream bool) {
+	if !config.PacingEnabled || (rate.RPM <= 0 && rate.TPM <= 0) || account.limit <= 0 || account.resetAt.IsZero() || !account.resetAt.After(now) {
 		return 0, 0, false, false, false
 	}
 	budget := config.ThresholdPercent/100*account.limit - account.used
@@ -182,17 +177,21 @@ func capacityAccountPace(config model.CapacityPoolConfig, account capacityAccoun
 	upstreamUsable := !account.creditUnit && account.used >= capacityPoolUpstreamMinPercent
 	learnedUsable := learned != nil && learned.creditUnit == account.creditUnit
 	requestsPerUnit, tokensPerUnit := 0.0, 0.0
-	switch {
-	case upstreamUsable && account.requests7d > 0:
-		requestsPerUnit, upstream = float64(account.requests7d)/account.used, true
-	case learnedUsable:
-		requestsPerUnit = learned.requests
+	if rate.RPM > 0 {
+		switch {
+		case upstreamUsable && account.requests7d > 0:
+			requestsPerUnit, upstream = float64(account.requests7d)/account.used, true
+		case learnedUsable:
+			requestsPerUnit = learned.requests
+		}
 	}
-	switch {
-	case upstreamUsable && account.tokens7d > 0:
-		tokensPerUnit, upstream = float64(account.tokens7d)/account.used, true
-	case learnedUsable:
-		tokensPerUnit = learned.tokens
+	if rate.TPM > 0 {
+		switch {
+		case upstreamUsable && account.tokens7d > 0:
+			tokensPerUnit, upstream = float64(account.tokens7d)/account.used, true
+		case learnedUsable:
+			tokensPerUnit = learned.tokens
+		}
 	}
 	scale := budget / max(account.resetAt.Sub(now).Minutes(), 1) * config.BurstFactor
 	if requestsPerUnit > 0 {
@@ -205,7 +204,7 @@ func capacityAccountPace(config model.CapacityPoolConfig, account capacityAccoun
 }
 
 // capacityDimension 累加一项（RPM / TPM / 并发）在可用账号上的速率。
-// 每个账号取 min(突发, 配速)，只有一个已知时用那个；两个都不知道的账号让这一项不限。
+// 设了单账号突发上限的账号在配速已知时取 min(突发, 配速)，否则取突发；任一可用账号未设上限时整池这一项不限。
 type capacityDimension struct {
 	burst, pace, final float64
 	paced              int
@@ -213,23 +212,18 @@ type capacityDimension struct {
 }
 
 func (d *capacityDimension) add(burst, pace float64, burstKnown, paceKnown bool) {
-	if burstKnown {
-		d.burst += burst
+	if !burstKnown {
+		d.unbounded = true
+		return
 	}
+	d.burst += burst
 	if paceKnown {
 		d.pace += pace
 		d.paced++
-	}
-	switch {
-	case burstKnown && paceKnown:
 		d.final += min(burst, pace)
-	case burstKnown:
-		d.final += burst
-	case paceKnown:
-		d.final += pace
-	default:
-		d.unbounded = true
+		return
 	}
+	d.final += burst
 }
 
 // limit 把累加结果取成额度：不限返回 0，否则向上取整、至少 1、不超过 MaxModelLimitValue。
@@ -311,7 +305,7 @@ func computeCapacityPoolLimit(config model.CapacityPoolConfig, accounts []capaci
 		plan.Usable++
 		detail.Usable++
 		rate := capacityAccountRate(config, account)
-		paceRPM, paceTPM, paceRPMKnown, paceTPMKnown, upstream := capacityAccountPace(config, account, learned, now)
+		paceRPM, paceTPM, paceRPMKnown, paceTPMKnown, upstream := capacityAccountPace(config, rate, account, learned, now)
 		if upstream {
 			detail.UpstreamFactorAccounts++
 		}

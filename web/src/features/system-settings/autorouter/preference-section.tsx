@@ -86,12 +86,36 @@ type PreferenceSectionProps = {
 const DIMENSIONS: ReadonlyArray<{
   name: keyof RoutingWeights
   label: string
+  helpText: string
 }> = [
-  { name: 'quality', label: 'Quality weight' },
-  { name: 'cost', label: 'Cost weight' },
-  { name: 'capacity', label: 'Capacity weight' },
-  { name: 'success', label: 'Success weight' },
-  { name: 'temperature', label: 'Sampling temperature' },
+  {
+    name: 'quality',
+    label: 'Capability weight',
+    helpText: 'The weight given to model capability and answer quality.',
+  },
+  {
+    name: 'cost',
+    label: 'Cost weight',
+    helpText:
+      'The weight given to model cost; higher values favor cheaper models.',
+  },
+  {
+    name: 'capacity',
+    label: 'Capacity weight',
+    helpText:
+      'The weight given to available capacity; higher values favor less-loaded models.',
+  },
+  {
+    name: 'success',
+    label: 'Success weight',
+    helpText: 'The weight given to recent request success rate.',
+  },
+  {
+    name: 'temperature',
+    label: 'Sampling temperature',
+    helpText:
+      'Sampling temperature controls score variability; lower values produce more stable routing.',
+  },
 ]
 
 /** The default key preference and the model scoring policy of each fixed preference. */
@@ -204,6 +228,7 @@ export function PreferenceSection(props: PreferenceSectionProps) {
                       control={form.control}
                       name={`weights.${tier.value}.${dimension.name}`}
                       label={t(dimension.label)}
+                      helpText={t(dimension.helpText)}
                       description={t('Built-in value: {{value}}', {
                         value:
                           DEFAULT_PREFERENCE_WEIGHTS[tier.value][

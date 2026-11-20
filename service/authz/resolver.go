@@ -26,8 +26,18 @@ func Can(userID int, systemRole int, permission Permission) bool {
 	if effect, ok := explicitSubjectEffect(e, UserSubject(userID), permission); ok {
 		return effect == EffectAllow
 	}
+	if permission.Resource == ResourcePool {
+		legacy := Permission{Resource: ResourceChannel, Action: permission.Action}
+		if effect, ok := explicitSubjectEffect(e, UserSubject(userID), legacy); ok {
+			return effect == EffectAllow
+		}
+	}
 	for _, role := range roles {
 		if roleBaselineAllows(e, role, permission) {
+			return true
+		}
+		if permission.Resource == ResourcePool &&
+			roleBaselineAllows(e, role, Permission{Resource: ResourceChannel, Action: permission.Action}) {
 			return true
 		}
 	}

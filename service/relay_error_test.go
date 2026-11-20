@@ -237,32 +237,43 @@ func TestDecideRelayRetryReasons(t *testing.T) {
 // 拒答不触发渠道禁用和渠道×模型熔断，哪怕上游原文里带着禁用关键词。
 func TestUpstreamRefusalRetryAndChannelHealth(t *testing.T) {
 	previousEnabled, previousAutoDisable := operation_setting.UpstreamRefusalRetryEnabled, common.AutomaticDisableChannelEnabled
+	previousAutoOnly := operation_setting.UpstreamRefusalRetryAutoOnly
 	previousKeywords, previousMonitor := operation_setting.AutomaticDisableKeywords, *operation_setting.GetMonitorSetting()
 	t.Cleanup(func() {
 		operation_setting.UpstreamRefusalRetryEnabled, common.AutomaticDisableChannelEnabled = previousEnabled, previousAutoDisable
+		operation_setting.UpstreamRefusalRetryAutoOnly = previousAutoOnly
 		operation_setting.AutomaticDisableKeywords, *operation_setting.GetMonitorSetting() = previousKeywords, previousMonitor
 	})
 	refusal := types.NewOpenAIError(errors.New("The upstream model refused to answer: permission denied"), types.ErrorCodeUpstreamRefusal, http.StatusBadRequest)
 	azureFilter := types.WithOpenAIError(types.OpenAIError{Message: "The response was filtered", Code: "content_filter"}, http.StatusBadRequest)
 	promptBlocked := types.NewOpenAIError(errors.New("request blocked by Gemini API: SAFETY"), types.ErrorCodePromptBlocked, http.StatusBadRequest)
 	retryRefusal := PolicyDecision{Action: "retry", Reason: "upstream_refusal", Source: "global"}
+	stopNotRetryable := PolicyDecision{Action: "stop", Reason: "status_not_retryable", Source: "global"}
 	for _, tc := range []struct {
-		name    string
-		enabled bool
-		err     *types.NewAPIError
-		retries int
-		want    PolicyDecision
+		name     string
+		enabled  bool
+		autoOnly bool
+		auto     bool
+		err      *types.NewAPIError
+		retries  int
+		want     PolicyDecision
 	}{
 		{name: "withheld refusal retries", enabled: true, err: refusal, retries: 1, want: retryRefusal},
 		{name: "azure content_filter error retries", enabled: true, err: azureFilter, retries: 1, want: retryRefusal},
 		{name: "gemini prompt_blocked error retries", enabled: true, err: promptBlocked, retries: 1, want: retryRefusal},
 		{name: "budget still applies", enabled: true, err: refusal, retries: 0, want: PolicyDecision{Action: "stop", Reason: "attempt_budget_exhausted", Source: "global"}},
-		{name: "switch off keeps 400 not retryable", enabled: false, err: azureFilter, retries: 1, want: PolicyDecision{Action: "stop", Reason: "status_not_retryable", Source: "global"}},
+		{name: "switch off keeps 400 not retryable", enabled: false, err: azureFilter, retries: 1, want: stopNotRetryable},
+		{name: "auto only keeps auto requests retrying", enabled: true, autoOnly: true, auto: true, err: azureFilter, retries: 1, want: retryRefusal},
+		{name: "auto only leaves locked requests alone", enabled: true, autoOnly: true, err: azureFilter, retries: 1, want: stopNotRetryable},
+		{name: "auto only does not touch other retry rules", enabled: true, autoOnly: true, err: types.NewOpenAIError(errors.New("overloaded"), types.ErrorCodeBadResponseStatusCode, http.StatusTooManyRequests), retries: 1, want: PolicyDecision{Action: "retry", Reason: "retry_status_matched", Source: "global"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			operation_setting.UpstreamRefusalRetryEnabled = tc.enabled
+			operation_setting.UpstreamRefusalRetryAutoOnly = tc.autoOnly
 			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			common.SetContextKey(c, constant.ContextKeyAutoRouted, tc.auto)
 			assert.Equal(t, tc.want, DecideRelayRetry(c, tc.err, tc.retries))
+			assert.Equal(t, tc.enabled && (!tc.autoOnly || tc.auto), RefusalRetryApplies(c))
 		})
 	}
 

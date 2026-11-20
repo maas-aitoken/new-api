@@ -2,6 +2,7 @@ package authz
 
 const (
 	ResourceChannel = "channel"
+	ResourcePool    = "resource_pool"
 
 	ActionRead           = "read"
 	ActionOperate        = "operate"
@@ -16,6 +17,8 @@ var (
 	ChannelWrite          = Permission{Resource: ResourceChannel, Action: ActionWrite}
 	ChannelSensitiveWrite = Permission{Resource: ResourceChannel, Action: ActionSensitiveWrite}
 	ChannelSecretView     = Permission{Resource: ResourceChannel, Action: ActionSecretView}
+	ResourcePoolRead      = Permission{Resource: ResourcePool, Action: ActionRead}
+	ResourcePoolWrite     = Permission{Resource: ResourcePool, Action: ActionWrite}
 )
 
 func init() {
@@ -51,6 +54,14 @@ func init() {
 				LabelKey:       "View channel secrets",
 				DescriptionKey: "Reserved for viewing complete channel keys after secure verification.",
 			},
+		},
+	})
+	RegisterResource(ResourceDefinition{
+		Resource: ResourcePool,
+		LabelKey: "Resource pools",
+		Actions: []ActionDefinition{
+			{Action: ActionRead, LabelKey: "View", DescriptionKey: "View resource pools and their usage."},
+			{Action: ActionWrite, LabelKey: "Edit", DescriptionKey: "Manage resource pool sources and members."},
 		},
 	})
 }

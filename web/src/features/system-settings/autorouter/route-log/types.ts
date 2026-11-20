@@ -91,15 +91,20 @@ export type RoutePickCandidate = {
   channels?: number
   cost_source?: RouteCostSource
   preview?: string
-  /** Five-minute request count and successful/failed outcome samples. */
-  requests: number
-  samples: number
+  /** Historical five-minute request-share evidence; new channel-capacity logs omit it. */
+  requests?: number
+  /** Five-minute successful/failed outcome samples. */
+  samples?: number
   /** The four normalized routing dimensions. */
-  cost_score: number
-  capacity: number
-  success: number
+  cost_score?: number
+  capacity?: number
+  success?: number
   utility: number
-  probability: number
+  probability?: number
+  /** Legacy quality/price comparison and capacity-pricing evidence. */
+  discount?: number
+  capacity_premium?: number
+  capacity_pressure?: number
 }
 
 /**
@@ -123,7 +128,9 @@ export type PickDimensions = {
 export type RoutePick = {
   chosen: string
   band: RoutePickCandidate[]
-  dimensions: PickDimensions
+  /** Current four-dimensional policy; legacy quality/price logs have weight instead. */
+  dimensions?: PickDimensions | null
+  weight?: number
   /** 没配调度器、或这次没估算比较成本时没有。 */
   preview?: RoutePreviewOutcome
 }
@@ -179,6 +186,14 @@ export type RouteTraceContinuation = {
   continued: boolean
 }
 
+/** Legacy pool pressure that forced a previous route to be compared again. */
+export type RoutePreviousPressure = {
+  model: string
+  pressure: number
+  knee: number
+  reused: boolean
+}
+
 /** How an adaptive request got its policy; absent for a key with a fixed preference. */
 export type RouteTraceMode = {
   /** Empty when the policy was judged; 'no_answer' when it used the balanced policy. */
@@ -186,11 +201,11 @@ export type RouteTraceMode = {
   /** Each preference's share of the judged probability. */
   shares?: Record<string, number>
   /** Expected position on the capability (0), balanced (1), cost (2) scale. */
-  position: number
-  weight: number
-  weights: PickDimensions
-  /** The platform's three policies when the request ran. */
-  tiers: Record<string, PickDimensions>
+  position?: number
+  weight?: number
+  weights?: PickDimensions | null
+  /** Current object policies or legacy numeric cost weights. */
+  tiers?: Record<string, PickDimensions | number | null | undefined>
 }
 
 export type RouteTraceEffort = {
@@ -220,8 +235,22 @@ export type RouteTrace = {
   validity?: RouteTraceValidity
   mode?: RouteTraceMode
   continuation?: RouteTraceContinuation
+  previous_pressure?: RoutePreviousPressure
   effort?: RouteTraceEffort
   ladder?: RouteTraceStep[]
+}
+
+export type RouteLogCollectionTruncation = {
+  total: number
+  kept: number
+  omitted_probability?: number
+}
+
+export type RouteLogTruncation = {
+  collections?: Record<string, RouteLogCollectionTruncation>
+  fields?: string[]
+  strings?: string[]
+  reason?: string
 }
 
 /** What the log stores about the process; every part can be absent. */
@@ -229,6 +258,7 @@ export type RouteLogDetail = {
   result?: RouteResult
   trace?: RouteTrace
   error?: string
+  truncated?: RouteLogTruncation
 }
 
 export type RouteLog = RouteLogItem & { detail: RouteLogDetail | null }

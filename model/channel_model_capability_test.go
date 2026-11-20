@@ -607,4 +607,16 @@ func TestCapacityPoolMembersBindByUpstreamAndClearOnDelete(t *testing.T) {
 	assert.NotContains(t, *channel.Setting, "capacity_pools")
 	assert.Equal(t, map[string]dto.ModelLimit{"upstream-x": {RPM: 60}}, channel.GetSetting().ModelLimits)
 	require.NoError(t, SetChannelModelLimit(7, "alias-b", dto.ModelLimit{RPM: 5}), "解绑后又能改自己的额度")
+
+	// 导入配置等留下的指向不存在容量池的残留绑定：能力页不锁成只读，改额度时自动清掉死绑定。
+	dangling := `{"model_limits":{"upstream-x":{"rpm":5}},"capacity_pools":{"upstream-x":999}}`
+	require.NoError(t, db.Model(&Channel{}).Where("id = ?", 7).Update("setting", dangling).Error)
+	targets, _, err = GetCapabilityTargets(CapabilityTargetQuery{Keyword: "alias-a"})
+	require.NoError(t, err)
+	require.Len(t, targets, 1)
+	assert.Zero(t, targets[0].Channels[0].CapacityPoolId, "不存在的池按未绑定返回")
+	require.NoError(t, SetChannelModelLimit(7, "alias-b", dto.ModelLimit{TPM: 12000}))
+	require.NoError(t, db.First(&channel, "id = ?", 7).Error)
+	assert.Empty(t, channel.GetSetting().CapacityPools)
+	assert.Equal(t, dto.ModelLimit{TPM: 12000}, channel.GetSetting().ModelLimits["upstream-x"])
 }

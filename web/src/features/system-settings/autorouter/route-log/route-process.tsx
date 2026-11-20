@@ -16,18 +16,68 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+import { Info } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
+
+import { EmptyState } from '@/components/empty-state'
+import { Alert, AlertDescription } from '@/components/ui/alert'
+
 import { ContinuationStep, ModeStep, ValidityStep } from './decision-steps'
 import { JudgmentStep, RequestStep } from './input-steps'
 import { routeProcessSteps, type RouteProcessStepId } from './process'
 import { EffortStep, ResultStep } from './result-steps'
 import { SelectionStep } from './selection-step'
-import type { RouteLogDetail } from './types'
+import type { RouteLogDetail, RouteLogTruncation } from './types'
+
+function TruncationNotice(props: { truncated?: RouteLogTruncation }) {
+  const { t } = useTranslation()
+  const fields = props.truncated?.fields ?? []
+  const strings = props.truncated?.strings ?? []
+  const collections = Object.entries(
+    props.truncated?.collections ?? {}
+  ).filter(([path]) => path !== 'result.pick.band')
+  const reason = props.truncated?.reason
+  if (
+    !reason &&
+    fields.length === 0 &&
+    strings.length === 0 &&
+    collections.length === 0
+  ) {
+    return null
+  }
+
+  return (
+    <Alert>
+      <Info />
+      <AlertDescription>
+        <p>
+          {reason === 'encoding_error'
+            ? t(
+                'The original routing detail could not be encoded; only the readable core is shown.'
+              )
+            : t('Some routing details were omitted or shortened to fit the log.')}
+        </p>
+        {collections.map(([path, summary]) => (
+          <p key={path} className='font-mono break-all'>
+            {path}: {summary.kept}/{summary.total}
+          </p>
+        ))}
+        {fields.length > 0 && (
+          <p className='font-mono break-all'>{fields.join(', ')}</p>
+        )}
+        {strings.length > 0 && (
+          <p className='font-mono break-all'>{strings.join(', ')}</p>
+        )}
+      </AlertDescription>
+    </Alert>
+  )
+}
 
 function ProcessStep(props: {
   id: RouteProcessStepId
   detail: RouteLogDetail
 }) {
-  const { result, trace, error } = props.detail
+  const { result, trace, error, truncated } = props.detail
   switch (props.id) {
     case 'request':
       // trace.request 缺失（detail 被改库改坏）时跳过这一步，不让整个抽屉崩掉。
@@ -38,13 +88,21 @@ function ProcessStep(props: {
       return trace?.validity ? <ValidityStep validity={trace.validity} /> : null
     case 'continuation':
       return trace?.continuation ? (
-        <ContinuationStep continuation={trace.continuation} />
+        <ContinuationStep
+          continuation={trace.continuation}
+          pressure={trace.previous_pressure}
+        />
       ) : null
     case 'mode':
       return trace?.mode ? <ModeStep mode={trace.mode} /> : null
     case 'selection':
       return trace?.ladder ? (
-        <SelectionStep ladder={trace.ladder} pick={result?.pick} />
+        <SelectionStep
+          ladder={trace.ladder}
+          pick={result?.pick}
+          pressure={trace.continuation ? undefined : trace.previous_pressure}
+          truncated={truncated}
+        />
       ) : null
     case 'effort':
       return trace?.effort ? (
@@ -57,6 +115,7 @@ function ProcessStep(props: {
           error={error}
           unroutable={trace?.unroutable?.reasons}
           pick={trace?.ladder?.length ? undefined : result?.pick}
+          truncated={truncated}
         />
       )
   }
@@ -64,11 +123,22 @@ function ProcessStep(props: {
 
 /** How one request got to its model, one step after another. */
 export function RouteProcess(props: { detail: RouteLogDetail }) {
+  const { t } = useTranslation()
+  const empty =
+    !props.detail.result && !props.detail.trace && !props.detail.error
   return (
     <div className='space-y-4'>
-      {routeProcessSteps(props.detail).map((id) => (
-        <ProcessStep key={id} id={id} detail={props.detail} />
-      ))}
+      <TruncationNotice truncated={props.detail.truncated} />
+      {empty ? (
+        <EmptyState
+          title={t('No routing process details were stored for this request')}
+          className='min-h-40'
+        />
+      ) : (
+        routeProcessSteps(props.detail).map((id) => (
+          <ProcessStep key={id} id={id} detail={props.detail} />
+        ))
+      )}
     </div>
   )
 }

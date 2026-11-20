@@ -19,6 +19,16 @@ For commercial licensing, please contact support@quantumnous.com
 // Static translation keys that don't get picked up by the t('...') regex.
 // These cover dynamic labels (e.g. constants, configs) that are passed into t at runtime.
 export const STATIC_I18N_KEYS = [
+  'Capability weight',
+  'Cost weight',
+  'Capacity weight',
+  'Success weight',
+  'Sampling temperature',
+  'The weight given to model capability and answer quality.',
+  'The weight given to model cost; higher values favor cheaper models.',
+  'The weight given to available capacity; higher values favor less-loaded models.',
+  'The weight given to recent request success rate.',
+  'Sampling temperature controls score variability; lower values produce more stable routing.',
   'The adjusted price is outside the supported range.',
   'This expression cannot be adjusted automatically. Keep the source price or edit it manually.',
   'Task usage metadata is unavailable. Pricing details cannot be displayed.',

@@ -232,13 +232,9 @@ CostScore_i = clamp(1 - ln(C_i/C_min)/ln(10), 0, 1)
 
 免费模型和最低正成本模型得 1，同价模型都得 1；达到最低正成本 10 倍及以上得 0，其余按对数位置线性插值。
 
-**容量**：使用模型级最近 5 分钟真实请求的 RPM 空闲度：
+**容量**：直接读取模型-渠道能力设置的 RPM、TPM、并发上限和当前用量。渠道选择沿用首次尝试的实际规则：调度器预览确定渠道时只计算该渠道，否则按会话亲和或渠道权重计算首次命中概率；已禁用、被能力门控排除的渠道不参与。相同容量池只计算一次；非资源池渠道只有至少设置一项上限时才参与。
 
-```text
-Capacity_i = 1 - 模型i的RPM / 当前候选模型总RPM
-```
-
-窗口内没有流量时全部为 1。它表示近期流量空闲度，不是上游真实剩余配额。统计按榜单 base model 聚合，推理档位变体不单独计分；重试排除整个 base model。
+对每个候选模型，按渠道命中概率 `p` 聚合有效上限 `L` 和当前用量 `U`。对存在上限的维度计算 `R = clamp((L - U) / L, 0, 1)`，`Capacity` 取 RPM、TPM、并发三个 `R` 的最小值。没有任何有效上限时容量为 1；资源池耗尽时容量为 0。当前用量沿用模型-渠道能力页的 60 秒 RPM/TPM 窗口和在途并发口径。
 
 **成功率**：使用同一 5 分钟窗口的模型级真实结果和低样本先验：
 
@@ -328,9 +324,9 @@ Success_i = (Successes + 4) / (Samples + 4)
     "chosen": "idle",
     "dimensions": {"quality": 0.4, "cost": 0.2, "capacity": 0.2, "success": 0.2, "temperature": 0.12},
     "band": [
-      {"model": "strong", "score": 0.98, "price": 10, "cost_score": 0, "capacity": 0.7, "success": 0.9615, "requests": 30, "samples": 100, "utility": 0.7243, "probability": 0.1860},
-      {"model": "cheap", "score": 0.91, "price": 1, "cost_score": 1, "capacity": 0.5, "success": 0.6667, "requests": 50, "samples": 8, "utility": 0.7973, "probability": 0.3419},
-      {"model": "idle", "score": 0.94, "price": 3.16, "cost_score": 0.5003, "capacity": 0.8, "success": 1, "requests": 20, "samples": 0, "utility": 0.8361, "probability": 0.4721}
+      {"model": "strong", "score": 0.98, "price": 10, "cost_score": 0, "capacity": 0.7, "success": 0.9615, "samples": 100, "utility": 0.7243, "probability": 0.1860},
+      {"model": "cheap", "score": 0.91, "price": 1, "cost_score": 1, "capacity": 0.5, "success": 0.6667, "samples": 8, "utility": 0.7973, "probability": 0.3419},
+      {"model": "idle", "score": 0.94, "price": 3.16, "cost_score": 0.5003, "capacity": 0.8, "success": 1, "samples": 0, "utility": 0.8361, "probability": 0.4721}
     ]
   },
   "applied_effort": "high",
@@ -342,7 +338,7 @@ Success_i = (Successes + 4) / (Samples + 4)
 - `source` 是 `jev`（本次调用）、`cache`（判断缓存命中）、`inherit`（沿用上一轮）或 `default`（没有可用信号）。
 - `preference` 是这次请求用的偏好：令牌自己设的，没设则是平台的 `default_preference`。
 - `pick` 只在做过四维比较时出现。`dimensions` 记录归一化后的本次四维权重和独立温度，`band` 保留历史字段名但包含全部候选，`utility` 是加权总分，`probability` 是 softmax 采样概率，`chosen` 是选中的模型。沿用上一轮模型和按列表顺序取第一个时没有 `pick`。线上日志里的数值是完整精度，不是示例里的四位小数。
-- `band` 的每一项还有 `cost_multiplier`（首次会落到的渠道的费用倍率）、`cost`（比较成本 = `price` × 倍率）、`cost_score`、`capacity`、`success`、`requests`、`samples`、`utility` 和 `probability`。`cost_source` 为 `scheduler` 调度器预览、`affinity` 会话亲和或 `expected` 按命中概率的期望；`channel_id` 是确定会落到的渠道，`channels` 是参与期望的渠道个数。`price` 仍是用户侧价格。`channel_id` 来自预览时，和使用日志里实际落到的渠道对照，就能看出预览和正式调度有没有选得不一样。
+- `band` 的每一项还有 `cost_multiplier`（首次会落到的渠道的费用倍率）、`cost`（比较成本 = `price` × 倍率）、`cost_score`、`capacity`、`success`、`samples`、`utility` 和 `probability`。`cost_source` 为 `scheduler` 调度器预览、`affinity` 会话亲和或 `expected` 按命中概率的期望；`channel_id` 是确定会落到的渠道，`channels` 是参与期望的渠道个数。`price` 仍是用户侧价格。`channel_id` 来自预览时，和使用日志里实际落到的渠道对照，就能看出预览和正式调度有没有选得不一样。
 - 配了 Scheduler 时，`pick.preview` 记这次比价问预览的结果：`status` 为 `answered` 表示 Scheduler 回答了；其余是没拿到回答的原因，`not_scheduler_decided`（这次不由 Scheduler 定渠道：影子模式、金丝雀没命中或紧急停用）、`not_configured`、`circuit_open`、`unsupported`（地址都回 404）、`timeout`、`failed`（带 `http_status`，连不上时没有）、`bad_response`。回答了、某个模型却没用上它的答案时，`band` 里那一项的 `preview` 写原因：`not_cached`（还没加载）、`error`、`unusable_channel`（给的渠道在 new-api 这边没法报价）、`over_limit`（超过 64 个）。选路过程里，整次的原因写在候选表上方，单个模型的原因写在它的“费用倍率”下面。
 - `effort` 是第 7.2 节定出的期望档位，`applied_effort` 是按模型的渠道声明收敛后真正写进请求体的档位，`effort_action` 是 `set`（写入）、`keep`（不碰客户端字段）或 `strip`（模型不支持推理，去掉客户端字段）。`effort_override` 为 true 表示档位由这次判断定下（`leaf` 是二级类，或 `unknown` 但收益达到提档阈值），覆盖了客户端的推理字段。`effort_in_body` 为 true 表示档位写进请求体、模型名保持裸名；为 false 时档位拼在模型名后缀上（如 `gpt-5-high`）。
 
@@ -426,7 +422,7 @@ Success_i = (Successes + 4) / (Samples + 4)
 | `pkg/autorouter/modelrank/sources.go` | 新增 Artificial Analysis 免费接口与 Design Arena 接口加载，无 Design Arena key 时经 OpenRouter `/benchmarks` 读取；新增指标新鲜度统计；LMArena 增加 `creative_writing` 与两个 `industry_*` 分类；删除 OpenRouter 自测 benchmark（GPQA、τ-bench）、AA 指数转发、任务用量、端点延迟的加载 |
 | `pkg/autorouter/modelrank/rank.go` | 等权平均与按指标数的覆盖要求；删除用量加分；帕累托比较只看分数与价格 |
 | `pkg/autorouter/policy.go` | 按第 7.2 节的顺序选画像与列表，记录 `route_profile`、`route_fallback`；每一级列表和 `default_models` 都先按第 7.3 节比较，比不出再取第一个可用的 |
-| `pkg/autorouter/select.go` | 第 7.3 节的四维比较：质量、对数成本归一化、RPM 空闲度、低样本成功率；按 softmax 采样并返回各维度和概率写进日志；偏好常量 `capability`、`balanced`、`cost` |
+| `pkg/autorouter/select.go`、`capacity.go` | 第 7.3 节的四维比较：质量、对数成本归一化、渠道能力剩余容量、低样本成功率；按 softmax 采样并返回各维度和概率写进日志；偏好常量 `capability`、`balanced`、`cost` |
 | `setting/autorouter_setting/` | 新的内置 `task_models.json`；`taxonomy_version` 校验；`task_scores` 从内置 `evidence` 播种，随 `task_models` 一起按版本退回内置；`default_preference`、`preference_weights`，`Policy(preference)` 按令牌的偏好取完整策略 |
 | `model/token.go`、`model/token_cache.go`、`controller/token.go`、`middleware/auth.go` | 令牌新增 `auto_preference` 列（可空，空为平台默认），随令牌创建/更新接口读写，更新时不传则保留原值，不认识的值返回错误；Redis 令牌缓存脚本多存一个字段；鉴权后放进请求上下文 |
 | `web/src/features/keys/` | 令牌表单新增“Auto 模型偏好”下拉，独立于“路由倾向”；审计日志的变更字段多一个标签 |
@@ -448,9 +444,9 @@ Success_i = (Successes + 4) / (Samples + 4)
 | `service/channel_affinity.go`、`service/capability_gate.go`、`service/autorouter.go` | 只读的 `PeekPreferredChannelByAffinity`、`KeptChannels`；`AutoServingModel` 是最终解析和比价共用的服务名规则；Scheduler 的 workload 改在选路之前写 |
 | `service/scheduler_preview.go` | 调 Scheduler 的 `/v1/preview`：整次一个截止时间，只读熔断状态、失败不计入熔断；回 404 的地址一分钟内跳过、接着问下一个；一次最多问 64 个（不能比 Scheduler 的上限大，调大时先升级 Scheduler）；结果带状态写进选路留痕，问过没拿到回答时记 WARN |
 | `pkg/autorouter/select.go`、`policy.go`、`trace.go` | `Candidates.Costs`：一次取齐比较成本；`Excluded` 的模型不参与比较；跳过原因 `scheduler_no_candidate`；`band` 多出四维、Utility 和概率字段 |
-| `middleware/auto_route_cost.go`、`middleware/distributor.go` | 实现 `Costs`：调度器预览或原生规则定渠道、按首次命中的分组报价、乘渠道费用倍率；预览说没有渠道的模型记进这次请求的拒绝原因 |
+| `middleware/auto_route_cost.go`、`middleware/distributor.go` | 实现 `Costs`：调度器预览或原生规则定渠道、按首次命中的分组报价、乘渠道费用倍率，并复用同一批渠道计算容量；预览说没有渠道的模型记进这次请求的拒绝原因 |
 | `web/src/features/system-settings/autorouter/route-log/` | 候选表显示费用倍率、比较成本、四个维度、Utility 和概率；没用上调度器预览时在表上方说明原因，单个模型没用上时写在它的倍率下面 |
-| `pkg/autorouter/metrics.go`、`service/auto_model_metrics.go`、`controller/relay.go` | 按 base model 记录五分钟 RPM 和结果；Redis 跨实例共享，读取失败退回节点内存；客户端取消、参数错误、上下文超限和额度耗尽不计结果样本 |
+| `pkg/autorouter/metrics.go`、`service/auto_model_metrics.go`、`controller/relay.go` | 按 base model 记录五分钟结果样本；Redis 跨实例共享，读取失败退回节点内存；客户端取消、参数错误、上下文超限和额度耗尽不计结果样本 |
 | `pkg/autorouter/jev.go`、`setting/autorouter_setting/ranking_edit.go`、`config.go` | 第 8.1 节：`RankingProfiles()` 列出全部画像；`EditedRanking` 校验整份手工榜单、与当前榜单比出改动，返回要写的四项榜单和关掉的定时刷新；`Ranking.Profiles()` 是读写共用的画像列表；`encodeOptions` 与恢复内置共用 |
 | `controller/autorouter.go`、`controller/audit.go`、`router/api-router.go`、`middleware/access_token_routes.go` | `PUT /api/autorouter/ranking`（刷新进行中拒绝、审计 `autorouter.rank_edit`、访问令牌作用域 `option:write`）；`GET /api/autorouter/ranking` 按全部画像列出并给每个模型加 `served` |
 | `web/src/features/system-settings/autorouter/` | 榜单编辑（`ranking-viewer.tsx`、`ranking-table.tsx`、`ranking-add-dialog.tsx`，纯逻辑在 `ranking-draft.ts`）；状态卡标出手工编辑过的榜单，立即刷新前确认 |

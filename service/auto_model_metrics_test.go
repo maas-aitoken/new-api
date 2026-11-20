@@ -31,11 +31,10 @@ func TestAutoModelMetricsSharedStore(t *testing.T) {
 	autorouter.SetMetrics(store)
 	t.Cleanup(func() { autorouter.SetMetrics(autoModelMetricsStore) })
 
-	autorouter.BeginModelRequest("shared")
 	autorouter.FinishModelRequest("shared", true)
 
 	assert.Equal(t, map[string]autorouter.MetricSample{
-		"shared": {Requests: 1, Successes: 1},
+		"shared": {Successes: 1},
 	}, store.Snapshot([]string{"shared"}))
 	assert.Equal(t, "1", server.HGet(autoModelMetricsKey("shared", "outcomes"), strconv.FormatInt(time.Now().Unix(), 10)+":s"))
 }
@@ -45,27 +44,23 @@ func TestAutoModelMetricsRedisWindow(t *testing.T) {
 	store := newAutoModelMetrics()
 	now := time.Now().Unix()
 	expired := strconv.FormatInt(now-301, 10)
-	server.HSet(autoModelMetricsKey("model", "requests"), expired, "8")
 	server.HSet(autoModelMetricsKey("model", "outcomes"), expired+":s", "8")
 
-	store.Begin("model")
 	store.Finish("model", false)
 
 	assert.Equal(t, map[string]autorouter.MetricSample{
-		"model": {Requests: 1, Failures: 1},
+		"model": {Failures: 1},
 	}, store.Snapshot([]string{"model"}))
-	assert.Empty(t, server.HGet(autoModelMetricsKey("model", "requests"), expired))
 	assert.Empty(t, server.HGet(autoModelMetricsKey("model", "outcomes"), expired+":s"))
 }
 
 func TestAutoModelMetricsReadFailureUsesMemory(t *testing.T) {
 	server := useAutoModelMetricsRedis(t)
 	store := newAutoModelMetrics()
-	store.Begin("model")
 	store.Finish("model", true)
 	server.Close()
 
 	assert.Equal(t, map[string]autorouter.MetricSample{
-		"model": {Requests: 1, Successes: 1},
+		"model": {Successes: 1},
 	}, store.Snapshot([]string{"model"}))
 }

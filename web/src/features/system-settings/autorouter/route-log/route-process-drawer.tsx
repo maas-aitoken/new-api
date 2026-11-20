@@ -138,7 +138,7 @@ export function RouteProcessDrawer(props: RouteProcessDrawerProps) {
 
   return (
     <Sheet open={open} onOpenChange={(next) => !next && props.onClose()}>
-      <SheetContent className={sideDrawerContentClassName('sm:max-w-2xl')}>
+      <SheetContent className={sideDrawerContentClassName('sm:max-w-4xl')}>
         <SheetHeader className={sideDrawerHeaderClassName()}>
           <SheetTitle>{t('Routing process')}</SheetTitle>
           <SheetDescription className='font-mono break-all'>

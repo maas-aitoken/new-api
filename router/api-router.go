@@ -418,6 +418,23 @@ func SetApiRouter(router *gin.Engine) {
 		dataRoute.GET("/flow", middleware.AdminAuth(), controller.GetAllFlowQuotaDates)
 		dataRoute.GET("/flow/self", middleware.UserAuth(), controller.GetUserFlowQuotaDates)
 
+		overviewRoute := apiRouter.Group("/overview", middleware.UserAuth())
+		overviewRoute.GET("/data", controller.GetUserQuotaDates)
+		overviewRoute.GET("/flow", controller.GetUserFlowQuotaDates)
+		overviewRoute.GET("/iself", controller.GetSelfIselfUsageAnalytics)
+		overviewRoute.GET("/platforms", controller.GetUsagePlatforms)
+		overviewRoute.GET("/api-keys", controller.ListOverviewApiKeys)
+		overviewRoute.GET("/profile", controller.GetOverviewProfile)
+		overviewRoute.GET("/subscription", controller.GetSubscriptionSelf)
+		overviewRoute.GET("/quota-notices", controller.ListOverviewQuotaNotices)
+		overviewRoute.POST("/quota-increase", middleware.CriticalRateLimit(), controller.RequestSubscriptionQuotaIncrease)
+
+		profileRoute := apiRouter.Group("/profile", middleware.UserAuth())
+		profileRoute.GET("/summary", controller.GetOverviewProfile)
+		profileRoute.GET("/data", controller.GetUserQuotaDates)
+		profileRoute.GET("/subscription", controller.GetSubscriptionSelf)
+		profileRoute.POST("/quota-increase", middleware.CriticalRateLimit(), controller.RequestSubscriptionQuotaIncrease)
+
 		logRoute.Use(middleware.CORS(), middleware.CriticalRateLimit())
 		{
 			logRoute.GET("/token", middleware.TokenAuthReadOnly(), controller.GetLogByKey)
