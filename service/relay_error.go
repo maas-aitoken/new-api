@@ -56,7 +56,7 @@ func DecideRelayRetry(c *gin.Context, err *types.NewAPIError, retryTimes int) Po
 	}
 	// 上游拒答时重试：网关压着没发的拒答（upstream_refusal），以及上游直接以错误形式返回的拒答
 	// （Azure 的 content_filter、Gemini 的 prompt_blocked）。它们是 400，不能靠重试状态码命中。
-	if operation_setting.UpstreamRefusalRetryEnabled {
+	if RefusalRetryApplies(c) {
 		switch err.GetErrorCode() {
 		case types.ErrorCodeUpstreamRefusal, types.ErrorCodePromptBlocked, "content_filter":
 			return PolicyDecision{Action: "retry", Reason: "upstream_refusal", Source: "global"}
@@ -80,6 +80,19 @@ func DecideRelayRetry(c *gin.Context, err *types.NewAPIError, retryTimes int) Po
 
 func ShouldRetryRelayError(c *gin.Context, openaiErr *types.NewAPIError, retryTimes int) bool {
 	return DecideRelayRetry(c, openaiErr, retryTimes).Action == "retry"
+}
+
+// RefusalRetryApplies 表示这个请求参不参与上游拒答重试：开关要打开，且没开「仅 auto」
+// 或者该请求是智能路由（auto）。锁定模型的请求在「仅 auto」下保持原有行为：
+// 拒答照原样透传给客户端，不重试。
+func RefusalRetryApplies(c *gin.Context) bool {
+	if !operation_setting.UpstreamRefusalRetryEnabled {
+		return false
+	}
+	if operation_setting.UpstreamRefusalRetryAutoOnly && !common.GetContextKeyBool(c, constant.ContextKeyAutoRouted) {
+		return false
+	}
+	return true
 }
 
 func ProcessChannelError(c *gin.Context, channelError types.ChannelError, err *types.NewAPIError, relayInfo *relaycommon.RelayInfo) {

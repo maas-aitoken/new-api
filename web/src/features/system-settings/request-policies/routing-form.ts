@@ -13,6 +13,7 @@ export function createRoutingPolicySchema(t: TFunction) {
         t('Invalid status code rules')
       ),
     UpstreamRefusalRetryEnabled: z.boolean(),
+    UpstreamRefusalRetryAutoOnly: z.boolean(),
     UpstreamRefusalOpeningTexts: z.string(),
     channel_affinity_setting: z.object({
       enabled: z.boolean(),
@@ -52,6 +53,8 @@ export function routingPolicyFormValues(
     RetryTimes: Number(options.RetryTimes),
     AutomaticRetryStatusCodes: options.AutomaticRetryStatusCodes,
     UpstreamRefusalRetryEnabled: options.UpstreamRefusalRetryEnabled === 'true',
+    UpstreamRefusalRetryAutoOnly:
+      options.UpstreamRefusalRetryAutoOnly === 'true',
     UpstreamRefusalOpeningTexts: options.UpstreamRefusalOpeningTexts ?? '',
     channel_affinity_setting: {
       enabled: options['channel_affinity_setting.enabled'] === 'true',
@@ -77,6 +80,7 @@ export function routingPolicyOptions(
     RetryTimes: String(values.RetryTimes),
     AutomaticRetryStatusCodes: values.AutomaticRetryStatusCodes,
     UpstreamRefusalRetryEnabled: String(values.UpstreamRefusalRetryEnabled),
+    UpstreamRefusalRetryAutoOnly: String(values.UpstreamRefusalRetryAutoOnly),
     UpstreamRefusalOpeningTexts: values.UpstreamRefusalOpeningTexts.replaceAll(
       '\r\n',
       '\n'

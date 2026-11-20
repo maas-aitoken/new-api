@@ -102,28 +102,45 @@ export function RetrySection() {
           )}
         />
         {refusalRetryEnabled ? (
-          <FormField
-            control={form.control}
-            name='UpstreamRefusalOpeningTexts'
-            render={({ field }) => (
-              <FormItem>
-                <FormLabel>{t('Refusal opening texts')}</FormLabel>
-                <FormControl>
-                  <Textarea
-                    rows={4}
-                    placeholder={t('one keyword per line')}
-                    {...field}
-                  />
-                </FormControl>
-                <FormDescription>
-                  {t(
-                    'A streamed answer that starts with one of these texts (case-insensitive) is held until its finish reason arrives. Refusals with other wording are sent through as usual.'
+          <>
+            <FormField
+              control={form.control}
+              name='UpstreamRefusalRetryAutoOnly'
+              render={({ field }) => (
+                <SettingsSwitchField
+                  controlId='UpstreamRefusalRetryAutoOnly'
+                  checked={field.value}
+                  onCheckedChange={field.onChange}
+                  label={t('Retry refusals in auto mode only')}
+                  description={t(
+                    'Only smart-routing (auto) requests retry on a refusal and switch to the next model. Requests locked to a model keep the original behavior: the refusal is returned to the client as usual, with one extra error log.'
                   )}
-                </FormDescription>
-                <FormMessage />
-              </FormItem>
-            )}
-          />
+                />
+              )}
+            />
+            <FormField
+              control={form.control}
+              name='UpstreamRefusalOpeningTexts'
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>{t('Refusal opening texts')}</FormLabel>
+                  <FormControl>
+                    <Textarea
+                      rows={4}
+                      placeholder={t('one keyword per line')}
+                      {...field}
+                    />
+                  </FormControl>
+                  <FormDescription>
+                    {t(
+                      'A streamed answer that starts with one of these texts (case-insensitive) is held until its finish reason arrives. Refusals with other wording are sent through as usual.'
+                    )}
+                  </FormDescription>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+          </>
         ) : null}
       </div>
     </SettingsCard>

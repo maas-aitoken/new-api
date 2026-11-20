@@ -198,11 +198,15 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 	}()
 
 	// 上游拒答时重试：每次尝试写给客户端的数据先压着，拒答的尝试才能丢掉重来。
-	// 要装在心跳之前，处在最里层，写超时和心跳都包在它外面。
+	// 要装在心跳之前，处在最里层，写超时和心跳都包在它外面。「仅 auto」下锁定模型的
+	// 请求不装：拒答照原样透传，不重试。
 	var responseHold *helper.ResponseHold
-	if operation_setting.UpstreamRefusalRetryEnabled && isTextGenerationRelay(c, relayFormat, relayInfo) {
+	if service.RefusalRetryApplies(c) && isTextGenerationRelay(c, relayFormat, relayInfo) {
 		responseHold = helper.InstallResponseHold(c, relayInfo)
 	}
+	// 开关打开但这个请求不参与拒答重试（「仅 auto」下的锁定模型请求）：拒答透传给
+	// 客户端后补一条错误日志，让拒答在使用日志的错误页里也能看到。
+	lockedRefusalPassthrough := operation_setting.UpstreamRefusalRetryEnabled && !service.RefusalRetryApplies(c)
 
 	generalSettings := operation_setting.GetGeneralSetting()
 	if relayFormat == types.RelayFormatClaude && relayInfo.IsStream && generalSettings.PingIntervalEnabled {
@@ -419,6 +423,21 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			service.ResetChannelModelFailureConsecutive(channel.Id, relayInfo.OriginModelName)
 			service.MarkRequestPolicySuccess(c, relayInfo.StreamStatus)
 			relayInfo.LastError = nil
+			// 「仅 auto」下锁定模型的请求拒答照原样透传（200、照常计费）；补一条错误日志留痕。
+			if lockedRefusalPassthrough && relayInfo.PerformanceBusinessRejection && constant.ErrorLogEnabled {
+				other := model.NewLogOther()
+				other.SetPublic("error_type", "upstream_refusal")
+				other.SetPublic("error_code", "upstream_refusal_passthrough")
+				other.SetPublic("status_code", http.StatusOK)
+				service.AppendRelayLogAdminInfo(c, relayInfo, other)
+				startTime := common.GetContextKeyTime(c, constant.ContextKeyRequestStartTime)
+				if startTime.IsZero() {
+					startTime = time.Now()
+				}
+				model.RecordErrorLog(c, relayInfo.UserId, channel.Id, relayInfo.OriginModelName, c.GetString("token_name"),
+					"upstream refusal passed through without retry: "+common.GetContextKeyString(c, constant.ContextKeyAdminRejectReason),
+					relayInfo.TokenId, int(time.Since(startTime).Seconds()), relayInfo.IsStream, relayInfo.UsingGroup, other)
+			}
 			return
 		}
 
