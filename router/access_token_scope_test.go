@@ -4,6 +4,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -152,12 +153,16 @@ func TestAccessTokenRouteRulesCoverEveryDashboardRoute(t *testing.T) {
 
 func TestModelSquareRoutesRespectRequiredAuthentication(t *testing.T) {
 	common.OptionMapRWMutex.Lock()
-	previous := common.OptionMap["HeaderNavModules"]
+	previous := common.OptionMap
+	common.OptionMap = maps.Clone(previous)
+	if common.OptionMap == nil {
+		common.OptionMap = make(map[string]string)
+	}
 	common.OptionMap["HeaderNavModules"] = `{"pricing":{"enabled":true,"requireAuth":true}}`
 	common.OptionMapRWMutex.Unlock()
 	t.Cleanup(func() {
 		common.OptionMapRWMutex.Lock()
-		common.OptionMap["HeaderNavModules"] = previous
+		common.OptionMap = previous
 		common.OptionMapRWMutex.Unlock()
 	})
 	engine := newAccessTokenScopeTestEngine(t)
