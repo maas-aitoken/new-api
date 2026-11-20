@@ -8369,6 +8369,12 @@
     "Not refreshed": "Not refreshed",
     "Rate limited": "Rate limited",
     "By clicking sign in, you agree to our": "By clicking sign in, you agree to our",
-    "By creating an account, you agree to our": "By creating an account, you agree to our"
+    "By creating an account, you agree to our": "By creating an account, you agree to our",
+    "Capability weight": "Capability weight",
+    "The weight given to model capability and answer quality.": "The weight given to model capability and answer quality.",
+    "The weight given to model cost; higher values favor cheaper models.": "The weight given to model cost; higher values favor cheaper models.",
+    "The weight given to available capacity; higher values favor less-loaded models.": "The weight given to available capacity; higher values favor less-loaded models.",
+    "The weight given to recent request success rate.": "The weight given to recent request success rate.",
+    "Sampling temperature controls score variability; lower values produce more stable routing.": "Sampling temperature controls score variability; lower values produce more stable routing."
   }
 }

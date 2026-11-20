@@ -126,7 +126,7 @@ test('a stored preference policy fills its five fields', async () => {
   )
 
   expect(
-    screen.getByRole('spinbutton', { name: 'Quality weight' })
+    screen.getByRole('spinbutton', { name: 'Capability weight' })
   ).toHaveValue(0.4)
   expect(screen.getByRole('spinbutton', { name: 'Cost weight' })).toHaveValue(
     0.1
@@ -150,9 +150,12 @@ test('editing one preference writes the complete policy for all preferences', as
   const user = userEvent.setup()
   renderSection()
 
-  fireEvent.change(screen.getByRole('spinbutton', { name: 'Quality weight' }), {
-    target: { value: '0.8' },
-  })
+  fireEvent.change(
+    screen.getByRole('spinbutton', { name: 'Capability weight' }),
+    {
+      target: { value: '0.8' },
+    }
+  )
   fireEvent.change(
     screen.getByRole('spinbutton', { name: 'Sampling temperature' }),
     { target: { value: '0.25' } }
@@ -165,6 +168,17 @@ test('editing one preference writes the complete policy for all preferences', as
     value:
       '{"capability":{"quality":0.6,"cost":0,"capacity":0.2,"success":0.2,"temperature":0.12},"balanced":{"quality":0.8,"cost":0.2,"capacity":0.2,"success":0.2,"temperature":0.25},"cost":{"quality":0.2,"cost":0.4,"capacity":0.2,"success":0.2,"temperature":0.12}}',
   })
+})
+
+test('each weight exposes its explanation from the question mark button', async () => {
+  const user = userEvent.setup()
+  renderSection()
+
+  await user.click(screen.getAllByRole('button', { name: 'Learn more' })[0])
+
+  expect(
+    screen.getByText('The weight given to model capability and answer quality.')
+  ).toBeVisible()
 })
 
 test('a weight above one is rejected before anything is saved', async () => {

@@ -838,7 +838,7 @@ test('an adaptive request shows its four weights and temperature, between the va
     '0.0981'
   )
   expect(
-    screen.getByText('Quality weight').nextElementSibling
+    screen.getByText('Capability weight').nextElementSibling
   ).toHaveTextContent('0.6712')
   expect(screen.getByText('Preference').nextElementSibling).toHaveTextContent(
     'Decide per request'

@@ -8361,6 +8361,12 @@
     "Not refreshed": "Chưa làm mới",
     "Rate limited": "Bị giới hạn",
     "By clicking sign in, you agree to our": "Bằng cách nhấp đăng nhập, bạn đồng ý với",
-    "By creating an account, you agree to our": "Bằng cách tạo tài khoản, bạn đồng ý với"
+    "By creating an account, you agree to our": "Bằng cách tạo tài khoản, bạn đồng ý với",
+    "Capability weight": "Trọng số năng lực",
+    "The weight given to model capability and answer quality.": "Trọng số dành cho năng lực mô hình và chất lượng câu trả lời.",
+    "The weight given to model cost; higher values favor cheaper models.": "Trọng số dành cho chi phí mô hình; giá trị cao hơn ưu tiên các mô hình rẻ hơn.",
+    "The weight given to available capacity; higher values favor less-loaded models.": "Trọng số dành cho dung lượng khả dụng; giá trị cao hơn ưu tiên các mô hình ít tải hơn.",
+    "The weight given to recent request success rate.": "Trọng số dành cho tỷ lệ yêu cầu thành công gần đây.",
+    "Sampling temperature controls score variability; lower values produce more stable routing.": "Nhiệt độ lấy mẫu kiểm soát độ biến động của điểm số; giá trị thấp hơn giúp định tuyến ổn định hơn."
   }
 }
