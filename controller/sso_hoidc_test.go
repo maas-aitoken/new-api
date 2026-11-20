@@ -10,10 +10,13 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/QuantumNous/new-api/setting/system_setting"
 	"github.com/gin-gonic/gin"
+	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 )
 
 // configureHoidcTest enables HOIDC with maas.example.com as the frontend origin
@@ -119,4 +122,60 @@ func TestSsoHoidcCallbackRedirectsWithoutAccessToken(t *testing.T) {
 	stored, err := model.GetUserById(user.Id, false)
 	require.NoError(t, err)
 	assert.Positive(t, stored.LastLoginAt, "an SSO login records the last login time like other logins")
+}
+
+func TestProvisionSsoUserStartsWithNewUserQuotaUnlessQuotaTiersAreOn(t *testing.T) {
+	previousDB, previousLogDB := model.DB, model.LOG_DB
+	previousMain, previousLog := common.MainDatabaseType(), common.LogDatabaseType()
+	previousRedis, previousNewUserQuota := common.RedisEnabled, common.QuotaForNewUser
+	db, err := gorm.Open(sqlite.Open("file:sso_new_user_quota?mode=memory&cache=shared"), &gorm.Config{})
+	require.NoError(t, err)
+	require.NoError(t, db.AutoMigrate(&model.User{}, &model.Token{}, &model.Log{}, &model.QuotaData{}, &model.SubscriptionPlan{}, &model.UserSubscription{}))
+	model.DB, model.LOG_DB = db, db
+	common.SetDatabaseTypes(common.DatabaseTypeSQLite, common.DatabaseTypeSQLite)
+	common.RedisEnabled = false
+	common.QuotaForNewUser = 500_000_000_000
+	t.Cleanup(func() {
+		operation_setting.SetQuotaTierEnabled(false)
+		common.RedisEnabled, common.QuotaForNewUser = previousRedis, previousNewUserQuota
+		model.DB, model.LOG_DB = previousDB, previousLogDB
+		common.SetDatabaseTypes(previousMain, previousLog)
+		if sqlDB, err := db.DB(); err == nil {
+			_ = sqlDB.Close()
+		}
+	})
+	plan := model.SubscriptionPlan{Title: "tier-1", TotalAmount: 1000, Enabled: true,
+		DurationUnit: model.SubscriptionDurationMonth, DurationValue: 1}
+	require.NoError(t, model.CreateSubscriptionPlan(&plan))
+	model.InvalidateSubscriptionPlanCache(plan.Id)
+
+	for _, test := range []struct {
+		name      string
+		quotaTier bool
+		email     string
+		quota     int
+	}{
+		{"quota tiers off", false, "tiers-off@example.com", 500_000_000_000},
+		{"quota tiers on", true, "tiers-on@example.com", 0},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			operation_setting.SetQuotaTierEnabled(test.quotaTier)
+			user, err := service.ProvisionSsoUser("", test.email, "SSO User", "", "BU/Ops", "", "", 0, 0, 0, 0, 0, nil, true)
+			require.NoError(t, err)
+
+			var stored model.User
+			require.NoError(t, db.First(&stored, user.Id).Error)
+			assert.Equal(t, test.quota, stored.Quota)
+			assert.Equal(t, test.quotaTier, stored.QuotaTierAutoAssign)
+			var subs []model.UserSubscription
+			require.NoError(t, db.Where("user_id = ?", user.Id).Find(&subs).Error)
+			if !test.quotaTier {
+				assert.Empty(t, subs)
+				return
+			}
+			require.Len(t, subs, 1)
+			assert.Equal(t, plan.Id, subs[0].PlanId)
+			assert.Equal(t, model.SubscriptionSourceQuotaTier, subs[0].Source)
+		})
+	}
 }
