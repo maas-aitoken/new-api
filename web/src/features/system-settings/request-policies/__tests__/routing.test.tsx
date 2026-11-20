@@ -50,6 +50,7 @@ const options = {
   ]),
   AutomaticRetryStatusCodes: '429,500-503',
   UpstreamRefusalRetryEnabled: 'false',
+  UpstreamRefusalRetryAutoOnly: 'false',
   UpstreamRefusalOpeningTexts:
     'The selected model cannot continue this conversation',
 }

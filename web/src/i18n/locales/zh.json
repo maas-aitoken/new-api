@@ -1,7 +1,9 @@
 {
     "A streamed answer that starts with one of these texts (case-insensitive) is held until its finish reason arrives. Refusals with other wording are sent through as usual.": "流式回答的开头和其中某一句对得上（不区分大小写）时先压着，等到结束原因再判断；措辞不在列表里的拒答照常发给客户端。",
+    "Only smart-routing (auto) requests retry on a refusal and switch to the next model. Requests locked to a model keep the original behavior: the refusal is returned to the client as usual, with one extra error log.": "只有智能路由（auto）的请求在拒答时换下一个模型重试；锁定模型的请求保持原有行为：拒答照原样返回给客户端，另记一条错误日志。",
     "Refusal opening texts": "拒答开头文本",
     "Retry on upstream refusal": "上游拒答时重试",
+    "Retry refusals in auto mode only": "仅 auto 模式重试",
   "translation": {
     "360": "360",
     "1000": "1000",
