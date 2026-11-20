@@ -32,11 +32,7 @@ import { cn } from '@/lib/utils'
 import { formatScore, previewNoteLabel, previewOutcomeLabel } from './labels'
 import { routePickSchema } from './presentation'
 import { ToneBadge } from './route-process-parts'
-import type {
-  RouteLogTruncation,
-  RoutePick,
-  RoutePickCandidate,
-} from './types'
+import type { RouteLogTruncation, RoutePick, RoutePickCandidate } from './types'
 
 const priceFormat = { digitsLarge: 4, digitsSmall: 6, abbreviate: false }
 
@@ -119,12 +115,12 @@ export function PickTable(props: {
   const band = Array.isArray(pick.band) ? pick.band : []
   const schema = routePickSchema(pick)
   const comparesCost = band.some((row) => (row.cost_multiplier ?? 0) > 0)
-  const hasCapacityPremium = band.some(
-    (row) => (row.capacity_premium ?? 0) > 0
+  const hasRequestShareCapacity = band.some(
+    (row) => typeof row.requests === 'number' && Number.isFinite(row.requests)
   )
+  const hasCapacityPremium = band.some((row) => (row.capacity_premium ?? 0) > 0)
   const previewOutcome = previewOutcomeLabel(t, pick.preview)
-  const bandTruncation =
-    props.truncated?.collections?.['result.pick.band']
+  const bandTruncation = props.truncated?.collections?.['result.pick.band']
   const omittedProbability = bandTruncation?.omitted_probability
 
   const columns: StaticDataTableColumn<RoutePickCandidate>[] = [
@@ -216,10 +212,12 @@ export function PickTable(props: {
     columns.push(
       scoreColumn('cost_score', t('Cost score')),
       scoreColumn('capacity', t('Capacity')),
-      scoreColumn('success', t('Success')),
-      countColumn('requests', t('Requests'), locale),
-      countColumn('samples', t('Samples'), locale)
+      scoreColumn('success', t('Success'))
     )
+    if (hasRequestShareCapacity) {
+      columns.push(countColumn('requests', t('Requests'), locale))
+    }
+    columns.push(countColumn('samples', t('Samples'), locale))
   } else if (schema === 'legacy') {
     columns.push(scoreColumn('discount', t('Price discount')))
   }
@@ -251,6 +249,15 @@ export function PickTable(props: {
           {comparesCost
             ? ` ${t('The cost multiplier never changes what the user is billed.')}`
             : null}
+        </p>
+      )}
+      {schema === 'current' && (
+        <p className='text-muted-foreground text-xs'>
+          {t(
+            hasRequestShareCapacity
+              ? 'Capacity is one minus the request share. Success adds four prior successes to the measured outcomes; Samples shows the evidence strength.'
+              : 'Capacity is the lowest remaining fraction of configured RPM, TPM and in-flight limits. Scheduler and affinity use their concrete channel; native estimates use first-attempt probabilities. No effective limit or estimate means full capacity; an exhausted pool means none.'
+          )}
         </p>
       )}
       {schema === 'legacy' && (

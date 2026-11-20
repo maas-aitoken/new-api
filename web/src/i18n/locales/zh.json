@@ -8407,6 +8407,8 @@
     "The weight given to model cost; higher values favor cheaper models.": "模型成本所占的权重；值越高越倾向于选择更便宜的模型。",
     "The weight given to available capacity; higher values favor less-loaded models.": "可用容量所占的权重；值越高越倾向于选择负载更低的模型。",
     "The weight given to recent request success rate.": "最近请求成功率所占的权重。",
-    "Sampling temperature controls score variability; lower values produce more stable routing.": "采样温度控制评分的波动程度；值越低，路由越稳定。"
+    "Sampling temperature controls score variability; lower values produce more stable routing.": "采样温度控制评分的波动程度；值越低，路由越稳定。",
+    "Capacity is one minus the request share. Success adds four prior successes to the measured outcomes; Samples shows the evidence strength.": "容量得分按 1 减去请求占比计算。成功率在实测结果上加入 4 次先验成功；样本数用于说明证据强度。",
+    "Capacity is the lowest remaining fraction of configured RPM, TPM and in-flight limits. Scheduler and affinity use their concrete channel; native estimates use first-attempt probabilities. No effective limit or estimate means full capacity; an exhausted pool means none.": "容量取已配置 RPM、TPM 和在途并发剩余比例的最小值。调度器和会话亲和使用确定渠道，原生估算按首次命中概率加权。无有效上限或估算时容量为 1，资源池耗尽时为 0。"
   }
 }

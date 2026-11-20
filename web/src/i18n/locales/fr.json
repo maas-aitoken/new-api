@@ -8397,6 +8397,8 @@
     "The weight given to model cost; higher values favor cheaper models.": "Poids accordé au coût du modèle ; une valeur plus élevée favorise les modèles moins chers.",
     "The weight given to available capacity; higher values favor less-loaded models.": "Poids accordé à la capacité disponible ; une valeur plus élevée favorise les modèles moins chargés.",
     "The weight given to recent request success rate.": "Poids accordé au taux de réussite récent des requêtes.",
-    "Sampling temperature controls score variability; lower values produce more stable routing.": "La température d'échantillonnage contrôle la variabilité du score ; une valeur plus basse rend le routage plus stable."
+    "Sampling temperature controls score variability; lower values produce more stable routing.": "La température d'échantillonnage contrôle la variabilité du score ; une valeur plus basse rend le routage plus stable.",
+    "Capacity is one minus the request share. Success adds four prior successes to the measured outcomes; Samples shows the evidence strength.": "La capacité vaut un moins la part de requêtes. La réussite ajoute quatre succès a priori aux résultats mesurés ; le nombre d’échantillons indique la solidité des preuves.",
+    "Capacity is the lowest remaining fraction of configured RPM, TPM and in-flight limits. Scheduler and affinity use their concrete channel; native estimates use first-attempt probabilities. No effective limit or estimate means full capacity; an exhausted pool means none.": "La capacité est la plus faible fraction restante parmi les limites configurées de RPM, TPM et de requêtes en cours. Le scheduler et l’affinité utilisent leur canal concret ; les estimations natives pondèrent les canaux selon la probabilité de première tentative. Sans limite ou estimation exploitable, elle vaut 1 ; un pool épuisé vaut 0."
   }
 }

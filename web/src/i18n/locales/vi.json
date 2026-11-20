@@ -8397,6 +8397,8 @@
     "The weight given to model cost; higher values favor cheaper models.": "Trọng số dành cho chi phí mô hình; giá trị cao hơn ưu tiên các mô hình rẻ hơn.",
     "The weight given to available capacity; higher values favor less-loaded models.": "Trọng số dành cho dung lượng khả dụng; giá trị cao hơn ưu tiên các mô hình ít tải hơn.",
     "The weight given to recent request success rate.": "Trọng số dành cho tỷ lệ yêu cầu thành công gần đây.",
-    "Sampling temperature controls score variability; lower values produce more stable routing.": "Nhiệt độ lấy mẫu kiểm soát độ biến động của điểm số; giá trị thấp hơn giúp định tuyến ổn định hơn."
+    "Sampling temperature controls score variability; lower values produce more stable routing.": "Nhiệt độ lấy mẫu kiểm soát độ biến động của điểm số; giá trị thấp hơn giúp định tuyến ổn định hơn.",
+    "Capacity is one minus the request share. Success adds four prior successes to the measured outcomes; Samples shows the evidence strength.": "Dung lượng bằng 1 trừ tỷ lệ yêu cầu. Tỷ lệ thành công thêm bốn lần thành công tiên nghiệm vào kết quả đo được; số mẫu cho biết độ mạnh của bằng chứng.",
+    "Capacity is the lowest remaining fraction of configured RPM, TPM and in-flight limits. Scheduler and affinity use their concrete channel; native estimates use first-attempt probabilities. No effective limit or estimate means full capacity; an exhausted pool means none.": "Dung lượng là tỷ lệ còn lại nhỏ nhất trong các giới hạn RPM, TPM và yêu cầu đang xử lý đã cấu hình. Bộ lập lịch và liên kết phiên sử dụng kênh cụ thể; ước tính gốc tính trọng số theo xác suất của lần thử đầu tiên. Không có giới hạn hoặc ước tính khả dụng thì giá trị là 1; nhóm tài nguyên cạn kiệt thì là 0."
   }
 }

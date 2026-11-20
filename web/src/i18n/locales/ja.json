@@ -8397,6 +8397,8 @@
     "The weight given to model cost; higher values favor cheaper models.": "モデルのコストに与える重みです。値が大きいほど、安価なモデルを優先します。",
     "The weight given to available capacity; higher values favor less-loaded models.": "利用可能な容量に与える重みです。値が大きいほど、負荷の低いモデルを優先します。",
     "The weight given to recent request success rate.": "最近のリクエスト成功率に与える重みです。",
-    "Sampling temperature controls score variability; lower values produce more stable routing.": "サンプリング温度はスコアの変動性を制御します。値が低いほどルーティングが安定します。"
+    "Sampling temperature controls score variability; lower values produce more stable routing.": "サンプリング温度はスコアの変動性を制御します。値が低いほどルーティングが安定します。",
+    "Capacity is one minus the request share. Success adds four prior successes to the measured outcomes; Samples shows the evidence strength.": "容量は 1 からリクエスト占有率を引いた値です。成功率には測定結果へ事前成功 4 件を加え、サンプル数は証拠の強さを示します。",
+    "Capacity is the lowest remaining fraction of configured RPM, TPM and in-flight limits. Scheduler and affinity use their concrete channel; native estimates use first-attempt probabilities. No effective limit or estimate means full capacity; an exhausted pool means none.": "容量は、設定された RPM、TPM、実行中リクエストの各上限に対する残りの割合の最小値です。スケジューラとアフィニティは確定したチャンネルを使用し、ネイティブ推定では初回試行の確率で重み付けします。有効な上限または推定がない場合は 1、プールが枯渇している場合は 0 です。"
   }
 }

@@ -94,7 +94,6 @@ function candidate(
     cost_score: model === 'sonnet' ? 0.4 : 1,
     capacity: model === 'sonnet' ? 0.5 : 0.5,
     success: model === 'sonnet' ? 0.98 : 0.96,
-    requests: 1,
     samples: 20,
     utility: score,
     probability,
@@ -982,7 +981,11 @@ test('a legacy busy pool explains the reselection instead of calling the model u
             reused: false,
           },
           ladder: [
-            { profile: 'code.build', outcome: 'first_available', model: 'coder' },
+            {
+              profile: 'code.build',
+              outcome: 'first_available',
+              model: 'coder',
+            },
           ],
         },
       },
@@ -1003,18 +1006,42 @@ test('a legacy busy pool explains the reselection instead of calling the model u
   ).not.toBeInTheDocument()
 })
 
-test('the current comparison shows raw request and outcome sample counts', async () => {
+test('a channel-capacity comparison omits historical request counts and explains its capacity', async () => {
   mockLog(routed)
   renderDrawer({})
 
   await screen.findByText('Chosen')
   expect(
-    screen.getByRole('columnheader', { name: 'Requests' })
+    screen.queryByRole('columnheader', { name: 'Requests' })
+  ).not.toBeInTheDocument()
+  expect(screen.getByRole('columnheader', { name: 'Samples' })).toBeVisible()
+  expect(
+    screen.getByText(
+      'Capacity is the lowest remaining fraction of configured RPM, TPM and in-flight limits. Scheduler and affinity use their concrete channel; native estimates use first-attempt probabilities. No effective limit or estimate means full capacity; an exhausted pool means none.'
+    )
   ).toBeVisible()
+})
+
+test('a historical request-share comparison keeps its request and outcome evidence', async () => {
+  const historical = structuredClone(routed) as RouteLog
+  const band = historical.detail?.result?.pick?.band
+  if (!band?.[0] || !band[1]) throw new Error('the fixture has no candidates')
+  band[0].requests = 0
+  band[1].requests = 1
+  mockLog(historical)
+  renderDrawer({})
+
+  await screen.findByText('Chosen')
+  expect(screen.getByRole('columnheader', { name: 'Requests' })).toBeVisible()
   expect(screen.getByRole('columnheader', { name: 'Samples' })).toBeVisible()
   const chosenRow = screen.getByText('Chosen').closest('tr') as HTMLElement
-  expect(within(chosenRow).getByText('1')).toBeVisible()
+  expect(within(chosenRow).getByText('0')).toBeVisible()
   expect(within(chosenRow).getByText('20')).toBeVisible()
+  expect(
+    screen.getByText(
+      'Capacity is one minus the request share. Success adds four prior successes to the measured outcomes; Samples shows the evidence strength.'
+    )
+  ).toBeVisible()
 })
 
 test('a compacted current comparison states its retained count and omitted probability', async () => {
@@ -1046,7 +1073,9 @@ test('a compacted current comparison states its retained count and omitted proba
   ).toBeVisible()
   expect(screen.getByText('Chosen')).toBeVisible()
   expect(
-    screen.getByText('Some routing details were omitted or shortened to fit the log.')
+    screen.getByText(
+      'Some routing details were omitted or shortened to fit the log.'
+    )
   ).toBeVisible()
   expect(screen.getByText('trace.ladder: 1/3')).toBeVisible()
   expect(screen.getByText('trace.ladder.skipped: 0/8')).toBeVisible()
@@ -1073,7 +1102,9 @@ test('an empty stored detail says that no process was stored', async () => {
   renderDrawer({})
 
   expect(
-    await screen.findByText('No routing process details were stored for this request')
+    await screen.findByText(
+      'No routing process details were stored for this request'
+    )
   ).toBeVisible()
   expect(screen.queryByText('Routed to')).not.toBeInTheDocument()
 })

@@ -8407,6 +8407,8 @@
     "The weight given to model cost; higher values favor cheaper models.": "The weight given to model cost; higher values favor cheaper models.",
     "The weight given to available capacity; higher values favor less-loaded models.": "The weight given to available capacity; higher values favor less-loaded models.",
     "The weight given to recent request success rate.": "The weight given to recent request success rate.",
-    "Sampling temperature controls score variability; lower values produce more stable routing.": "Sampling temperature controls score variability; lower values produce more stable routing."
+    "Sampling temperature controls score variability; lower values produce more stable routing.": "Sampling temperature controls score variability; lower values produce more stable routing.",
+    "Capacity is one minus the request share. Success adds four prior successes to the measured outcomes; Samples shows the evidence strength.": "Capacity is one minus the request share. Success adds four prior successes to the measured outcomes; Samples shows the evidence strength.",
+    "Capacity is the lowest remaining fraction of configured RPM, TPM and in-flight limits. Scheduler and affinity use their concrete channel; native estimates use first-attempt probabilities. No effective limit or estimate means full capacity; an exhausted pool means none.": "Capacity is the lowest remaining fraction of configured RPM, TPM and in-flight limits. Scheduler and affinity use their concrete channel; native estimates use first-attempt probabilities. No effective limit or estimate means full capacity; an exhausted pool means none."
   }
 }

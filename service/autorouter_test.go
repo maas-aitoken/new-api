@@ -1059,8 +1059,8 @@ func TestEncodeAutoRouteDetailShrinksToFit(t *testing.T) {
 			Price: func(string) (float64, bool) { return 1, true },
 			Costs: func(models []string, _ string, _ bool) (map[string]autorouter.Cost, *autorouter.PreviewOutcome) {
 				costs := make(map[string]autorouter.Cost, len(models))
-				for _, name := range models {
-					costs[name] = autorouter.Cost{Price: 1, Multiplier: 1, Channels: 2, Source: autorouter.CostSourceExpected}
+				for i, name := range models {
+					costs[name] = autorouter.Cost{Price: 1, Multiplier: 1, Channels: 2, Source: autorouter.CostSourceExpected, Capacity: float64(i%10+1) / 10, CapacityKnown: true}
 				}
 				return costs, nil
 			},
@@ -1087,6 +1087,7 @@ func TestEncodeAutoRouteDetailShrinksToFit(t *testing.T) {
 		require.NotNil(t, got.Result.Pick, "超限时不能把整个比较过程删掉")
 		require.NotNil(t, got.Trace)
 		require.NotNil(t, got.Truncated)
+		assert.NotContains(t, encoded, `"requests":`, "新容量日志不再携带历史请求数")
 		kept := got.Result.Pick.Band
 		assert.Greater(t, len(kept), 16, "只在确有字节压力时省略，不能粗暴砍到固定小样本")
 		assert.Less(t, len(kept), len(originalBand))
@@ -1101,6 +1102,7 @@ func TestEncodeAutoRouteDetailShrinksToFit(t *testing.T) {
 			keptModels[candidate.Model] = true
 			index, found := originalIndexes[candidate.Model]
 			require.True(t, found)
+			assert.Equal(t, originalBand[index].Capacity, candidate.Capacity, "压缩必须保留渠道容量得分")
 			assert.Greater(t, index, previous, "保留下来的候选必须维持原榜单顺序")
 			previous = index
 		}
