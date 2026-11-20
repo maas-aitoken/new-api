@@ -49,8 +49,20 @@ func TestInitSeedsBuiltInRolesAndPoliciesOnce(t *testing.T) {
 	assert.True(t, Can(2, common.RoleAdminUser, ChannelRead))
 	assert.True(t, Can(2, common.RoleAdminUser, ChannelOperate))
 	assert.True(t, Can(2, common.RoleAdminUser, ChannelWrite))
+	assert.True(t, Can(2, common.RoleAdminUser, ResourcePoolRead))
+	assert.True(t, Can(2, common.RoleAdminUser, ResourcePoolWrite))
 	assert.False(t, Can(2, common.RoleAdminUser, ChannelSensitiveWrite))
 	assert.False(t, Can(3, common.RoleCommonUser, ChannelRead))
+}
+
+func TestResourcePoolKeepsLegacyChannelAccountDenial(t *testing.T) {
+	db := newAuthzTestDB(t)
+	require.NoError(t, Init(db))
+	require.NoError(t, SetUserPermissions(42, PermissionsMap{
+		ResourceChannel: {ActionRead: false},
+	}))
+	assert.False(t, Can(42, common.RoleAdminUser, ResourcePoolRead))
+	assert.True(t, Can(42, common.RoleAdminUser, ResourcePoolWrite))
 }
 
 func TestInitOnSlaveOnlyLoadsPolicies(t *testing.T) {

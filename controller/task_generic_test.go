@@ -130,6 +130,14 @@ func TestTaskArtifactAuthorizationKeepsForeignTasksHidden(t *testing.T) {
 	require.True(t, exists)
 	assert.Equal(t, task.TaskID, found.TaskID)
 
+	adminAccessToken, _ := gin.CreateTestContext(httptest.NewRecorder())
+	adminAccessToken.Set("id", 8)
+	adminAccessToken.Set("role", common.RoleAdminUser)
+	adminAccessToken.Set("use_access_token", true)
+	_, exists, err = getTaskForArtifactRequest(adminAccessToken, task.TaskID)
+	require.NoError(t, err)
+	assert.False(t, exists)
+
 	apiToken, _ := gin.CreateTestContext(httptest.NewRecorder())
 	apiToken.Set("id", 8)
 	apiToken.Set("role", common.RoleRootUser)
