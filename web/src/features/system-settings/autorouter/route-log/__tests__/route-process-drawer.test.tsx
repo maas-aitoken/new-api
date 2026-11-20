@@ -872,6 +872,253 @@ test('an adaptive request with no usable judgment says the balanced policy appli
   ).not.toBeInTheDocument()
 })
 
+const legacyPick = {
+  chosen: 'sonnet',
+  weight: 0.07,
+  band: [
+    {
+      model: 'sonnet',
+      score: 0.95,
+      price: 4,
+      cost_multiplier: 0.5,
+      cost: 2,
+      channels: 1,
+      cost_source: 'expected',
+      capacity_premium: 1.25,
+      capacity_pressure: 0.8,
+      discount: 0.05,
+      utility: 0.9,
+    },
+  ],
+}
+
+function legacyComparedLog() {
+  return structuredClone({
+    ...logItem,
+    detail: {
+      result: { resolved_model: 'sonnet', model: 'sonnet', pick: legacyPick },
+      trace: routedTrace,
+    },
+  }) as RouteLog
+}
+
+test.each([
+  { name: 'admin detail', scope: 'all' as const, summary: false },
+  { name: 'self detail', scope: 'self' as const, summary: false },
+  { name: 'usage summary', scope: 'all' as const, summary: true },
+])(
+  'a legacy comparison stays readable in the $name without fabricated current metrics',
+  async ({ scope, summary }) => {
+    const log = legacyComparedLog()
+    mockLog(summary ? null : log)
+    renderDrawer({ scope, summary: summary ? log.detail?.result : undefined })
+
+    expect(
+      await screen.findByRole('columnheader', { name: 'Price discount' })
+    ).toBeVisible()
+    expect(
+      screen.getByRole('columnheader', { name: 'Score after discount' })
+    ).toBeVisible()
+    expect(
+      screen.getByRole('columnheader', { name: 'Capacity premium' })
+    ).toBeVisible()
+    expect(screen.getByText('Pool pressure 80%')).toBeVisible()
+    expect(screen.getByText(/Candidates within 0.0700/)).toBeVisible()
+    expect(
+      screen.queryByRole('columnheader', { name: 'Cost score' })
+    ).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole('columnheader', { name: 'Probability' })
+    ).not.toBeInTheDocument()
+  }
+)
+
+test('a legacy adaptive policy keeps its numeric cost tiers', async () => {
+  const log = adaptiveLog({
+    shares: { capability: 0.1, balanced: 0.6, cost: 0.3 },
+    position: 1.2,
+    weight: 0.116,
+    weights: adaptiveWeights,
+    tiers,
+  })
+  const legacy = structuredClone(log) as RouteLog
+  if (!legacy.detail?.trace) throw new Error('the fixture has no trace')
+  legacy.detail.trace.mode = JSON.parse(
+    '{"shares":{"capability":0.1,"balanced":0.6,"cost":0.3},"position":1.2,"weight":0.116,"tiers":{"capability":0,"balanced":0.07,"cost":0.3}}'
+  )
+  mockLog(legacy)
+  renderDrawer({})
+
+  expect(await screen.findByText('Cost preference')).toBeVisible()
+  expect(screen.getByText('Platform cost weights')).toBeVisible()
+  expect(screen.getByText('Balanced 0.0700')).toBeVisible()
+  expect(screen.getByText('Cost weight').nextElementSibling).toHaveTextContent(
+    '0.1160'
+  )
+  expect(screen.queryByText('Quality weight')).not.toBeInTheDocument()
+  expect(screen.queryByText('Routing weights')).not.toBeInTheDocument()
+})
+
+test('a legacy busy pool explains the reselection instead of calling the model unavailable', async () => {
+  mockLog(
+    structuredClone({
+      ...logItem,
+      detail: {
+        result: { resolved_model: 'coder', model: 'coder' },
+        trace: {
+          request: { human_turns: 2, text_runes: 20 },
+          judgment: 'cache',
+          continuation: {
+            previous: 'coder',
+            task_change: 0.1,
+            threshold: 0.5,
+            continued: false,
+          },
+          previous_pressure: {
+            model: 'coder',
+            pressure: 0.8,
+            knee: 0.6,
+            reused: false,
+          },
+          ladder: [
+            {
+              profile: 'code.build',
+              outcome: 'first_available',
+              model: 'coder',
+            },
+          ],
+        },
+      },
+    }) as RouteLog
+  )
+  renderDrawer({})
+
+  expect(
+    await screen.findByText('Compared again because the pool is busy')
+  ).toBeVisible()
+  expect(screen.getByText('0.8000 against a knee of 0.6000')).toBeVisible()
+  expect(
+    screen.queryByText('The previous model can no longer serve')
+  ).not.toBeInTheDocument()
+  expect(screen.getByText('First servable model in list order')).toBeVisible()
+  expect(
+    screen.queryByText(/Previous model coder was not reused: pool pressure/)
+  ).not.toBeInTheDocument()
+})
+
+test('a channel-capacity comparison omits historical request counts and explains its capacity', async () => {
+  mockLog(routed)
+  renderDrawer({})
+
+  await screen.findByText('Chosen')
+  expect(
+    screen.queryByRole('columnheader', { name: 'Requests' })
+  ).not.toBeInTheDocument()
+  expect(screen.getByRole('columnheader', { name: 'Samples' })).toBeVisible()
+  expect(
+    screen.getByText(
+      'Capacity is the lowest remaining fraction of configured RPM, TPM and in-flight limits. Scheduler and affinity use their concrete channel; native estimates use first-attempt probabilities. No effective limit or estimate means full capacity; an exhausted pool means none.'
+    )
+  ).toBeVisible()
+})
+
+test('a historical request-share comparison keeps its request and outcome evidence', async () => {
+  const historical = structuredClone(routed) as RouteLog
+  const band = historical.detail?.result?.pick?.band
+  if (!band?.[0] || !band[1]) throw new Error('the fixture has no candidates')
+  band[0].requests = 0
+  band[1].requests = 1
+  mockLog(historical)
+  renderDrawer({})
+
+  await screen.findByText('Chosen')
+  expect(screen.getByRole('columnheader', { name: 'Requests' })).toBeVisible()
+  expect(screen.getByRole('columnheader', { name: 'Samples' })).toBeVisible()
+  const chosenRow = screen.getByText('Chosen').closest('tr') as HTMLElement
+  expect(within(chosenRow).getByText('0')).toBeVisible()
+  expect(within(chosenRow).getByText('20')).toBeVisible()
+  expect(
+    screen.getByText(
+      'Capacity is one minus the request share. Success adds four prior successes to the measured outcomes; Samples shows the evidence strength.'
+    )
+  ).toBeVisible()
+})
+
+test('a compacted current comparison states its retained count and omitted probability', async () => {
+  const compacted = structuredClone(routed) as RouteLog
+  if (!compacted.detail) throw new Error('the fixture has no detail')
+  compacted.detail.truncated = {
+    collections: {
+      'result.pick.band': {
+        total: 4,
+        kept: 2,
+        omitted_probability: 0.25,
+      },
+      'trace.ladder': { total: 3, kept: 1 },
+      'trace.ladder.skipped': { total: 8, kept: 0 },
+    },
+  }
+  if (!compacted.detail.trace?.ladder?.[0]) {
+    throw new Error('the fixture has no ladder step')
+  }
+  compacted.detail.trace.ladder[0].skipped = []
+  compacted.detail.trace.ladder[0].skipped_more = 2
+  mockLog(compacted)
+  renderDrawer({})
+
+  expect(
+    await screen.findByText(
+      'Showing 2 of 4 compared models; omitted sampling probability 0.2500.'
+    )
+  ).toBeVisible()
+  expect(screen.getByText('Chosen')).toBeVisible()
+  expect(
+    screen.getByText(
+      'Some routing details were omitted or shortened to fit the log.'
+    )
+  ).toBeVisible()
+  expect(screen.getByText('trace.ladder: 1/3')).toBeVisible()
+  expect(screen.getByText('trace.ladder.skipped: 0/8')).toBeVisible()
+  expect(screen.getByText('and 2 more')).toBeVisible()
+})
+
+test('partial current data omits unavailable algorithm fields instead of inventing zeros', async () => {
+  const partial = structuredClone(routed) as RouteLog
+  if (!partial.detail?.result?.pick) throw new Error('the fixture has no pick')
+  partial.detail.result.pick.dimensions = null
+  mockLog(partial)
+  renderDrawer({})
+
+  expect(await screen.findByText('Result')).toBeVisible()
+  expect(screen.getAllByText('sonnet').length).toBeGreaterThan(0)
+  expect(
+    screen.queryByRole('columnheader', { name: 'Cost score' })
+  ).not.toBeInTheDocument()
+  expect(screen.queryByText('NaN')).not.toBeInTheDocument()
+})
+
+test('an empty stored detail says that no process was stored', async () => {
+  mockLog({ ...logItem, detail: {} })
+  renderDrawer({})
+
+  expect(
+    await screen.findByText(
+      'No routing process details were stored for this request'
+    )
+  ).toBeVisible()
+  expect(screen.queryByText('Routed to')).not.toBeInTheDocument()
+})
+
+test('the comparison drawer uses the wide desktop layout for all evidence columns', async () => {
+  mockLog(routed)
+  renderDrawer({})
+
+  await screen.findByText('Chosen')
+  expect(document.querySelector('[data-slot=sheet-content]')).toHaveClass(
+    'sm:max-w-4xl'
+  )
+})
+
 test('with no request selected the drawer stays closed and asks for nothing', () => {
   const get = mockLog(routed)
   renderDrawer({ requestId: '' })
