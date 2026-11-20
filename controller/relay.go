@@ -416,6 +416,9 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		}
 
 		if newAPIError == nil {
+			if retryParam.GetRetry() > 0 {
+				service.RememberAutoRetrySuccess(c)
+			}
 			service.ResetChannelModelFailureConsecutive(channel.Id, relayInfo.OriginModelName)
 			service.MarkRequestPolicySuccess(c, relayInfo.StreamStatus)
 			relayInfo.LastError = nil

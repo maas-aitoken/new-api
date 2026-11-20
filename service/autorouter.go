@@ -154,6 +154,21 @@ type AutoCandidates struct {
 	Random  func() float64
 }
 
+// rememberAutoRoute records the route the next instruction and its sub-agents inherit.
+// The caller decides whether the route is initial or actually answered successfully.
+func rememberAutoRoute(c *gin.Context, instruction autorouter.Instruction, result *autorouter.Result) {
+	if result == nil || instruction.Auxiliary || instruction.Text == "" {
+		return
+	}
+	cache := getAutoRouterCache()
+	tokenID := common.GetContextKeyInt(c, constant.ContextKeyTokenId)
+	ttl := time.Duration(autorouter_setting.GetAutoRouterSetting().CacheTTLSeconds) * time.Second
+	_ = cache.SetWithTTL(autoRouterCacheKey("r", tokenID, instruction.Text), autoRouterEntry{Route: result.Route}, ttl)
+	if instruction.Session != "" && !instruction.Agent {
+		_ = cache.SetWithTTL(autoRouterCacheKey("s", tokenID, instruction.Session), autoRouterEntry{Route: result.Route, EffortOverride: result.EffortOverride}, ttl)
+	}
+}
+
 // ResolveAutoModel picks the model and reasoning effort for an "auto" request.
 // A jev failure never fails the request: the route falls back to the previous
 // instruction's route or the defaults.
@@ -238,7 +253,6 @@ func ResolveAutoModel(c *gin.Context, candidates AutoCandidates) (*autorouter.Re
 			}
 		}
 		decisionKey := autoRouterCacheKey("d", tokenID, autorouter.QuestionsVersion, state["current_task"], state["previous_task"])
-		routeKey := autoRouterCacheKey("r", tokenID, instruction.Text)
 
 		var previous *autorouter.Route
 		if instruction.Previous != "" {
@@ -318,12 +332,7 @@ func ResolveAutoModel(c *gin.Context, candidates AutoCandidates) (*autorouter.Re
 		}
 		// 兜底路由也记下来，下一条指令才能沿用同一个模型，agent 循环不会来回换模型。
 		if ok {
-			_ = cache.SetWithTTL(routeKey, autoRouterEntry{Route: result.Route}, ttl)
-		}
-		// The session remembers its latest human instruction's route for the
-		// sub-agents whose task arrives without readable text.
-		if ok && instruction.Session != "" && !instruction.Agent {
-			_ = cache.SetWithTTL(autoRouterCacheKey("s", tokenID, instruction.Session), autoRouterEntry{Route: result.Route, EffortOverride: !inherited}, ttl)
+			rememberAutoRoute(c, instruction, result)
 		}
 	}
 	if !ok {
