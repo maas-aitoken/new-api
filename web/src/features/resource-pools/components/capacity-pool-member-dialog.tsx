@@ -32,7 +32,7 @@ import { requireServerSuccess } from '@/lib/server-error-message'
 
 import { searchChannels } from '../../channels/api'
 import { addCapacityPoolMembers, type CapacityPool } from '../api'
-import { capacityPoolQueryKeys } from './capacity-pool-query-keys'
+import { invalidateCapacityPoolQueries } from './capacity-pool-query-keys'
 
 /** 往容量池里加一个渠道的若干模型；不勾模型时加整条渠道。 */
 export function CapacityPoolMemberDialog(props: {
@@ -74,9 +74,7 @@ export function CapacityPoolMemberDialog(props: {
     mutationFn: (modelsToAdd: string[]) =>
       addCapacityPoolMembers(props.pool.id, selectedChannel ?? 0, modelsToAdd),
     onSuccess: async (added) => {
-      await queryClient.invalidateQueries({
-        queryKey: capacityPoolQueryKeys.provider(props.pool.provider),
-      })
+      await invalidateCapacityPoolQueries(queryClient, props.pool.provider)
       if (added.length === 0) {
         toast.info(t('These models are already in this pool'))
       } else {

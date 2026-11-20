@@ -382,7 +382,7 @@ it('shows a read-only capacity pool note instead of limit inputs for a bound cha
           exhausted: false,
           computed_at: 1,
           member_rpm_used: 4,
-          member_tpm_used: 0,
+          member_tpm_used: 2500,
           member_in_flight: 1,
         },
       },
@@ -403,7 +403,7 @@ it('shows a read-only capacity pool note instead of limit inputs for a bound cha
   ).toBeVisible()
   expect(within(card).getByText('Dynamic limit')).toBeVisible()
   expect(
-    within(card).getByText('This channel: RPM 4, in flight 1')
+    within(card).getByText('This channel: RPM 4, TPM 2.5K, in flight 1')
   ).toBeVisible()
   expect(
     within(card).getByRole('link', {

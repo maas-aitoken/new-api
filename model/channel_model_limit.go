@@ -104,8 +104,19 @@ func SetChannelModelLimit(channelID int, publicModel string, limit dto.ModelLimi
 		if err != nil {
 			return fmt.Errorf("channel #%d model_mapping: %w", channelID, err)
 		}
-		if setting.CapacityPoolFor(upstream) != 0 {
-			return ErrModelLimitManagedByCapacityPool
+		if poolID := setting.CapacityPoolFor(upstream); poolID != 0 {
+			exists, err := capacityPoolExists(tx, poolID)
+			if err != nil {
+				return err
+			}
+			if exists {
+				return ErrModelLimitManagedByCapacityPool
+			}
+			// 指向已删除容量池的残留绑定不再阻塞改额度，顺手清理。
+			delete(setting.CapacityPools, upstream)
+			if len(setting.CapacityPools) == 0 {
+				setting.CapacityPools = nil
+			}
 		}
 		if limit.IsZero() {
 			delete(setting.ModelLimits, upstream)
