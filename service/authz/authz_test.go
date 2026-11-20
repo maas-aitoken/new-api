@@ -166,6 +166,7 @@ func TestSetUserPermissionsStoresOnlyOverrides(t *testing.T) {
 			ActionSensitiveWrite: true,
 			ActionSecretView:     false,
 		},
+		ResourcePool: {ActionRead: true, ActionWrite: false},
 		ResourceTaskPlugin: {
 			ActionBind: false,
 		},
@@ -198,6 +199,7 @@ func TestSetUserPermissionsStoresOnlyOverrides(t *testing.T) {
 			ActionSensitiveWrite: false,
 			ActionSecretView:     false,
 		},
+		ResourcePool: {ActionRead: true, ActionWrite: true},
 		ResourceTaskPlugin: {
 			ActionBind: false,
 		},
