@@ -571,6 +571,12 @@ func GetCapabilityTargets(query CapabilityTargetQuery) ([]CapabilityTarget, int,
 				shared = append(shared, name)
 			}
 		}
+		poolID := 0
+		poolName := ""
+		if name, bound := poolNames[capacity.CapacityPoolId]; bound && capacity.CapacityPoolId != 0 {
+			poolID = capacity.CapacityPoolId
+			poolName = name
+		}
 		channelsByModel[row.Model] = append(channelsByModel[row.Model], CapabilityTargetChannel{
 			ID:               row.ID,
 			Name:             row.Name,
@@ -579,8 +585,8 @@ func GetCapabilityTargets(query CapabilityTargetQuery) ([]CapabilityTarget, int,
 			UpstreamModel:    capacity.UpstreamModel,
 			ModelLimit:       capacity.Limit,
 			SharedModels:     shared,
-			CapacityPoolId:   capacity.CapacityPoolId,
-			CapacityPoolName: poolNames[capacity.CapacityPoolId],
+			CapacityPoolId:   poolID,
+			CapacityPoolName: poolName,
 		})
 	}
 
