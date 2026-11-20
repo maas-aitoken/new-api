@@ -304,6 +304,28 @@ func TestGetSelfUsageAnalyticsForcesCaller(t *testing.T) {
 	assert.False(t, unauthenticated.Success)
 }
 
+func TestGetUsageDataScopeRespectsAdminAccessTokenGrant(t *testing.T) {
+	setupUsageAnalyticsControllerTestDB(t)
+	for _, test := range []struct {
+		scopes []string
+		all    bool
+	}{
+		{scopes: []string{"usage:read"}},
+		{scopes: []string{"usage_all:read"}, all: true},
+	} {
+		recorder := httptest.NewRecorder()
+		ctx, _ := gin.CreateTestContext(recorder)
+		ctx.Set("id", 1)
+		ctx.Set("role", common.RoleAdminUser)
+		ctx.Set("use_access_token", true)
+		ctx.Set("access_token_scopes", test.scopes)
+		ctx.Request = httptest.NewRequest(http.MethodGet, "/api/data/scope", nil)
+		GetUsageDataScope(ctx)
+		assert.Equal(t, http.StatusOK, recorder.Code)
+		assert.Contains(t, recorder.Body.String(), fmt.Sprintf("\"all_users\":%t", test.all))
+	}
+}
+
 func TestGetUsageAnalyticsOmitsDimensionsOutsideGrouping(t *testing.T) {
 	setupUsageAnalyticsControllerTestDB(t)
 	// The user filter resolves accounts, so bob needs one.
@@ -341,4 +363,23 @@ func TestGetPeakTPMReturnsEmptyListWithoutTraffic(t *testing.T) {
 
 	require.Equal(t, http.StatusOK, recorder.Code)
 	assert.JSONEq(t, `{"success":true,"message":"","data":[]}`, recorder.Body.String())
+}
+
+func TestExternalPeakTPMRejectsPersonalViews(t *testing.T) {
+	setupUsageAnalyticsControllerTestDB(t)
+	for _, test := range []struct {
+		path    string
+		handler gin.HandlerFunc
+	}{
+		{"/api/data/peak-tpm?start_timestamp=1&end_timestamp=7200&platform=jp", GetPeakTPM},
+		{"/api/data/peak-tpm/self?start_timestamp=1&end_timestamp=7200&platform=jp", GetSelfPeakTPM},
+	} {
+		recorder := httptest.NewRecorder()
+		ctx, _ := gin.CreateTestContext(recorder)
+		ctx.Set("id", 1)
+		ctx.Set("role", common.RoleCommonUser)
+		ctx.Request = httptest.NewRequest(http.MethodGet, test.path, nil)
+		test.handler(ctx)
+		assert.Equal(t, http.StatusNotFound, recorder.Code)
+	}
 }

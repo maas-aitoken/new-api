@@ -3,6 +3,7 @@ package controller
 import (
 	"errors"
 	"fmt"
+	"net/http"
 	"slices"
 	"strconv"
 	"strings"
@@ -201,6 +202,13 @@ func GetUsageDataScope(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
+	if c.GetBool("use_access_token") && !c.GetBool("access_token_legacy") && c.GetInt("role") >= common.RoleAdminUser {
+		granted, _ := c.Get("access_token_scopes")
+		scopes, _ := granted.([]string)
+		if !service.AccessTokenScopeGranted(scopes, "usage_all:read") {
+			scope = &model.UsageViewerScope{UserIDs: []int{c.GetInt("id")}}
+		}
+	}
 	common.ApiSuccess(c, gin.H{
 		"all_users":             scope.UserIDs == nil,
 		"user_count":            len(scope.UserIDs),
@@ -275,6 +283,10 @@ func GetPeakTPM(c *gin.Context) {
 	}
 	platform := usagePlatformFromQuery(c)
 	if platform != "local" {
+		if c.GetInt("role") < common.RoleAdminUser {
+			c.AbortWithStatus(http.StatusNotFound)
+			return
+		}
 		points, err := model.GetExternalPeakTPM(start, end, 0, platform)
 		if err != nil {
 			common.ApiError(c, err)
@@ -310,12 +322,7 @@ func GetSelfPeakTPM(c *gin.Context) {
 	}
 	platform := usagePlatformFromQuery(c)
 	if platform != "local" {
-		points, err := model.GetExternalPeakTPM(start, end, userID, platform)
-		if err != nil {
-			common.ApiError(c, err)
-			return
-		}
-		common.ApiSuccess(c, points)
+		c.AbortWithStatus(http.StatusNotFound)
 		return
 	}
 	points, err := model.GetPeakTPM(model.PeakTPMParams{

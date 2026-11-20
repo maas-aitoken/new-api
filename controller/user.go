@@ -493,6 +493,18 @@ func GetSelf(c *gin.Context) {
 	return
 }
 
+func GetOverviewProfile(c *gin.Context) {
+	user, err := model.GetSelfUserById(c.GetInt("id"))
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, gin.H{
+		"username": user.Username, "display_name": user.DisplayName, "orgStr": user.OrgStr,
+		"quota": user.Quota, "used_quota": user.UsedQuota, "request_count": user.RequestCount,
+	})
+}
+
 // buildSelfUserData is the single safe dashboard-user DTO used by GetSelf,
 // login and refresh. It intentionally excludes password, management PAT and
 // administrator-only remarks.

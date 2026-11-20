@@ -545,7 +545,7 @@ describe('access tokens card', () => {
     expect(verifyCalls()).toHaveLength(0)
   })
 
-  it('keeps permissions the catalog no longer offers on a rename and leaves them out of a new grant', async () => {
+  it('shows unavailable permissions and keeps them on a rename', async () => {
     list = {
       items: [tokenItem({ id: 7, scopes: ['retired:write'] })],
       legacy: null,
@@ -555,6 +555,7 @@ describe('access tokens card', () => {
     const user = userEvent.setup()
     const dialog = await openEdit(user)
     expect(permission(dialog, 'View')).toHaveAttribute('aria-pressed', 'false')
+    expect(within(dialog).getByText(/This token has permissions you can no longer grant/)).toBeVisible()
     const input = within(dialog).getByLabelText('Token name')
     await user.clear(input)
     await user.type(input, 'renamed')
@@ -574,22 +575,8 @@ describe('access tokens card', () => {
 
     expect(await screen.findByText('renamed')).toBeVisible()
     const regrant = await openEdit(user)
-    await user.click(permission(regrant, 'View'))
-    await user.click(within(regrant).getByRole('button', { name: 'Save' }))
-    await verifyPassword(user)
-    await waitFor(() =>
-      expect(patch).toHaveBeenLastCalledWith(
-        '/api/user/access_tokens/7',
-        { name: 'renamed', scopes: ['tokens:read'] },
-        expect.objectContaining({ singleUseAuthorization: true })
-      )
-    )
-    expect(verifyCalls()).toEqual([
-      expect.objectContaining({
-        scope: 'access_token.update',
-        context: { token_id: 7, scopes: ['tokens:read'] },
-      }),
-    ])
+    expect(permission(regrant, 'View')).toBeDisabled()
+    expect(patch).toHaveBeenCalledTimes(1)
   })
 
   it('does not save a change that removes every permission', async () => {

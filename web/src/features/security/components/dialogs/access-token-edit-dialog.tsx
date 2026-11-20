@@ -75,6 +75,7 @@ export function AccessTokenEditDialog(props: AccessTokenEditDialogProps) {
   const initialScopes = props.token.scopes
     .filter((scope) => offered.has(scope))
     .sort()
+  const unavailableScopes = props.token.scopes.filter((scope) => !offered.has(scope))
   const form = useForm<AccessTokenEditFormValues>({
     resolver: zodResolver(accessTokenEditFormSchema),
     defaultValues: {
@@ -89,6 +90,7 @@ export function AccessTokenEditDialog(props: AccessTokenEditDialogProps) {
   const submit = async (values: AccessTokenEditFormValues) => {
     const scopes = permissionMatrixToScopes(values.permissions)
     const changed = scopes.join(' ') !== initialScopes.join(' ')
+    if (changed && unavailableScopes.length > 0) return
     if (changed && scopes.length === 0) {
       form.setError('permissions', {
         message: 'Select at least one permission',
@@ -159,10 +161,17 @@ export function AccessTokenEditDialog(props: AccessTokenEditDialogProps) {
             render={({ field }) => (
               <FormItem>
                 <FormLabel>{t('Permissions')}</FormLabel>
+                {unavailableScopes.length > 0 && (
+                  <p className='text-muted-foreground text-sm'>
+                    {t('This token has permissions you can no longer grant: {{scopes}}. Rename it, or revoke it and create a new token to change permissions.', {
+                      scopes: unavailableScopes.join(', '),
+                    })}
+                  </p>
+                )}
                 <PermissionMatrix
                   groups={groups}
                   value={field.value}
-                  disabled={props.pending}
+                  disabled={props.pending || unavailableScopes.length > 0}
                   onChange={field.onChange}
                 />
                 <FormMessage />

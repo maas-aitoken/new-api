@@ -289,6 +289,13 @@ func requestAccessTokenLookup(c *gin.Context) *accessTokenLookup {
 func enforceAccessTokenRoute(c *gin.Context, lookup *accessTokenLookup, abort bool) bool {
 	key := c.Request.Method + " " + c.FullPath()
 	rule, declared := AccessTokenRouteRule(key)
+	requiredScope := rule.scope
+	if rule.kind == accessTokenRuleUsageViewer {
+		requiredScope = "usage:read"
+		if lookup.user.Role >= common.RoleAdminUser {
+			requiredScope = "usage_all:read"
+		}
+	}
 	code, reason := "", ""
 	var message *common.Message
 	switch {
@@ -299,12 +306,12 @@ func enforceAccessTokenRoute(c *gin.Context, lookup *accessTokenLookup, abort bo
 	case !declared:
 		common.SysError(common.LogText("access token route is not declared: %s", key))
 		code, reason, message = "ACCESS_TOKEN_ROUTE_UNDECLARED", "route_undeclared", common.NewMessage("Unauthorized, insufficient privileges")
-	case rule.kind == accessTokenRuleAny, service.AccessTokenScopeGranted(lookup.token.GetScopes(), rule.scope):
+	case rule.kind == accessTokenRuleAny, service.AccessTokenScopeGranted(lookup.token.GetScopes(), requiredScope):
 		return true
 	default:
-		code, reason, message = "ACCESS_TOKEN_SCOPE_DENIED", "scope_denied", common.NewMessage("The access token lacks the required permission: {{scope}}", map[string]any{"scope": rule.scope})
+		code, reason, message = "ACCESS_TOKEN_SCOPE_DENIED", "scope_denied", common.NewMessage("The access token lacks the required permission: {{scope}}", map[string]any{"scope": requiredScope})
 		if abort {
-			setAccessTokenAuditParam(c, "required_scope", rule.scope)
+			setAccessTokenAuditParam(c, "required_scope", requiredScope)
 		}
 	}
 	if abort {
