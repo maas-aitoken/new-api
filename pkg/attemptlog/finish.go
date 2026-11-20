@@ -62,23 +62,22 @@ type FinishInput struct {
 	// by the request-side model name (the name the user asked for, before
 	// model mapping), so it stays on the same side as billing. It is not keyed
 	// by UpstreamModelName: that name is upstream-side and can even be replaced
-	// by the model a streaming response reports. It never touches billing; the
-	// recorder scales cost_actual with it. Zero means "unset, record exactly
-	// what was billed".
+	// by the model a streaming response reports. The recorder scales
+	// cost_actual with it. Zero means "unset, record exactly what was reported".
 	CostMultiplier float64
 }
 
 // Finish closes the attempt, classifies its outcome, and enqueues the record.
 // It is safe to call on a nil Attempt, and it is idempotent.
-func (a *Attempt) Finish(c *gin.Context, in FinishInput) {
+func (a *Attempt) Finish(c *gin.Context, in FinishInput) string {
 	if a == nil {
-		return
+		return ""
 	}
 
 	a.mu.Lock()
 	if a.finished {
 		a.mu.Unlock()
-		return
+		return ""
 	}
 	a.finished = true
 
@@ -102,6 +101,10 @@ func (a *Attempt) Finish(c *gin.Context, in FinishInput) {
 	}
 
 	outcome := Classify(classifyIn)
+	if !a.active {
+		a.mu.Unlock()
+		return outcome
+	}
 	record := a.buildRecord(c, in, classifyIn, outcome, httpStatus, endTime, firstTokenTime)
 	a.mu.Unlock()
 
@@ -109,6 +112,7 @@ func (a *Attempt) Finish(c *gin.Context, in FinishInput) {
 		common.SetContextKey(c, constant.ContextKeyRelayAttempt, nil)
 	}
 	enqueue(record)
+	return outcome
 }
 
 // resolveFirstTokenTime decides when this attempt produced its first token.
@@ -265,10 +269,8 @@ func (a *Attempt) applyPricing(record *model.RelayAttempt) {
 	}
 }
 
-// recordedCost scales the settled cost by the <channel, model> cost multiplier
-// attribute before it is recorded in cost_actual. The multiplier never takes
-// part in billing; QuotaFromFloat truncates and saturates the product so a
-// bogus multiplier cannot wrap the Int32 telemetry column.
+// recordedCost scales the reported list-price cost by the cost multiplier;
+// QuotaFromFloat saturates so a bogus multiplier cannot wrap the Int32 column.
 // Caller must hold a.mu.
 func (a *Attempt) recordedCost() int {
 	if a.finishCostMultiplier <= 0 {
@@ -280,7 +282,8 @@ func (a *Attempt) recordedCost() int {
 // applyUsage records settled usage. Nothing is written when billing never
 // reported usage for this attempt, which is the normal case for a failed
 // attempt: nil there means "never settled", not "zero tokens".
-func (a *Attempt) applyUsage(record *model.RelayAttempt, endTime time.Time, firstTokenTime *time.Time) {	if !a.usageKnown {
+func (a *Attempt) applyUsage(record *model.RelayAttempt, endTime time.Time, firstTokenTime *time.Time) {
+	if !a.usageKnown {
 		return
 	}
 

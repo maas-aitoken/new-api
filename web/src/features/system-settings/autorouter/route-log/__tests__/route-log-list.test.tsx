@@ -37,6 +37,7 @@ function item(id: number, overrides: Partial<RouteLogItem> = {}): RouteLogItem {
     id,
     created_at: 1_760_000_000 + id,
     request_id: `req-${id}`,
+    request_params: '',
     user_id: 42,
     token_id: 7,
     using_group: 'vip',
@@ -54,8 +55,13 @@ function item(id: number, overrides: Partial<RouteLogItem> = {}): RouteLogItem {
 
 function mockApi(items: RouteLogItem[], total = items.length) {
   return vi.spyOn(api, 'get').mockImplementation(async (url: string) => {
-    if (url === '/api/auto-route-logs/') {
-      return { data: { success: true, data: { items, total, page: 1, page_size: 20 } } }
+    if (
+      url === '/api/auto-route-logs/' ||
+      url === '/api/auto-route-logs/self'
+    ) {
+      return {
+        data: { success: true, data: { items, total, page: 1, page_size: 20 } },
+      }
     }
     return { data: { success: true, data: null } }
   })
@@ -67,17 +73,37 @@ function listCalls(get: ReturnType<typeof mockApi>) {
     .map(([, config]) => (config as { params: Record<string, unknown> }).params)
 }
 
-function renderList() {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+function renderList(scope?: 'all' | 'self') {
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  })
   render(
     <QueryClientProvider client={client}>
-      <RouteLogList />
+      <RouteLogList scope={scope} />
     </QueryClientProvider>
   )
 }
 
+test('a row shows the request parameters, or a dash when it has none', async () => {
+  mockApi([
+    item(1, { request_params: '{"experiment_id":"tau3_bench_1"}' }),
+    item(2),
+  ])
+  renderList()
+
+  await screen.findByText('model-1')
+  const [, withParams, withoutParams] = screen.getAllByRole('row')
+  expect(
+    within(withParams).getByText('{"experiment_id":"tau3_bench_1"}')
+  ).toBeVisible()
+  expect(within(withoutParams).queryByText(/experiment_id/)).toBeNull()
+})
+
 test('the first page is requested without filters and its rows show the outcome of each request', async () => {
-  const get = mockApi([item(1), item(2, { outcome: 'failed', judgment: 'unroutable', model: '' })])
+  const get = mockApi([
+    item(1),
+    item(2, { outcome: 'failed', judgment: 'unroutable', model: '' }),
+  ])
   renderList()
 
   expect(await screen.findByText('model-1')).toBeVisible()
@@ -96,6 +122,7 @@ test('filters are sent only after Search, trimmed and without the empty ones, an
   await screen.findByText('model-1')
 
   await user.type(screen.getByLabelText('Request ID'), '  req-9  ')
+  await user.type(screen.getByLabelText('Request parameters'), ' tau3_bench_1 ')
   await user.type(screen.getByLabelText('Model'), 'sonnet')
   expect(listCalls(get)).toHaveLength(1)
   await user.selectOptions(screen.getByLabelText('Result'), 'failed')
@@ -104,6 +131,7 @@ test('filters are sent only after Search, trimmed and without the empty ones, an
   await waitFor(() => expect(listCalls(get)).toHaveLength(2))
   expect(listCalls(get)[1]).toEqual({
     request_id: 'req-9',
+    request_params: 'tau3_bench_1',
     model: 'sonnet',
     outcome: 'failed',
     p: 1,
@@ -163,14 +191,18 @@ test('View process opens the drawer for that row’s request', async () => {
   await user.click(screen.getAllByRole('button', { name: 'View process' })[1])
 
   expect(await screen.findByText('Routing process')).toBeVisible()
-  await waitFor(() => expect(get).toHaveBeenCalledWith('/api/auto-route-logs/req-2'))
+  await waitFor(() =>
+    expect(get).toHaveBeenCalledWith('/api/auto-route-logs/req-2')
+  )
 })
 
 test('a row without a request id has no process to open', async () => {
   mockApi([item(1, { request_id: '' })])
   renderList()
 
-  expect(await screen.findByRole('button', { name: 'View process' })).toBeDisabled()
+  expect(
+    await screen.findByRole('button', { name: 'View process' })
+  ).toBeDisabled()
 })
 
 test('an empty result says there are no routing logs', async () => {
@@ -251,6 +283,28 @@ test('a failed request shows the error with a retry', async () => {
   vi.spyOn(api, 'get').mockRejectedValue(new Error('network down'))
   renderList()
 
-  expect(await screen.findByText('Failed to load the routing logs')).toBeVisible()
+  expect(
+    await screen.findByText('Failed to load the routing logs')
+  ).toBeVisible()
   expect(screen.getByText('network down')).toBeVisible()
+})
+
+test('self scope asks the /self endpoint, hides the user filter and opens the process the same way', async () => {
+  const user = userEvent.setup()
+  const get = mockApi([item(1)])
+  renderList('self')
+
+  expect(await screen.findByText('model-1')).toBeVisible()
+  expect(listCalls(get)).toHaveLength(0)
+  expect(get).toHaveBeenCalledWith('/api/auto-route-logs/self', {
+    params: { p: 1, page_size: 20 },
+  })
+  expect(screen.queryByLabelText('User ID')).not.toBeInTheDocument()
+
+  await user.click(screen.getByRole('button', { name: 'View process' }))
+
+  expect(await screen.findByText('Routing process')).toBeVisible()
+  await waitFor(() =>
+    expect(get).toHaveBeenCalledWith('/api/auto-route-logs/self/req-1')
+  )
 })

@@ -16,7 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { useFormContext } from 'react-hook-form'
+import { useFormContext, useWatch } from 'react-hook-form'
 import { useTranslation } from 'react-i18next'
 
 import {
@@ -28,14 +28,20 @@ import {
   FormMessage,
 } from '@/components/ui/form'
 import { Input } from '@/components/ui/input'
+import { Textarea } from '@/components/ui/textarea'
 
 import { SettingsCard } from '../components/settings-card'
+import { SettingsSwitchField } from '../components/settings-form-layout'
 import { safeNumberFieldProps } from '../utils/numeric-field'
 import type { RoutingPolicyFormValues } from './routing-form'
 
 export function RetrySection() {
   const { t } = useTranslation()
   const form = useFormContext<RoutingPolicyFormValues>()
+  const refusalRetryEnabled = useWatch({
+    control: form.control,
+    name: 'UpstreamRefusalRetryEnabled',
+  })
   return (
     <SettingsCard title={t('Retry budget')} className='shadow-none'>
       <div className='space-y-4'>
@@ -80,6 +86,62 @@ export function RetrySection() {
             </FormItem>
           )}
         />
+        <FormField
+          control={form.control}
+          name='UpstreamRefusalRetryEnabled'
+          render={({ field }) => (
+            <SettingsSwitchField
+              controlId='UpstreamRefusalRetryEnabled'
+              checked={field.value}
+              onCheckedChange={field.onChange}
+              label={t('Retry on upstream refusal')}
+              description={t(
+                'When the upstream refuses before any output reaches the client, that attempt is billed as usual but its answer is not sent, and the request is retried. Applies to chat, Responses, Claude and Gemini text requests.'
+              )}
+            />
+          )}
+        />
+        {refusalRetryEnabled ? (
+          <>
+            <FormField
+              control={form.control}
+              name='UpstreamRefusalRetryAutoOnly'
+              render={({ field }) => (
+                <SettingsSwitchField
+                  controlId='UpstreamRefusalRetryAutoOnly'
+                  checked={field.value}
+                  onCheckedChange={field.onChange}
+                  label={t('Retry refusals in auto mode only')}
+                  description={t(
+                    'Only smart-routing (auto) requests retry on a refusal and switch to the next model. Requests locked to a model keep the original behavior: the refusal is returned to the client as usual, with one extra error log.'
+                  )}
+                />
+              )}
+            />
+            <FormField
+              control={form.control}
+              name='UpstreamRefusalOpeningTexts'
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>{t('Refusal opening texts')}</FormLabel>
+                  <FormControl>
+                    <Textarea
+                      rows={4}
+                      placeholder={t('one keyword per line')}
+                      {...field}
+                    />
+                  </FormControl>
+                  <FormDescription>
+                    {t(
+                      'A streamed answer that starts with one of these texts (case-insensitive) is held until its finish reason arrives. Refusals with other wording are sent through as usual.'
+                    )}
+                  </FormDescription>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+          </>
+        ) : null}
       </div>
     </SettingsCard>
   )

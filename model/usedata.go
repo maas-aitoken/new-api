@@ -24,6 +24,8 @@ type QuotaData struct {
 	TokenUsed int    `json:"token_used" gorm:"default:0"`
 	Count     int    `json:"count" gorm:"default:0"`
 	Quota     int    `json:"quota" gorm:"default:0"`
+	// ListQuotaDelta is the list price minus Quota; 0 means list price.
+	ListQuotaDelta int `json:"list_quota_delta" gorm:"default:0"`
 
 	InputTokens         int   `json:"input_tokens" gorm:"default:0"`
 	CompletionTokens    int   `json:"completion_tokens" gorm:"default:0"`
@@ -43,6 +45,7 @@ type QuotaDataLogParams struct {
 	Username            string
 	ModelName           string
 	Quota               int
+	ListQuotaDelta      int
 	CreatedAt           int64
 	TokenUsed           int
 	UseGroup            string
@@ -87,6 +90,7 @@ func logQuotaDataCache(quotaData *QuotaData) {
 	if cached, ok := CacheQuotaData[key]; ok {
 		cached.Count += quotaData.Count
 		cached.Quota += quotaData.Quota
+		cached.ListQuotaDelta += quotaData.ListQuotaDelta
 		cached.TokenUsed += quotaData.TokenUsed
 		cached.InputTokens += quotaData.InputTokens
 		cached.CompletionTokens += quotaData.CompletionTokens
@@ -133,6 +137,7 @@ func LogQuotaData(params QuotaDataLogParams) {
 		NodeName:            params.NodeName,
 		Count:               count,
 		Quota:               params.Quota,
+		ListQuotaDelta:      params.ListQuotaDelta,
 		TokenUsed:           params.TokenUsed,
 		InputTokens:         params.InputTokens,
 		CompletionTokens:    params.CompletionTokens,
@@ -187,6 +192,7 @@ func increaseQuotaData(quotaData *QuotaData) {
 	updates := map[string]interface{}{
 		"count":                 gorm.Expr("count + ?", quotaData.Count),
 		"quota":                 gorm.Expr("quota + ?", quotaData.Quota),
+		"list_quota_delta":      gorm.Expr("list_quota_delta + ?", quotaData.ListQuotaDelta),
 		"token_used":            gorm.Expr("token_used + ?", quotaData.TokenUsed),
 		"input_tokens":          gorm.Expr("input_tokens + ?", quotaData.InputTokens),
 		"completion_tokens":     gorm.Expr("completion_tokens + ?", quotaData.CompletionTokens),

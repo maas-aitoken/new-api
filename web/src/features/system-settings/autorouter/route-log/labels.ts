@@ -216,7 +216,7 @@ export function decisionErrorLabel(t: TFunction, error: string): string {
 export function ladderOutcomeLabel(t: TFunction, outcome: string): string {
   switch (outcome) {
     case 'compared':
-      return t('Picked by quality and price')
+      return t('Picked by quality, cost, capacity and success')
     case 'first_available':
       return t('First servable model in list order')
     case 'none':
@@ -252,7 +252,9 @@ export function effortDeliveryNote(t: TFunction, result: RouteResult): string {
   if (result.effort_in_body) {
     switch (result.effort_action) {
       case 'set':
-        return t("Written into the request, replacing the client's own setting.")
+        return t(
+          "Written into the request, replacing the client's own setting."
+        )
       case 'strip':
         return t(
           "The model does not support reasoning, so the client's reasoning settings were removed."
@@ -264,7 +266,9 @@ export function effortDeliveryNote(t: TFunction, result: RouteResult): string {
   if (result.resolved_model && result.resolved_model !== result.model) {
     return t('Sent as part of the model name.')
   }
-  return t('No model variant carries this effort, so the provider default applies.')
+  return t(
+    'No model variant carries this effort, so the provider default applies.'
+  )
 }
 
 export function preferenceLabel(t: TFunction, preference: string): string {
@@ -284,7 +288,9 @@ export function preferenceLabel(t: TFunction, preference: string): string {
 
 /** The gateway's own sentence is a locale key; anything else is shown as it came. */
 export function routeErrorLabel(t: TFunction, error: string): string {
-  if (error === 'auto router found no available model for this token and group') {
+  if (
+    error === 'auto router found no available model for this token and group'
+  ) {
     return t('auto router found no available model for this token and group')
   }
   return error

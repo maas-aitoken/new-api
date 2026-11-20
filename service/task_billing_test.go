@@ -60,6 +60,8 @@ func TestMain(m *testing.M) {
 		&model.Midjourney{},
 		&model.TopUp{},
 		&model.UserSubscription{},
+		&model.SubscriptionPlan{},
+		&model.SubscriptionPreConsumeRecord{},
 		&model.SystemTask{},
 		&model.SystemTaskLock{},
 	); err != nil {
@@ -1106,6 +1108,45 @@ func TestRecalculate_PositiveDelta(t *testing.T) {
 	require.NotNil(t, log)
 	assert.Equal(t, model.LogTypeConsume, log.Type)
 	assert.Equal(t, actualQuota-preConsumed, log.Quota)
+}
+
+func TestRecalculate_UsesSubmitTimeChannelMultiplier(t *testing.T) {
+	cases := []struct {
+		name           string
+		snapshot       float64
+		wantQuota      int
+		wantMultiplier any
+	}{
+		{name: "submit-time multiplier", snapshot: 0.5, wantQuota: 1500, wantMultiplier: 0.5},
+		{name: "no snapshot is list price", snapshot: 0, wantQuota: 3000, wantMultiplier: nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			truncate(t)
+			const userID, tokenID, channelID = 11, 11, 11
+			const initQuota, preConsumed, listQuota = 10000, 1000, 3000
+			seedUser(t, userID, initQuota)
+			seedToken(t, tokenID, userID, "sk-recalc-multiplier", 5000)
+			// The channel's current multiplier differs from the snapshot.
+			require.NoError(t, model.DB.Create(&model.Channel{
+				Id: channelID, Name: "test_channel", Key: "sk-test", Status: common.ChannelStatusEnabled,
+				Models: "test-model", Setting: common.GetPointer(`{"cost_multiplier":{"test-model":4}}`),
+			}).Error)
+			seedChargedAccounting(t, userID, channelID, tokenID, preConsumed, 1)
+
+			task := makeTask(userID, channelID, preConsumed, tokenID, BillingSourceWallet, 0)
+			task.PrivateData.BillingContext.CostMultiplier = tc.snapshot
+			RecalculateTaskQuota(context.Background(), task, listQuota, common.NewMessage("adaptor adjustment"))
+
+			assert.Equal(t, tc.wantQuota, task.Quota)
+			assert.Equal(t, initQuota-(tc.wantQuota-preConsumed), getUserQuota(t, userID))
+			log := getLastLog(t)
+			require.NotNil(t, log)
+			var other map[string]any
+			require.NoError(t, common.UnmarshalJsonStr(log.Other, &other))
+			assert.Equal(t, tc.wantMultiplier, other["cost_multiplier"])
+		})
+	}
 }
 
 func TestRecalculate_NegativeDelta(t *testing.T) {

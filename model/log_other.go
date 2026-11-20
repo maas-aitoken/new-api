@@ -3,6 +3,7 @@ package model
 import (
 	"encoding/json"
 	"maps"
+	"math"
 	"slices"
 	"strings"
 
@@ -45,6 +46,26 @@ type LogOther struct {
 
 func NewLogOther() *LogOther {
 	return &LogOther{}
+}
+
+// recordListQuotaDelta stores the list price minus the charged quota at the logged cost_multiplier.
+func (o *LogOther) recordListQuotaDelta(quota int) int {
+	if o == nil || quota <= 0 {
+		return 0
+	}
+	multiplier, ok := o.public["cost_multiplier"].(float64)
+	if !ok || multiplier <= 0 || multiplier == 1 || math.IsNaN(multiplier) || math.IsInf(multiplier, 0) {
+		return 0
+	}
+	listQuota, clamp := common.QuotaRoundChecked(float64(quota) / multiplier)
+	if clamp != nil {
+		common.SysError(common.LogText("list price quota saturated: quota %d, cost multiplier %v", quota, multiplier))
+	}
+	delta := listQuota - quota
+	if delta != 0 {
+		o.SetPublic("list_quota_delta", delta)
+	}
+	return delta
 }
 
 func isReservedLogOtherKey(key string) bool {

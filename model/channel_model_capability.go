@@ -433,8 +433,7 @@ func CostMultiplierModel(channelModels []string, requestModel string) string {
 
 // SetChannelModelCostMultiplier 写入渠道对一个公开模型的费用倍率，键就是这个
 // 公开模型名（映射之前的名字），映射到同一上游的别名各存各的。
-// multiplier<=0 表示清除，回到未配置（按 1 处理）。倍率只影响 relay_attempts
-// 记录的成本和 auto 比较的成本，不参与计费。
+// multiplier<=0 表示清除，回到未配置（按 1 处理）。只影响之后请求的计费。
 func SetChannelModelCostMultiplier(channelID int, publicModel string, multiplier float64) error {
 	publicModel = strings.TrimSpace(publicModel)
 	if channelID <= 0 || publicModel == "" {
@@ -572,6 +571,12 @@ func GetCapabilityTargets(query CapabilityTargetQuery) ([]CapabilityTarget, int,
 				shared = append(shared, name)
 			}
 		}
+		poolID := 0
+		poolName := ""
+		if name, bound := poolNames[capacity.CapacityPoolId]; bound && capacity.CapacityPoolId != 0 {
+			poolID = capacity.CapacityPoolId
+			poolName = name
+		}
 		channelsByModel[row.Model] = append(channelsByModel[row.Model], CapabilityTargetChannel{
 			ID:               row.ID,
 			Name:             row.Name,
@@ -580,8 +585,8 @@ func GetCapabilityTargets(query CapabilityTargetQuery) ([]CapabilityTarget, int,
 			UpstreamModel:    capacity.UpstreamModel,
 			ModelLimit:       capacity.Limit,
 			SharedModels:     shared,
-			CapacityPoolId:   capacity.CapacityPoolId,
-			CapacityPoolName: poolNames[capacity.CapacityPoolId],
+			CapacityPoolId:   poolID,
+			CapacityPoolName: poolName,
 		})
 	}
 

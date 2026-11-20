@@ -32,7 +32,7 @@ func setupAutoRouterControllerTest(t *testing.T) *gorm.DB {
 	dsn := fmt.Sprintf("file:%s?mode=memory&cache=shared", strings.ReplaceAll(t.Name(), "/", "_"))
 	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{})
 	require.NoError(t, err)
-	require.NoError(t, db.AutoMigrate(&model.SystemTask{}, &model.SystemTaskLock{}, &model.Option{}, &model.AuditLog{}, &model.User{}, &model.AutoRouteLog{}, &model.Ability{}))
+	require.NoError(t, db.AutoMigrate(&model.SystemTask{}, &model.SystemTaskLock{}, &model.Option{}, &model.AuditLog{}, &model.User{}, &model.AutoRouteLog{}, &model.CapabilityGateEvent{}, &model.Ability{}))
 
 	previousDB, previousLogDB, previousOptions := model.DB, model.LOG_DB, common.OptionMap
 	model.DB, model.LOG_DB, common.OptionMap = db, db, map[string]string{}
@@ -310,9 +310,19 @@ func TestAutoRouteLogEndpointsListWithoutDetailAndReturnTheProcessByRequestId(t 
 	setupAutoRouterControllerTest(t)
 	require.NoError(t, model.BatchInsertAutoRouteLogs([]*model.AutoRouteLog{
 		{CreatedAt: 100, RequestId: "req-ok", UserId: 1, Model: "coder", Outcome: model.AutoRouteOutcomeRouted, Detail: `{"result":{"resolved_model":"coder-high"},"trace":{"judgment":"live"}}`},
-		{CreatedAt: 200, RequestId: "req-failed", UserId: 2, Outcome: model.AutoRouteOutcomeFailed, Detail: `{"error":"no model"}`},
+		{CreatedAt: 200, RequestId: "req-failed", RequestParams: `{"experiment_id":"exp-1"}`, UserId: 2, Outcome: model.AutoRouteOutcomeFailed, Detail: `{"error":"no model"}`},
 		{CreatedAt: 300, RequestId: "req-broken", UserId: 2, Outcome: model.AutoRouteOutcomeRouted, Detail: `not json`},
 	}))
+
+	byParams := callAutoRouteLogHandler(t, GetAutoRouteLogs, "/api/auto-route-logs/?request_params=exp-1", nil)
+	require.True(t, byParams.Success, byParams.Message)
+	var paramsPage struct {
+		Items []map[string]any `json:"items"`
+	}
+	require.NoError(t, common.Unmarshal(byParams.Data, &paramsPage))
+	require.Len(t, paramsPage.Items, 1)
+	assert.Equal(t, "req-failed", paramsPage.Items[0]["request_id"])
+	assert.Equal(t, `{"experiment_id":"exp-1"}`, paramsPage.Items[0]["request_params"])
 
 	list := callAutoRouteLogHandler(t, GetAutoRouteLogs, "/api/auto-route-logs/?user_id=2&page_size=10", nil)
 	require.True(t, list.Success, list.Message)
@@ -348,4 +358,68 @@ func TestAutoRouteLogEndpointsListWithoutDetailAndReturnTheProcessByRequestId(t 
 	missing := callAutoRouteLogHandler(t, GetAutoRouteLog, "/api/auto-route-logs/nope", gin.Params{{Key: "request_id", Value: "nope"}})
 	assert.True(t, missing.Success, "没有这条日志是正常情况")
 	assert.Equal(t, "null", string(missing.Data))
+}
+
+// selfLogEngine 把 /self 路由挂到一次性引擎上，让 FullPath 与线上一致，
+// 再用桩中间件写入会话用户；鉴权本身由路由上的 UserAuth 负责。
+func selfLogEngine(userId int) *gin.Engine {
+	router := gin.New()
+	router.Use(func(c *gin.Context) { c.Set("id", userId) })
+	router.GET("/api/auto-route-logs/self", GetAutoRouteLogs)
+	router.GET("/api/auto-route-logs/self/:request_id", GetAutoRouteLog)
+	router.GET("/api/capability-gate/events/self", GetCapabilityGateEvents)
+	return router
+}
+
+func callSelfLogEngine(t *testing.T, router *gin.Engine, target string) tokenAPIResponse {
+	t.Helper()
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, target, nil))
+	require.Equal(t, http.StatusOK, recorder.Code)
+	var response tokenAPIResponse
+	require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &response))
+	return response
+}
+
+func TestSelfLogEndpointsOnlyReturnTheUsersOwnRows(t *testing.T) {
+	setupAutoRouterControllerTest(t)
+	require.NoError(t, model.BatchInsertAutoRouteLogs([]*model.AutoRouteLog{
+		{CreatedAt: 100, RequestId: "req-mine", UserId: 7, Model: "coder", Outcome: model.AutoRouteOutcomeRouted, Detail: `{"result":{"resolved_model":"coder"}}`},
+		{CreatedAt: 200, RequestId: "req-others", UserId: 8, Model: "coder", Outcome: model.AutoRouteOutcomeRouted, Detail: `{"result":{}}`},
+	}))
+	require.NoError(t, model.BatchInsertCapabilityGateEvents([]*model.CapabilityGateEvent{
+		{Mode: "enforce", Model: "model-a", Action: model.CapabilityGateEventRejected, RequestId: "req-mine", UserId: 7, CreatedAt: 100},
+		{Mode: "enforce", Model: "model-b", Action: model.CapabilityGateEventSoft, RequestId: "req-others", UserId: 8, CreatedAt: 200},
+	}))
+	router := selfLogEngine(7)
+
+	list := callSelfLogEngine(t, router, "/api/auto-route-logs/self?user_id=8&page_size=10")
+	require.True(t, list.Success, list.Message)
+	var page struct {
+		Items []map[string]any `json:"items"`
+		Total int64            `json:"total"`
+	}
+	require.NoError(t, common.Unmarshal(list.Data, &page))
+	assert.Equal(t, int64(1), page.Total, "查询参数里的 user_id 不生效，只看会话用户")
+	require.Len(t, page.Items, 1)
+	assert.Equal(t, "req-mine", page.Items[0]["request_id"])
+
+	own := callSelfLogEngine(t, router, "/api/auto-route-logs/self/req-mine")
+	require.True(t, own.Success, own.Message)
+	assert.Contains(t, string(own.Data), `"request_id":"req-mine"`, "自己的留痕可以看到过程")
+
+	others := callSelfLogEngine(t, router, "/api/auto-route-logs/self/req-others")
+	require.True(t, others.Success, others.Message)
+	assert.Equal(t, "null", string(others.Data), "别人的留痕与没有日志一样返回 null，不暴露它存在")
+
+	events := callSelfLogEngine(t, router, "/api/capability-gate/events/self?page_size=10")
+	require.True(t, events.Success, events.Message)
+	var eventPage struct {
+		Items []map[string]any `json:"items"`
+		Total int64            `json:"total"`
+	}
+	require.NoError(t, common.Unmarshal(events.Data, &eventPage))
+	assert.Equal(t, int64(1), eventPage.Total)
+	require.Len(t, eventPage.Items, 1)
+	assert.Equal(t, "req-mine", eventPage.Items[0]["request_id"])
 }

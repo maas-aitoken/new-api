@@ -23,17 +23,19 @@ import { EffortStep, ResultStep } from './result-steps'
 import { SelectionStep } from './selection-step'
 import type { RouteLogDetail } from './types'
 
-function ProcessStep(props: { id: RouteProcessStepId; detail: RouteLogDetail }) {
+function ProcessStep(props: {
+  id: RouteProcessStepId
+  detail: RouteLogDetail
+}) {
   const { result, trace, error } = props.detail
   switch (props.id) {
     case 'request':
-      return trace ? <RequestStep request={trace.request} /> : null
+      // trace.request 缺失（detail 被改库改坏）时跳过这一步，不让整个抽屉崩掉。
+      return trace?.request ? <RequestStep request={trace.request} /> : null
     case 'judgment':
       return trace ? <JudgmentStep trace={trace} result={result} /> : null
     case 'validity':
-      return trace?.validity ? (
-        <ValidityStep validity={trace.validity} />
-      ) : null
+      return trace?.validity ? <ValidityStep validity={trace.validity} /> : null
     case 'continuation':
       return trace?.continuation ? (
         <ContinuationStep continuation={trace.continuation} />

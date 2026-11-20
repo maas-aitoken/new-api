@@ -181,7 +181,9 @@ export function ConnectionSection(props: ConnectionSectionProps) {
           {endpointMissing ? (
             <Alert>
               <TriangleAlert aria-hidden='true' />
-              <AlertTitle>{t('No classifier endpoint is configured')}</AlertTitle>
+              <AlertTitle>
+                {t('No classifier endpoint is configured')}
+              </AlertTitle>
               <AlertDescription>
                 {t(
                   'Auto cannot tell what a request is about, so every request uses the default models.'

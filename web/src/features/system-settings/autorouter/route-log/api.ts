@@ -23,6 +23,7 @@ import type {
   RouteLogFilters,
   RouteLogPage,
   RouteLogResponse,
+  RouteLogScope,
 } from './types'
 
 type RouteLogListParams = Partial<RouteLogFilters> & {
@@ -30,18 +31,28 @@ type RouteLogListParams = Partial<RouteLogFilters> & {
   page_size: number
 }
 
-export async function getRouteLogs(params: RouteLogListParams) {
+export async function getRouteLogs(
+  params: RouteLogListParams,
+  scope: RouteLogScope = 'all'
+) {
   const res = await api.get<RouteLogResponse<RouteLogPage>>(
-    '/api/auto-route-logs/',
+    scope === 'self' ? '/api/auto-route-logs/self' : '/api/auto-route-logs/',
     { params }
   )
   return res.data
 }
 
 /** The data is null when no log was recorded for the request. */
-export async function getRouteLog(requestId: string) {
+export async function getRouteLog(
+  requestId: string,
+  scope: RouteLogScope = 'all'
+) {
+  const base =
+    scope === 'self'
+      ? '/api/auto-route-logs/self'
+      : '/api/auto-route-logs'
   const res = await api.get<RouteLogResponse<RouteLog | null>>(
-    `/api/auto-route-logs/${encodeURIComponent(requestId)}`
+    `${base}/${encodeURIComponent(requestId)}`
   )
   return res.data
 }

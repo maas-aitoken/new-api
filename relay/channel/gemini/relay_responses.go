@@ -56,6 +56,7 @@ func GeminiResponsesHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *h
 		)
 	}
 
+	markGeminiBlockedFinish(c, info, &geminiResponse)
 	usage := buildUsageFromGeminiResponse(c, info, &geminiResponse)
 
 	convertResult, err := service.ConvertResponse(c, info, types.RelayFormatOpenAIResponses, &geminiResponse)

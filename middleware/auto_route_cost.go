@@ -16,9 +16,9 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// autoRouteCost 给 auto 候选带里的模型估算比较成本：首次请求命中的分组下的用户价，乘上会落到的
-// 渠道的费用倍率（autorouter.Candidates.Costs）。费用倍率按用户请求一侧的模型名配，不参与计费，
-// 只影响 auto 选哪个模型。
+// autoRouteCost 给 auto 候选里的模型估算比较成本：首次请求命中的分组下的用户价，乘上会落到的
+// 渠道的费用倍率。费用倍率按用户请求一侧的模型名配，和计费乘的是同一个倍率。
+// 调度预览只提供当前可服务性和渠道成本估算，不参与质量、成功率评分。
 //
 // 落到哪个渠道：这次请求由调度器决定渠道（强制模式或金丝雀命中）时问调度器的只读预览；
 // 预览不可用或某个模型没有答案时按原生选渠道的规则算：会话亲和命中就是那个渠道，否则按分组
@@ -38,6 +38,15 @@ type autoRouteCost struct {
 	exclude func(name, reason string)
 }
 
+// autoCostPlan 是一个候选的成本估算落点：计费分组、可能落到的渠道及概率，以及
+// 调度器回答了却没用上它的原因。shares 为空表示这个候选没法估算。
+type autoCostPlan struct {
+	group  string
+	shares []model.ChannelShare
+	source string
+	note   string
+}
+
 // autoCostTarget 是一个候选真正服务请求的名字，和选定模型后会用的渠道范围。
 type autoCostTarget struct {
 	name    string // 榜单里的模型名，报价按它
@@ -48,10 +57,7 @@ type autoCostTarget struct {
 
 func (a autoRouteCost) estimate(names []string, effort string, ignoreClientReasoning bool) (map[string]autorouter.Cost, *autorouter.PreviewOutcome) {
 	serves := func(name string) bool { return a.serves(name, ignoreClientReasoning) }
-	groups := []string{a.usingGroup}
-	if a.usingGroup == "auto" {
-		groups = service.GetRequestAutoGroups(a.c, common.GetContextKeyString(a.c, constant.ContextKeyUserGroup))
-	}
+	groups := a.billingGroups()
 	targets := make([]autoCostTarget, 0, len(names))
 	for _, name := range names {
 		serving, _, ok := service.AutoServingModel(name, effort, serves)
@@ -69,31 +75,61 @@ func (a autoRouteCost) estimate(names []string, effort string, ignoreClientReaso
 	}
 
 	previewed := a.previewScheduler(targets)
-	estimates := make(map[string]autorouter.Cost, len(targets))
+	plans := make([]autoCostPlan, len(targets))
+	excluded := make([]bool, len(targets))
 	for i, target := range targets {
 		// note 是调度器回答了、却没用上它给这个模型的答案的原因，跟着原生估算写进留痕。
 		note := ""
 		if previewed.Status == service.SchedulerPreviewAnswered {
 			switch result := previewed.Results[i]; result.Status {
 			case service.SchedulerPreviewOK:
-				if cost, ok := a.costAtChannel(groups, target, result.ChannelID); ok {
-					estimates[target.name] = cost
+				if plan, ok := a.channelPlan(groups, target, result.ChannelID); ok && a.perToken(target.name, plan.group) {
+					plans[i] = plan
 					continue
 				}
 				note = previewUnusableChannel
 			case service.SchedulerPreviewNoCandidate:
 				// 正式调度对这个模型一定 503（池耗尽、超额度或容量未知），比较时跳过它。
 				a.exclude(target.serving, autorouter.ReasonSchedulerNoCandidate)
-				estimates[target.name] = autorouter.Cost{Excluded: true, Reason: autorouter.ReasonSchedulerNoCandidate}
+				excluded[i] = true
 				continue
 			default:
 				note = result.Status
 			}
 		}
-		if cost, ok := a.nativeCost(groups, target); ok {
-			cost.Preview = note
-			estimates[target.name] = cost
+		plan, ok := a.nativePlan(groups, target)
+		if !ok {
+			continue
 		}
+		plan.note = note
+		plans[i] = plan
+	}
+
+	estimates := make(map[string]autorouter.Cost, len(targets))
+	for i, target := range targets {
+		if excluded[i] {
+			estimates[target.name] = autorouter.Cost{Excluded: true, Reason: autorouter.ReasonSchedulerNoCandidate}
+			continue
+		}
+		plan := plans[i]
+		if len(plan.shares) == 0 || !a.perToken(target.name, plan.group) {
+			continue
+		}
+		cost := autorouter.Cost{
+			Price:    a.quoteAt(target.name, plan.group).PricePerMillion,
+			Channels: len(plan.shares),
+			Source:   plan.source,
+			Preview:  plan.note,
+		}
+		multiplier := 0.0
+		for _, share := range plan.shares {
+			multiplier += share.Probability * channelCostMultiplier(share.Channel, target.serving)
+		}
+		cost.Multiplier = multiplier
+		if len(plan.shares) == 1 {
+			cost.ChannelID = plan.shares[0].Channel.Id
+		}
+		estimates[target.name] = cost
 	}
 	if previewed.Status == "" {
 		return estimates, nil
@@ -101,7 +137,20 @@ func (a autoRouteCost) estimate(names []string, effort string, ignoreClientReaso
 	return estimates, &autorouter.PreviewOutcome{Status: previewed.Status, HTTPStatus: previewed.HTTPStatus}
 }
 
-// previewUnusableChannel 是调度器给了渠道、new-api 却没法按它报价时记的原因（渠道不在缓存里、
+func (a autoRouteCost) perToken(name, group string) bool {
+	return a.quoteAt(name, group).Kind == helper.RoutingPerToken
+}
+
+func (a autoRouteCost) billingGroups() []string {
+	if a.usingGroup == "auto" {
+		return service.GetRequestAutoGroups(a.c, common.GetContextKeyString(a.c, constant.ContextKeyUserGroup))
+	}
+	return []string{a.usingGroup}
+}
+
+// autoRouteCost 给 auto 候选里的模型估算比较成本：首次请求命中的分组下的用户价，乘上会落到的
+// 渠道的费用倍率。费用倍率按用户请求一侧的模型名配，和计费乘的是同一个倍率。
+// 调度预览只提供当前可服务性和渠道成本估算，不参与质量、成功率评分。// previewUnusableChannel 是调度器给了渠道、new-api 却没法按它报价时记的原因（渠道不在缓存里、
 // 不在任何分组里服务这个模型，或在那个分组里按次计价），这个模型按原生规则估算。
 const previewUnusableChannel = "unusable_channel"
 
@@ -123,49 +172,34 @@ func (a autoRouteCost) previewScheduler(targets []autoCostTarget) service.Schedu
 	return service.PreviewScheduler(a.c, a.usingGroup, requests)
 }
 
-// costAtChannel 是确定落到某个渠道时的比较成本：计费分组取第一个在这个渠道上服务这个模型的分组，
+// channelPlan 是确定落到某个渠道时的估算落点：计费分组取第一个在这个渠道上服务这个模型的分组，
 // 与调度器选定渠道后 Distribute 定分组的规则相同。
-func (a autoRouteCost) costAtChannel(groups []string, target autoCostTarget, channelID int) (autorouter.Cost, bool) {
+func (a autoRouteCost) channelPlan(groups []string, target autoCostTarget, channelID int) (autoCostPlan, bool) {
 	channel, err := model.CacheGetChannel(channelID)
 	if err != nil || channel == nil {
-		return autorouter.Cost{}, false
+		return autoCostPlan{}, false
 	}
 	for _, group := range groups {
 		if !model.IsChannelEnabledForGroupModel(group, target.serving, channel.Id) {
 			continue
 		}
-		quote := a.quoteAt(target.name, group)
-		if quote.Kind != helper.RoutingPerToken {
-			return autorouter.Cost{}, false
-		}
-		return autorouter.Cost{Price: quote.PricePerMillion, Multiplier: channelCostMultiplier(channel, target.serving),
-			ChannelID: channel.Id, Channels: 1, Source: autorouter.CostSourceScheduler}, true
+		return autoCostPlan{group: group, source: autorouter.CostSourceScheduler,
+			shares: []model.ChannelShare{{Channel: channel, Probability: 1}}}, true
 	}
-	return autorouter.Cost{}, false
+	return autoCostPlan{}, false
 }
 
-// nativeCost 按原生选渠道的规则估算：会话亲和命中时必落那个渠道，否则按首次命中概率取期望倍率。
-func (a autoRouteCost) nativeCost(groups []string, target autoCostTarget) (autorouter.Cost, bool) {
+// nativePlan 按原生选渠道的规则估算：会话亲和命中时必落那个渠道，否则按首次命中概率取期望。
+func (a autoRouteCost) nativePlan(groups []string, target autoCostTarget) (autoCostPlan, bool) {
 	group, shares, source := a.affinityShare(groups, target.serving, target.filters)
 	if len(shares) == 0 {
 		group, shares = model.FirstAttemptChannelShares(groups, target.serving, target.filters)
 		source = autorouter.CostSourceExpected
 	}
 	if len(shares) == 0 {
-		return autorouter.Cost{}, false
+		return autoCostPlan{}, false
 	}
-	quote := a.quoteAt(target.name, group)
-	if quote.Kind != helper.RoutingPerToken {
-		return autorouter.Cost{}, false
-	}
-	cost := autorouter.Cost{Price: quote.PricePerMillion, Channels: len(shares), Source: source}
-	for _, share := range shares {
-		cost.Multiplier += share.Probability * channelCostMultiplier(share.Channel, target.serving)
-	}
-	if len(shares) == 1 {
-		cost.ChannelID = shares[0].Channel.Id
-	}
-	return cost, true
+	return autoCostPlan{group: group, shares: shares, source: source}, true
 }
 
 // affinityShare 判断会话亲和会不会把首次请求绑到某个渠道：规则与 SelectChannelForRequest 相同

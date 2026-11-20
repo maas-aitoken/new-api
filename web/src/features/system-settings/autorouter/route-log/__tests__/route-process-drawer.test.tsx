@@ -23,12 +23,18 @@ import { expect, test, vi } from 'vitest'
 import { api } from '@/lib/api'
 
 import { RouteProcessDrawer } from '../route-process-drawer'
-import type { RouteLog, RouteResult, RouteTraceMode } from '../types'
+import type {
+  RouteLog,
+  RouteResult,
+  RouteTrace,
+  RouteTraceMode,
+} from '../types'
 
 const logItem = {
   id: 1,
   created_at: 1_760_000_000,
   request_id: 'req-1',
+  request_params: '',
   user_id: 42,
   token_id: 7,
   using_group: 'vip',
@@ -40,6 +46,59 @@ const logItem = {
   effort: 'high',
   preference: 'balanced',
   jev_latency_ms: 120,
+}
+
+const routedTrace: RouteTrace = {
+  request: { protocol: 'anthropic', human_turns: 2, text_runes: 80 },
+  judgment: 'live',
+  validity: { profiles: ['code.build', 'code'] },
+  effort: { difficulty: 3, base: 'high', threshold: 0.5, benefit: 0.2 },
+  ladder: [
+    {
+      profile: 'code.build',
+      models: 3,
+      outcome: 'compared',
+      model: 'sonnet',
+      skipped: [{ model: 'opus', score: 0.97, reason: 'capability' }],
+      skipped_more: 3,
+    },
+  ],
+}
+
+const rawDimensions = {
+  quality: 0.93,
+  cost: 0.07,
+  capacity: 0.12,
+  success: 0.18,
+  temperature: 0.12,
+}
+
+const dimensions = {
+  ...rawDimensions,
+  quality: 0.93 / 1.3,
+  cost: 0.07 / 1.3,
+  capacity: 0.12 / 1.3,
+  success: 0.18 / 1.3,
+}
+
+function candidate(
+  model: string,
+  score: number,
+  price: number,
+  probability: number
+) {
+  return {
+    model,
+    score,
+    price,
+    cost_score: model === 'sonnet' ? 0.4 : 1,
+    capacity: model === 'sonnet' ? 0.5 : 0.5,
+    success: model === 'sonnet' ? 0.98 : 0.96,
+    requests: 1,
+    samples: 20,
+    utility: score,
+    probability,
+  }
 }
 
 const routed: RouteLog = {
@@ -65,44 +124,33 @@ const routed: RouteLog = {
       },
       pick: {
         chosen: 'sonnet',
-        weight: 0.07,
+        dimensions,
         band: [
-          { model: 'sonnet', score: 0.95, price: 4, discount: 0, utility: 0.95 },
-          { model: 'haiku', score: 0.93, price: 1, discount: 0, utility: 0.93 },
+          candidate('sonnet', 0.95, 4, 0.55),
+          candidate('haiku', 0.93, 1, 0.45),
         ],
       },
       jev: { endpoint: 'https://jev.example', latency_ms: 120 },
     },
-    trace: {
-      request: { protocol: 'anthropic', human_turns: 2, text_runes: 80 },
-      judgment: 'live',
-      validity: { profiles: ['code.build', 'code'] },
-      effort: { difficulty: 3, base: 'high', threshold: 0.5, benefit: 0.2 },
-      ladder: [
-        {
-          profile: 'code.build',
-          models: 3,
-          outcome: 'compared',
-          model: 'sonnet',
-          skipped: [{ model: 'opus', score: 0.97, reason: 'capability' }],
-          skipped_more: 3,
-        },
-      ],
-    },
+    trace: routedTrace,
   },
 }
 
 function renderDrawer(props: {
   requestId?: string
   summary?: RouteResult
+  scope?: 'all' | 'self'
   onClose?: () => void
 }) {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  })
   render(
     <QueryClientProvider client={client}>
       <RouteProcessDrawer
         requestId={props.requestId ?? 'req-1'}
         summary={props.summary}
+        scope={props.scope}
         onClose={props.onClose ?? (() => undefined)}
       />
     </QueryClientProvider>
@@ -110,7 +158,9 @@ function renderDrawer(props: {
 }
 
 function mockLog(data: RouteLog | null) {
-  return vi.spyOn(api, 'get').mockResolvedValue({ data: { success: true, data } })
+  return vi
+    .spyOn(api, 'get')
+    .mockResolvedValue({ data: { success: true, data } })
 }
 
 test('a recorded log shows its steps in order, from the request to the result', async () => {
@@ -137,6 +187,29 @@ test('a recorded log shows its steps in order, from the request to the result', 
   expect(api.get).toHaveBeenCalledWith('/api/auto-route-logs/req-1')
 })
 
+test('self scope reads the process from the /self endpoint', async () => {
+  mockLog(routed)
+  renderDrawer({ scope: 'self' })
+
+  await screen.findByText('Request')
+  expect(api.get).toHaveBeenCalledWith('/api/auto-route-logs/self/req-1')
+})
+
+test('a trace that lost its request facts skips that step instead of crashing the drawer', async () => {
+  // 模拟被改库改坏的 detail：线上到达的是未校验的 JSON，类型上必填的字段可能缺失。
+  mockLog({
+    ...logItem,
+    detail: JSON.parse(
+      '{"result":{"resolved_model":"model-a"},"trace":{"judgment":"live"}}'
+    ),
+  })
+  renderDrawer({})
+
+  expect(await screen.findByText('Classification')).toBeVisible()
+  expect(await screen.findByText('Result')).toBeVisible()
+  expect(screen.queryByText('Request')).not.toBeInTheDocument()
+})
+
 test('the model that was chosen is marked in the comparison, and a better-ranked model says why it was skipped', async () => {
   mockLog(routed)
   renderDrawer({})
@@ -161,31 +234,23 @@ test('a comparison by platform cost shows the multiplier of each candidate, wher
         ...routed.detail?.result,
         pick: {
           chosen: 'sonnet',
-          weight: 0.07,
+          dimensions,
           band: [
             {
-              model: 'sonnet',
-              score: 0.95,
-              price: 4,
+              ...candidate('sonnet', 0.95, 4, 0.55),
               cost_multiplier: 0.25,
               cost: 1,
               channel_id: 12,
               channels: 1,
               cost_source: 'scheduler',
-              discount: 0,
-              utility: 0.95,
             },
             {
-              model: 'haiku',
-              score: 0.93,
-              price: 1.5,
+              ...candidate('haiku', 0.93, 1.5, 0.45),
               cost_multiplier: 0.8,
               cost: 1.2,
               channels: 2,
               cost_source: 'expected',
               preview: 'not_cached',
-              discount: 0.07,
-              utility: 0.86,
             },
           ],
           preview: { status: 'answered' },
@@ -203,6 +268,16 @@ test('a comparison by platform cost shows the multiplier of each candidate, wher
   ).toBeVisible()
   const chosenRow = screen.getByText('Chosen').closest('tr') as HTMLElement
   expect(within(chosenRow).getByText('× 0.2500')).toBeVisible()
+  expect(screen.getByRole('columnheader', { name: 'Cost score' })).toBeVisible()
+  expect(screen.getByRole('columnheader', { name: 'Capacity' })).toBeVisible()
+  expect(screen.getByRole('columnheader', { name: 'Success' })).toBeVisible()
+  expect(
+    screen.getByRole('columnheader', { name: 'Probability' })
+  ).toBeVisible()
+  expect(within(chosenRow).getByText('0.4000')).toBeVisible()
+  expect(within(chosenRow).getByText('0.5000')).toBeVisible()
+  expect(within(chosenRow).getByText('0.9800')).toBeVisible()
+  expect(within(chosenRow).getByText('0.5500')).toBeVisible()
   expect(
     within(chosenRow).getByText('Scheduler picks channel #12')
   ).toBeVisible()
@@ -212,7 +287,9 @@ test('a comparison by platform cost shows the multiplier of each candidate, wher
     within(otherRow).getByText('The scheduler has not loaded this model yet')
   ).toBeVisible()
   expect(
-    screen.getByText(/The multiplier never changes what the user is billed/)
+    screen.getByText(
+      /The cost multiplier never changes what the user is billed/
+    )
   ).toBeVisible()
   expect(
     screen.queryByText(/so every multiplier follows the native routing rules/)
@@ -239,19 +316,15 @@ test.each([
           ...routed.detail?.result,
           pick: {
             chosen: 'sonnet',
-            weight: 0.07,
+            dimensions,
             band: [
               {
-                model: 'sonnet',
-                score: 0.95,
-                price: 4,
+                ...candidate('sonnet', 0.95, 4, 1),
                 cost_multiplier: 0.25,
                 cost: 1,
                 channel_id: 12,
                 channels: 1,
                 cost_source: 'expected',
-                discount: 0,
-                utility: 0.95,
               },
             ],
             preview,
@@ -266,12 +339,14 @@ test.each([
 )
 
 test('a model the scheduler could not place says so in the skipped list', async () => {
+  const baseTrace = routed.detail?.trace
+  if (!baseTrace) throw new Error('the fixture has no trace')
   mockLog({
     ...routed,
     detail: {
       ...routed.detail,
       trace: {
-        ...routed.detail!.trace!,
+        ...routedTrace,
         ladder: [
           {
             profile: 'code.build',
@@ -305,7 +380,9 @@ test('a comparison by user price alone keeps the original columns', async () => 
     screen.queryByRole('columnheader', { name: 'Cost multiplier' })
   ).not.toBeInTheDocument()
   expect(
-    screen.queryByText(/The multiplier never changes what the user is billed/)
+    screen.queryByText(
+      /The cost multiplier never changes what the user is billed/
+    )
   ).not.toBeInTheDocument()
 })
 
@@ -333,7 +410,9 @@ test('a request no model could serve shows the failure and the reasons by count'
 
   expect(await screen.findByText('No model available')).toBeVisible()
   expect(
-    screen.getByText('auto router found no available model for this token and group')
+    screen.getByText(
+      'auto router found no available model for this token and group'
+    )
   ).toBeVisible()
   expect(screen.getByText('No enabled channel serves it')).toBeVisible()
   expect(screen.getByText('× 7')).toBeVisible()
@@ -352,7 +431,9 @@ test('without a recorded log the summary of the usage log is shown, with a notic
   })
 
   expect(
-    await screen.findByText(/No detailed routing log was recorded for this request/)
+    await screen.findByText(
+      /No detailed routing log was recorded for this request/
+    )
   ).toBeVisible()
   expect(screen.getByText('sonnet-high')).toBeVisible()
   expect(screen.queryByText('Classification')).not.toBeInTheDocument()
@@ -373,7 +454,9 @@ test('a failed request for the log offers a retry instead of an empty drawer', a
   vi.spyOn(api, 'get').mockRejectedValue(new Error('network down'))
   renderDrawer({})
 
-  expect(await screen.findByText('Failed to load the routing process')).toBeVisible()
+  expect(
+    await screen.findByText('Failed to load the routing process')
+  ).toBeVisible()
   expect(screen.getByText('network down')).toBeVisible()
 })
 
@@ -381,13 +464,34 @@ test('a continued request names the previous model and says its effort was held'
   mockLog({
     ...logItem,
     detail: {
-      result: { resolved_model: 'coder', model: 'coder', effort: 'high', source: 'inherit' },
+      result: {
+        resolved_model: 'coder',
+        model: 'coder',
+        effort: 'high',
+        source: 'inherit',
+      },
       trace: {
-        request: { human_turns: 3, text_runes: 20, previous_runes: 30, truncated: true },
+        request: {
+          human_turns: 3,
+          text_runes: 20,
+          previous_runes: 30,
+          truncated: true,
+        },
         judgment: 'cache',
         validity: { profiles: ['code.build'] },
-        continuation: { previous: 'coder', task_change: 0.2, threshold: 0.5, continued: true },
-        effort: { difficulty: 1, base: 'low', threshold: 0.5, floored: true, benefit: 0.1 },
+        continuation: {
+          previous: 'coder',
+          task_change: 0.2,
+          threshold: 0.5,
+          continued: true,
+        },
+        effort: {
+          difficulty: 1,
+          base: 'low',
+          threshold: 0.5,
+          floored: true,
+          benefit: 0.1,
+        },
       },
     },
   })
@@ -413,7 +517,12 @@ test.each([
         trace: {
           request: { human_turns: 2, text_runes: 20 },
           judgment: 'live',
-          continuation: { previous: 'coder', task_change: taskChange, threshold: 0.5, continued: false },
+          continuation: {
+            previous: 'coder',
+            task_change: taskChange,
+            threshold: 0.5,
+            continued: false,
+          },
         },
       },
     })
@@ -424,8 +533,16 @@ test.each([
 )
 
 test.each([
-  ['set', 'high', "Written into the request, replacing the client's own setting."],
-  ['strip', '', "The model does not support reasoning, so the client's reasoning settings were removed."],
+  [
+    'set',
+    'high',
+    "Written into the request, replacing the client's own setting.",
+  ],
+  [
+    'strip',
+    '',
+    "The model does not support reasoning, so the client's reasoning settings were removed.",
+  ],
   ['keep', '', "The client's own reasoning settings were left untouched."],
 ] as const)(
   'effort written into the body with action %s says what became of the client’s settings',
@@ -433,25 +550,44 @@ test.each([
     mockLog({
       ...logItem,
       detail: {
-        result: { model: 'reasoner', effort: 'high', effort_in_body: true, effort_action: action, applied_effort: applied },
+        result: {
+          model: 'reasoner',
+          effort: 'high',
+          effort_in_body: true,
+          effort_action: action,
+          applied_effort: applied,
+        },
         trace: {
           request: { human_turns: 1, text_runes: 5 },
           judgment: 'live',
-          effort: { difficulty: 2, base: 'medium', threshold: 0.5, benefit: 0.7, upgraded: true },
+          effort: {
+            difficulty: 2,
+            base: 'medium',
+            threshold: 0.5,
+            benefit: 0.7,
+            upgraded: true,
+          },
         },
       },
     })
     renderDrawer({})
 
     expect(await screen.findByText(note)).toBeVisible()
-    expect(screen.getByText('Raised one step by the larger-model benefit')).toBeVisible()
-    expect(screen.getByText('Effort sent').nextElementSibling).toHaveTextContent(applied || 'None')
+    expect(
+      screen.getByText('Raised one step by the larger-model benefit')
+    ).toBeVisible()
+    expect(
+      screen.getByText('Effort sent').nextElementSibling
+    ).toHaveTextContent(applied || 'None')
   }
 )
 
 test.each([
   ['sonnet-high', 'Sent as part of the model name.'],
-  ['sonnet', 'No model variant carries this effort, so the provider default applies.'],
+  [
+    'sonnet',
+    'No model variant carries this effort, so the provider default applies.',
+  ],
 ])(
   'a model without a reasoning declaration that ran as %s says how the effort reached it',
   async (resolved, note) => {
@@ -480,13 +616,24 @@ test('a classifier failure says there was no decision and that the default model
       result: {
         resolved_model: 'general',
         model: 'general',
-        jev: { endpoint: 'https://jev.example', latency_ms: 5000, error: 'jev failed: timeout' },
+        jev: {
+          endpoint: 'https://jev.example',
+          latency_ms: 5000,
+          error: 'jev failed: timeout',
+        },
       },
       trace: {
         request: { human_turns: 1, text_runes: 9 },
         judgment: 'live_failed',
         validity: { error: 'no_decision' },
-        ladder: [{ profile: 'general', models: 2, outcome: 'first_available', model: 'general' }],
+        ladder: [
+          {
+            profile: 'general',
+            models: 2,
+            outcome: 'first_available',
+            model: 'general',
+          },
+        ],
       },
     },
   })
@@ -510,7 +657,14 @@ test.each([
         request: { human_turns: 1, text_runes: 9 },
         judgment: 'live',
         validity: { error },
-        ladder: [{ profile: 'general', models: 2, outcome: 'first_available', model: 'general' }],
+        ladder: [
+          {
+            profile: 'general',
+            models: 2,
+            outcome: 'first_available',
+            model: 'general',
+          },
+        ],
       },
     },
   })
@@ -526,19 +680,28 @@ test('an unknown task type is a valid answer with no ranking, and the previous r
     task_type: 'unknown',
     source: 'inherit',
     detail: {
-      result: { resolved_model: 'coder', model: 'coder', effort: 'high', source: 'inherit' },
+      result: {
+        resolved_model: 'coder',
+        model: 'coder',
+        effort: 'high',
+        source: 'inherit',
+      },
       trace: {
         request: { human_turns: 2, text_runes: 2, previous_runes: 30 },
         judgment: 'live',
         validity: {},
-        ladder: [{ profile: 'code.build', outcome: 'inherited', model: 'coder' }],
+        ladder: [
+          { profile: 'code.build', outcome: 'inherited', model: 'coder' },
+        ],
       },
     },
   })
   renderDrawer({})
 
   expect(await screen.findByText('Valid')).toBeVisible()
-  expect(screen.queryByText('Rankings to try, most specific first')).not.toBeInTheDocument()
+  expect(
+    screen.queryByText('Rankings to try, most specific first')
+  ).not.toBeInTheDocument()
   expect(screen.getByText('Kept the previous route')).toBeVisible()
 })
 
@@ -548,13 +711,28 @@ test('an effort held at the previous one and then raised by the benefit lists th
     task_type: 'unknown',
     effort: 'xhigh',
     detail: {
-      result: { resolved_model: 'coder', model: 'coder', effort: 'xhigh', source: 'jev', effort_override: true },
+      result: {
+        resolved_model: 'coder',
+        model: 'coder',
+        effort: 'xhigh',
+        source: 'jev',
+        effort_override: true,
+      },
       trace: {
         request: { human_turns: 2, text_runes: 40, previous_runes: 30 },
         judgment: 'live',
         validity: {},
-        effort: { difficulty: 1, base: 'low', threshold: 0.5, benefit: 0.7, floored: true, upgraded: true },
-        ladder: [{ profile: 'code.build', outcome: 'inherited', model: 'coder' }],
+        effort: {
+          difficulty: 1,
+          base: 'low',
+          threshold: 0.5,
+          benefit: 0.7,
+          floored: true,
+          upgraded: true,
+        },
+        ladder: [
+          { profile: 'code.build', outcome: 'inherited', model: 'coder' },
+        ],
       },
     },
   })
@@ -562,12 +740,24 @@ test('an effort held at the previous one and then raised by the benefit lists th
 
   const held = await screen.findByText('Held at the previous effort')
   const raised = screen.getByText('Raised one step by the larger-model benefit')
-  expect(held.compareDocumentPosition(raised) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  expect(
+    held.compareDocumentPosition(raised) & Node.DOCUMENT_POSITION_FOLLOWING
+  ).toBeTruthy()
 })
 
-const tiers = { capability: 0, balanced: 0.07, cost: 0.3 }
+const tiers = {
+  capability: { ...rawDimensions, quality: 1, cost: 0 },
+  balanced: rawDimensions,
+  cost: { ...rawDimensions, quality: 0.7, cost: 0.3 },
+}
+const balancedWeights = dimensions
+const adaptiveWeights = {
+  ...balancedWeights,
+  quality: 0.8725 / 1.3,
+  cost: 0.1275 / 1.3,
+}
 
-// An adaptive request that compared quality and price at the weight its mode gave.
+// An adaptive request shows the policy used by the four-dimensional comparison.
 function adaptiveLog(mode: RouteTraceMode): RouteLog {
   return {
     ...logItem,
@@ -580,10 +770,10 @@ function adaptiveLog(mode: RouteTraceMode): RouteLog {
         preference: 'adaptive',
         pick: {
           chosen: 'haiku',
-          weight: 0.1275,
+          dimensions: adaptiveWeights,
           band: [
-            { model: 'sonnet', score: 0.95, price: 4, discount: 0.1275, utility: 0.8225 },
-            { model: 'haiku', score: 0.93, price: 1, discount: 0, utility: 0.93 },
+            candidate('sonnet', 0.95, 4, 0.45),
+            candidate('haiku', 0.93, 1, 0.55),
           ],
         },
       },
@@ -592,51 +782,95 @@ function adaptiveLog(mode: RouteTraceMode): RouteLog {
         judgment: 'live',
         validity: { profiles: ['code.build'] },
         mode,
-        ladder: [{ profile: 'code.build', models: 2, outcome: 'compared', model: 'haiku' }],
+        ladder: [
+          {
+            profile: 'code.build',
+            models: 2,
+            outcome: 'compared',
+            model: 'haiku',
+          },
+        ],
       },
     },
   }
 }
 
-test('an adaptive request shows how its cost weight was judged, between the validity check and the model selection', async () => {
+test('an adaptive request shows its four weights and temperature, between the validity check and the model selection', async () => {
   mockLog(
     adaptiveLog({
       shares: { capability: 0.1, balanced: 0.55, cost: 0.35 },
       position: 1.25,
-      weight: 0.1275,
+      weight: 0.1275 / 1.3,
+      weights: adaptiveWeights,
       tiers,
     })
   )
   renderDrawer({})
 
   expect(await screen.findByText('Judged from the request')).toBeVisible()
-  const titles = ['Validity check', 'Cost preference', 'Model selection']
+  const titles = ['Validity check', 'Routing weights', 'Model selection']
   titles.slice(1).forEach((title, index) => {
     expect(
-      screen.getByText(titles[index]).compareDocumentPosition(screen.getByText(title)) &
+      screen
+        .getByText(titles[index])
+        .compareDocumentPosition(screen.getByText(title)) &
         Node.DOCUMENT_POSITION_FOLLOWING,
       `${title} comes after ${titles[index]}`
     ).toBeTruthy()
   })
   expect(screen.getByText('Balanced 0.5500')).toBeVisible()
   expect(screen.getByText('Cost first 0.3500')).toBeVisible()
-  expect(screen.getByText('Cost first 0.3000')).toBeVisible()
-  expect(screen.getByText('Expected position').nextElementSibling).toHaveTextContent('1.2500')
-  expect(screen.getByText('Cost weight').nextElementSibling).toHaveTextContent('0.1275')
-  expect(screen.getByText('Preference').nextElementSibling).toHaveTextContent('Decide per request')
+  expect(screen.getByText('Platform preference policies')).toBeVisible()
+  expect(
+    screen.getByText(
+      'Cost first Quality 0.7000, cost 0.3000, capacity 0.1200 and success 0.1800; sampling temperature 0.1200.'
+    )
+  ).toBeVisible()
+  expect(
+    screen.getByText('Capacity weight').nextElementSibling
+  ).toHaveTextContent('0.0923')
+  expect(
+    screen.getByText('Sampling temperature').nextElementSibling
+  ).toHaveTextContent('0.1200')
+  expect(
+    screen.getByText('Expected position').nextElementSibling
+  ).toHaveTextContent('1.2500')
+  expect(screen.getByText('Cost weight').nextElementSibling).toHaveTextContent(
+    '0.0981'
+  )
+  expect(
+    screen.getByText('Quality weight').nextElementSibling
+  ).toHaveTextContent('0.6712')
+  expect(screen.getByText('Preference').nextElementSibling).toHaveTextContent(
+    'Decide per request'
+  )
 })
 
-test('an adaptive request with no usable judgment says the balanced weight applied', async () => {
-  mockLog(adaptiveLog({ reason: 'no_answer', position: 1, weight: 0.07, tiers }))
+test('an adaptive request with no usable judgment says the balanced policy applied', async () => {
+  mockLog(
+    adaptiveLog({
+      reason: 'no_answer',
+      position: 1,
+      weight: 0.07 / 1.3,
+      weights: balancedWeights,
+      tiers,
+    })
+  )
   renderDrawer({})
 
   expect(await screen.findByText('No usable judgment')).toBeVisible()
   expect(
-    screen.getByText('The classifier gave no usable answer on cost, so the balanced weight applies.')
+    screen.getByText(
+      'The classifier gave no usable answer, so the balanced policy applies.'
+    )
   ).toBeVisible()
-  expect(screen.getByText('Cost weight').nextElementSibling).toHaveTextContent('0.0700')
+  expect(screen.getByText('Cost weight').nextElementSibling).toHaveTextContent(
+    '0.0538'
+  )
   expect(screen.queryByText('Expected position')).not.toBeInTheDocument()
-  expect(screen.queryByText('Probability of each preference')).not.toBeInTheDocument()
+  expect(
+    screen.queryByText('Probability of each preference')
+  ).not.toBeInTheDocument()
 })
 
 test('with no request selected the drawer stays closed and asks for nothing', () => {

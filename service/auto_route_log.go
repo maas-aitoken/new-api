@@ -77,6 +77,13 @@ func newAutoRouteLog(c *gin.Context, result *autorouter.Result, resolveErr error
 	if result.Jev != nil {
 		entry.JevLatencyMs = result.Jev.LatencyMs
 	}
+	// 请求参数连同评测框架经 extra_body 并进来的字段一起存下，供按子串检索。
+	if storage, err := common.GetBodyStorage(c); err == nil {
+		if body, err := storage.Bytes(); err == nil {
+			protocol, _ := AutoRouterProtocol(c.Request.URL.Path)
+			entry.RequestParams = autorouter.RequestParams(body, protocol, model.AutoRouteLogParamsMax)
+		}
+	}
 	if resolveErr != nil {
 		entry.Outcome = model.AutoRouteOutcomeFailed
 		return entry

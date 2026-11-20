@@ -41,7 +41,12 @@ func TestDefaultsFromTaskModelsJSON(t *testing.T) {
 	assert.Equal(t, 24, s.RankRefreshIntervalHours)
 	// 管理员能看到并调整的默认值：没设偏好的 key 走均衡，三档权重由小到大。
 	assert.Equal(t, autorouter.PreferenceBalanced, s.DefaultPreference)
-	assert.Equal(t, map[string]float64{"capability": 0, "balanced": 0.07, "cost": 0.3}, s.CostWeights)
+	assert.Equal(t, DefaultPreferenceWeights, s.PreferenceWeights)
+	for preference, weights := range DefaultPreferenceWeights {
+		assert.InDelta(t, 1, weights.Quality+weights.Cost+weights.Capacity+weights.Success, 1e-9, preference)
+		assert.Equal(t, 0.2, weights.Capacity, preference)
+		assert.Equal(t, 0.2, weights.Success, preference)
+	}
 }
 
 // 质量/成本选择需要每个画像下各模型的榜单分，首次启动用内嵌文件里的 evidence 播种。
@@ -69,15 +74,15 @@ func TestTaskScoresLoadFromOptionReplacesTheWholeMap(t *testing.T) {
 
 	require.NoError(t, config.GlobalConfig.LoadFromDB(map[string]string{
 		"autorouter_setting.task_scores":        `{"code.build":{"model-a":0.9,"model-b":0.8}}`,
-		"autorouter_setting.cost_weights":       `{"balanced":0.1}`,
+		"autorouter_setting.preference_weights": `{"balanced":{"quality":0.8,"cost":0.1,"capacity":0.2,"success":0.3,"temperature":0}}`,
 		"autorouter_setting.default_preference": "cost",
 	}))
 
 	assert.Equal(t, map[string]map[string]float64{"code.build": {"model-a": 0.9, "model-b": 0.8}}, setting.TaskScores)
 	assert.NotEmpty(t, shippedRanking.TaskScores["code.build"], "加载选项不能改到内嵌的榜单分")
 	assert.NotContains(t, shippedRanking.TaskScores["code.build"], "model-a")
-	assert.Equal(t, 0.1, setting.Policy(autorouter.PreferenceBalanced).CostWeight)
-	assert.Equal(t, 0.3, setting.Policy(autorouter.PreferenceCost).CostWeight, "选项里没写的偏好用内置权重")
+	assert.Equal(t, autorouter.DimensionWeights{Quality: 0.8, Cost: 0.1, Capacity: 0.2, Success: 0.3}, setting.Policy(autorouter.PreferenceBalanced).DimensionWeights)
+	assert.Equal(t, 0.4, setting.Policy(autorouter.PreferenceCost).DimensionWeights.Cost, "选项里没写的偏好用内置权重")
 	assert.Equal(t, autorouter.PreferenceCost, setting.Policy("").Preference)
 }
 
@@ -91,30 +96,30 @@ func TestPolicyResolvesPreferenceAndWeight(t *testing.T) {
 	tests := []struct {
 		name           string
 		key, platform  string
-		weights        map[string]float64
+		weights        autorouter.PreferenceWeights
 		wantPreference string
 		wantWeight     float64
 	}{
 		{"a key's own preference wins", "capability", "cost", nil, "capability", 0},
-		{"a key without one uses the platform default", "", "cost", nil, "cost", 0.3},
+		{"a key without one uses the platform default", "", "cost", nil, "cost", 0.4},
 		{"an unknown key preference uses the platform default", "turbo", "capability", nil, "capability", 0},
-		{"an unknown platform default falls to balanced", "", "turbo", nil, "balanced", 0.07},
-		{"the admin sets each preference's weight", "balanced", "balanced", map[string]float64{"balanced": 0.12, "capability": 0.01}, "balanced", 0.12},
-		{"capability's weight is settable too", "capability", "balanced", map[string]float64{"capability": 0.01}, "capability", 0.01},
-		{"a negative weight becomes zero", "cost", "", map[string]float64{"cost": -0.3}, "cost", 0},
-		{"a weight above one is capped", "cost", "", map[string]float64{"cost": 7}, "cost", 1},
-		{"NaN becomes zero", "cost", "", map[string]float64{"cost": math.NaN()}, "cost", 0},
-		{"infinity is capped", "cost", "", map[string]float64{"cost": math.Inf(1)}, "cost", 1},
-		{"an adaptive key starts from the balanced weight", "adaptive", "cost", nil, "adaptive", 0.07},
-		{"a key without one follows an adaptive platform default", "", "adaptive", nil, "adaptive", 0.07},
-		{"the balanced weight the admin set is where an adaptive request starts", "adaptive", "", map[string]float64{"balanced": 0.12}, "adaptive", 0.12},
+		{"an unknown platform default falls to balanced", "", "turbo", nil, "balanced", 0.2},
+		{"the admin sets each preference's weight", "balanced", "balanced", autorouter.PreferenceWeights{"balanced": {Quality: 0.88, Cost: 0.12}, "capability": {Quality: 0.99, Cost: 0.01}}, "balanced", 0.12},
+		{"capability's weight is settable too", "capability", "balanced", autorouter.PreferenceWeights{"capability": {Quality: 0.99, Cost: 0.01}}, "capability", 0.01},
+		{"a negative weight becomes zero", "cost", "", autorouter.PreferenceWeights{"cost": {Quality: 1, Cost: -0.3}}, "cost", 0},
+		{"a weight above one is capped", "cost", "", autorouter.PreferenceWeights{"cost": {Quality: 1, Cost: 7}}, "cost", 1},
+		{"NaN becomes zero", "cost", "", autorouter.PreferenceWeights{"cost": {Quality: 1, Cost: math.NaN()}}, "cost", 0},
+		{"infinity is capped", "cost", "", autorouter.PreferenceWeights{"cost": {Quality: 1, Cost: math.Inf(1)}}, "cost", 1},
+		{"an adaptive key starts from the balanced weight", "adaptive", "cost", nil, "adaptive", 0.2},
+		{"a key without one follows an adaptive platform default", "", "adaptive", nil, "adaptive", 0.2},
+		{"the balanced weight the admin set is where an adaptive request starts", "adaptive", "", autorouter.PreferenceWeights{"balanced": {Quality: 0.88, Cost: 0.12}}, "adaptive", 0.12},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			setting.DefaultPreference, setting.CostWeights = tt.platform, tt.weights
+			setting.DefaultPreference, setting.PreferenceWeights = tt.platform, tt.weights
 			policy := setting.Policy(tt.key)
 			assert.Equal(t, tt.wantPreference, policy.Preference)
-			assert.Equal(t, tt.wantWeight, policy.CostWeight)
+			assert.Equal(t, tt.wantWeight, policy.DimensionWeights.Cost)
 		})
 	}
 }
@@ -126,10 +131,35 @@ func TestPolicyCarriesTheTierWeightsAnAdaptiveRequestReads(t *testing.T) {
 	saved := *setting
 	t.Cleanup(func() { *setting = saved })
 
-	setting.CostWeights = map[string]float64{"capability": -1, "cost": 7, "adaptive": 0.5}
+	setting.PreferenceWeights = autorouter.PreferenceWeights{
+		"capability": {Quality: -1, Cost: -1, Capacity: 2, Success: math.NaN(), Temperature: 0.2},
+		"cost":       {Quality: 1, Cost: 7, Capacity: 0.4, Success: 0.5, Temperature: 0.6},
+		"adaptive":   {Cost: 0.5},
+	}
 	policy := setting.Policy("adaptive")
-	assert.Equal(t, autorouter.TierWeights{Capability: 0, Balanced: 0.07, Cost: 1}, policy.Tiers, "缺的取内置权重，越界的限幅")
-	assert.Equal(t, 0.07, policy.CostWeight)
+	assert.Equal(t, autorouter.DimensionWeights{Quality: 0, Capacity: 1, Temperature: 0.2}, policy.Tiers["capability"])
+	assert.Equal(t, autorouter.DimensionWeights{Quality: 1, Cost: 1, Capacity: 0.4, Success: 0.5, Temperature: 0.6}, policy.Tiers["cost"])
+	assert.InDelta(t, 0.4, policy.Tiers["balanced"].Quality, 1e-9)
+	assert.Equal(t, 0.2, policy.Tiers["balanced"].Cost)
+	assert.Equal(t, 0.2, policy.Tiers["balanced"].Capacity)
+	assert.Equal(t, 0.2, policy.Tiers["balanced"].Success)
+	assert.Equal(t, 0.12, policy.Tiers["balanced"].Temperature)
+	assert.Equal(t, DefaultPreferenceWeights[autorouter.PreferenceBalanced], policy.DimensionWeights)
+}
+
+func TestPolicyAllZeroDimensionsFallBackToTheBuiltInTier(t *testing.T) {
+	setting := GetAutoRouterSetting()
+	saved := *setting
+	t.Cleanup(func() { *setting = saved })
+
+	setting.PreferenceWeights = autorouter.PreferenceWeights{
+		autorouter.PreferenceCost: {Quality: math.NaN(), Cost: -1, Temperature: 0},
+	}
+	policy := setting.Policy(autorouter.PreferenceCost)
+	expected := DefaultPreferenceWeights[autorouter.PreferenceCost]
+	expected.Temperature = 0
+	assert.Equal(t, expected, policy.DimensionWeights)
+	assert.Equal(t, 0.0, policy.DimensionWeights.Temperature, "四维全零回退时保留该档配置的温度")
 }
 
 func TestRankingFallsBackWhenTaxonomyChanged(t *testing.T) {
@@ -404,12 +434,15 @@ func TestValidateOption(t *testing.T) {
 		{"autorouter_setting.default_preference", "cost", true},
 		{"autorouter_setting.default_preference", "adaptive", true},
 		{"autorouter_setting.default_preference", "cheap", false},
-		{"autorouter_setting.cost_weights", `{"balanced":0.1}`, true},
-		{"autorouter_setting.cost_weights", `{"adaptive":0.1}`, false},
-		{"autorouter_setting.cost_weights", `{"balanced":2}`, false},
-		{"autorouter_setting.cost_weights", `{"cheap":0.1}`, false},
-		{"autorouter_setting.cost_weights", `[0.1]`, false},
-		{"autorouter_setting.cost_weights", `null`, false},
+		{"autorouter_setting.preference_weights", `{"balanced":{"quality":0.8,"cost":0.1,"capacity":0.2,"success":0.3,"temperature":0}}`, true},
+		{"autorouter_setting.preference_weights", `{"balanced":{"quality":2}}`, false},
+		{"autorouter_setting.preference_weights", `{"balanced":{"quality":"NaN"}}`, false},
+		{"autorouter_setting.preference_weights", `{"adaptive":{"cost":0.1}}`, false},
+		{"autorouter_setting.preference_weights", `{"balanced":{"cost":2}}`, false},
+		{"autorouter_setting.preference_weights", `{"balanced":{"temperature":-0.1}}`, false},
+		{"autorouter_setting.preference_weights", `{"cheap":{"cost":0.1}}`, false},
+		{"autorouter_setting.preference_weights", `[0.1]`, false},
+		{"autorouter_setting.preference_weights", `null`, false},
 		{"autorouter_setting.task_models", `null`, false},
 		{"autorouter_setting.task_models", `{"code.build":["a","b"]}`, true},
 		{"autorouter_setting.task_models", `{"code.build":"a"}`, false},

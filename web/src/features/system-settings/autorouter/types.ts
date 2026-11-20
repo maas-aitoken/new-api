@@ -32,8 +32,8 @@ export type AutoRouterSettings = {
   'autorouter_setting.previous_max_runes': number
   'autorouter_setting.cache_ttl_seconds': number
   'autorouter_setting.default_preference': string
-  /** JSON object: preference -> weight. */
-  'autorouter_setting.cost_weights': string
+  /** JSON object: preference -> four scoring weights and sampling temperature. */
+  'autorouter_setting.preference_weights': string
   'autorouter_setting.continuation_task_change': number
   'autorouter_setting.upgrade_benefit': number
   'autorouter_setting.default_effort': string

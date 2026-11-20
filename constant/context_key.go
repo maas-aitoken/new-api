@@ -62,7 +62,7 @@ const (
 	ContextKeyChannelMultiKeyIndex     ContextKey = "channel_multi_key_index"
 	ContextKeyChannelKey               ContextKey = "channel_key"
 	// ContextKeyChannelCostMultiplier 是本次尝试的 <渠道, 模型> 费用倍率（float64，未配置为 1），
-	// 选定渠道时按用户请求一侧的模型名算好，结束时乘进 relay_attempts.cost_actual。
+	// 选定渠道时按用户请求一侧的模型名算好，预扣、结算和 relay_attempts.cost_actual 都乘它。
 	ContextKeyChannelCostMultiplier ContextKey = "channel_cost_multiplier"
 
 	// ContextKeyChannelCapacityModel 是请求在所选渠道上算额度和计数用的公开名
@@ -141,6 +141,9 @@ const (
 	ContextKeyLanguage             ContextKey = "language"
 	ContextKeyIsStream             ContextKey = "is_stream"
 	ContextKeyResponseStreamStatus ContextKey = "response_stream_status"
+	// 已发给客户端的心跳（": PING"）字节数，值是 *atomic.Int64。重试判断用写出的总字节数减去它，
+	// 判断客户端是否已经收到响应正文：只发过心跳还能重试，收到过正文就不能再重试。
+	ContextKeyStreamHeartbeatBytes ContextKey = "stream_heartbeat_bytes"
 
 	// ContextKeyAuditLogged marks that the current request has already recorded
 	// a manage/operation audit log inside the handler. When set, the admin-audit

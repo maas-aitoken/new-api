@@ -22,6 +22,9 @@ import type { SecuritySettings } from '../types'
 export type RetrySettings = {
   RetryTimes: number
   AutomaticRetryStatusCodes: string
+  UpstreamRefusalRetryEnabled: boolean
+  UpstreamRefusalRetryAutoOnly: boolean
+  UpstreamRefusalOpeningTexts: string
 }
 export type HealthSettings = {
   ChannelDisableThreshold: string
@@ -50,6 +53,10 @@ export const defaultRequestPolicySettings: RequestPolicySettings = {
   RetryTimes: 0,
   AutomaticRetryStatusCodes:
     '100-199,300-399,401-407,409-499,500-503,505-523,525-599',
+  UpstreamRefusalRetryEnabled: false,
+  UpstreamRefusalRetryAutoOnly: false,
+  UpstreamRefusalOpeningTexts:
+    'The selected model cannot continue this conversation',
   ChannelDisableThreshold: '',
   AutomaticDisableChannelEnabled: false,
   AutomaticEnableChannelEnabled: false,

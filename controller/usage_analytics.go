@@ -54,6 +54,7 @@ func usagePlatformFromQuery(c *gin.Context) string {
 	return platform
 }
 
+// GetUsagePlatforms hides external platforms without usage the viewer can see.
 func GetUsagePlatforms(c *gin.Context) {
 	platforms := []gin.H{{"value": "local", "label": "Local"}}
 	configs, err := service.LoadExternalPlatformConfigs()
@@ -61,7 +62,27 @@ func GetUsagePlatforms(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
+	scope, _, err := usageViewerScope(c)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	var withUsage map[string]bool
+	if scope.UserIDs != nil {
+		names, err := model.ExternalPlatformsWithUsage(scope.UserIDs)
+		if err != nil {
+			common.ApiError(c, err)
+			return
+		}
+		withUsage = make(map[string]bool, len(names))
+		for _, name := range names {
+			withUsage[name] = true
+		}
+	}
 	for _, config := range configs {
+		if withUsage != nil && !withUsage[config.Name] {
+			continue
+		}
 		label := config.Label
 		if label == "" {
 			label = strings.ToUpper(config.Name)

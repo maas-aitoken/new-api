@@ -18,6 +18,7 @@ import (
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/observability"
 	"github.com/QuantumNous/new-api/pkg/attemptlog"
+	"github.com/QuantumNous/new-api/pkg/autorouter"
 	channelcapacity "github.com/QuantumNous/new-api/pkg/channel_capacity"
 	channelmetrics "github.com/QuantumNous/new-api/pkg/channel_metrics"
 	pluginruntime "github.com/QuantumNous/new-api/pkg/jsplugin"
@@ -62,6 +63,24 @@ func relayHandler(c *gin.Context, info *relaycommon.RelayInfo) *types.NewAPIErro
 		err = relay.TextHelper(c, info)
 	}
 	return err
+}
+
+// isTextGenerationRelay 表示这次请求会生成文字回答（Chat、Completions、Responses、Claude
+// Messages、Gemini generateContent），上游拒答时重试只作用于这些请求。
+func isTextGenerationRelay(c *gin.Context, relayFormat types.RelayFormat, info *relaycommon.RelayInfo) bool {
+	switch relayFormat {
+	case types.RelayFormatOpenAIRealtime:
+		return false
+	case types.RelayFormatClaude:
+		return true
+	case types.RelayFormatGemini:
+		return !strings.Contains(c.Request.URL.Path, "embed")
+	}
+	switch info.RelayMode {
+	case relayconstant.RelayModeChatCompletions, relayconstant.RelayModeCompletions, relayconstant.RelayModeResponses:
+		return true
+	}
+	return false
 }
 
 func geminiRelayHandler(c *gin.Context, info *relaycommon.RelayInfo) *types.NewAPIError {
@@ -178,6 +197,17 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		}
 	}()
 
+	// 上游拒答时重试：每次尝试写给客户端的数据先压着，拒答的尝试才能丢掉重来。
+	// 要装在心跳之前，处在最里层，写超时和心跳都包在它外面。「仅 auto」下锁定模型的
+	// 请求不装：拒答照原样透传，不重试。
+	var responseHold *helper.ResponseHold
+	if service.RefusalRetryApplies(c) && isTextGenerationRelay(c, relayFormat, relayInfo) {
+		responseHold = helper.InstallResponseHold(c, relayInfo)
+	}
+	// 开关打开但这个请求不参与拒答重试（「仅 auto」下的锁定模型请求）：拒答透传给
+	// 客户端后补一条错误日志，让拒答在使用日志的错误页里也能看到。
+	lockedRefusalPassthrough := operation_setting.UpstreamRefusalRetryEnabled && !service.RefusalRetryApplies(c)
+
 	generalSettings := operation_setting.GetGeneralSetting()
 	if relayFormat == types.RelayFormatClaude && relayInfo.IsStream && generalSettings.PingIntervalEnabled {
 		stopKeepAlive := helper.StartStreamKeepAlive(c, time.Duration(generalSettings.PingIntervalSeconds)*time.Second)
@@ -215,11 +245,37 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 	relayInfo.RetryIndex = 0
 	relayInfo.LastError = nil
 
-	for ; retryParam.GetRetry() <= common.RetryTimes; retryParam.IncreaseRetry() {
+	for ; retryParam.GetRetry() <= common.RetryTimes || common.GetContextKeyBool(c, constant.ContextKeyAutoRouted); retryParam.IncreaseRetry() {
 		relayInfo.StreamStatus = nil
 		relayInfo.PerformanceBusinessRejection = false
+		// 拒答原因按尝试记：上一次被改判的拒答不能带进这次成功的消费日志。
+		common.SetContextKey(c, constant.ContextKeyAdminRejectReason, "")
 		relayInfo.PerformanceOutputTokens = 0
 		relayInfo.RetryIndex = retryParam.GetRetry()
+		if retryParam.GetRetry() > 0 && common.GetContextKeyBool(c, constant.ContextKeyAutoRouted) {
+			nextModel, routeErr := middleware.NextAutoRetryModel(c)
+			if routeErr != nil {
+				newAPIError = routeErr
+				break
+			}
+			if nextModel == "" {
+				break
+			}
+			relayInfo.OriginModelName = nextModel
+			retryParam.ModelName = nextModel
+			common.SetContextKey(c, constant.ContextKeyAutoGroupIndex, 0)
+			common.SetContextKey(c, constant.ContextKeyAutoGroupRetryIndex, 0)
+			request, requestErr := helper.GetAndValidateRequest(c, relayFormat)
+			if requestErr != nil {
+				newAPIError = types.NewError(requestErr, types.ErrorCodeInvalidRequest, types.ErrOptionWithSkipRetry())
+				break
+			}
+			relayInfo.Request = request
+			if billingErr := prepareAutoRetryBilling(c, relayInfo); billingErr != nil {
+				newAPIError = billingErr
+				break
+			}
+		}
 		channel, channelErr := getChannel(c, relayInfo, retryParam)
 		if channelErr != nil {
 			logger.LogError(c, channelErr.Error())
@@ -230,6 +286,12 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		if billingErr := service.PrepareTieredBillingForSelectedGroup(c, relayInfo); billingErr != nil {
 			newAPIError = billingErr
 			break
+		}
+		if relayInfo.TieredBillingSnapshot == nil {
+			if billingErr := service.PrepareChannelBilling(c, relayInfo, relayInfo.PriceData.QuotaToPreConsume); billingErr != nil {
+				newAPIError = billingErr
+				break
+			}
 		}
 
 		bodyStorage, bodyErr := common.GetBodyStorage(c)
@@ -273,6 +335,12 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			ModelPrice:      priceData.ModelPrice,
 			UsePrice:        priceData.UsePrice,
 		})
+		autoRoute := service.GetAutoRouterResult(c)
+		autoModel := ""
+		if common.GetContextKeyBool(c, constant.ContextKeyAutoRouted) && autoRoute != nil {
+			autoModel = autoRoute.Route.Model
+			autorouter.BeginModelRequest(autoModel)
+		}
 
 		// The closure keeps the in-flight counter balanced even when the relay
 		// panics, because the deferred decrement still runs while unwinding.
@@ -287,6 +355,10 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			defer func() { c.Request = c.Request.WithContext(attemptParentCtx) }()
 			channelmetrics.IncInFlight(channel.Id)
 			defer channelmetrics.DecInFlight(channel.Id)
+			if responseHold != nil {
+				responseHold.Begin()
+				defer responseHold.Abandon()
+			}
 
 			switch relayFormat {
 			case types.RelayFormatOpenAIRealtime:
@@ -298,7 +370,14 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			default:
 				newAPIError = relayHandler(c, relayInfo)
 			}
+			if responseHold != nil {
+				newAPIError = responseHold.Finish(c, newAPIError)
+			}
 		}()
+		if newAPIError != nil && newAPIError.GetErrorCode() == types.ErrorCodeUpstreamRefusal {
+			// 被改判的尝试已经照常结算；下一次尝试新开计费会话，最终失败时也不会退掉这次的费用。
+			service.CloseSettledAttemptBilling(relayInfo)
+		}
 		attemptStatus := http.StatusOK
 		if newAPIError != nil {
 			attemptStatus = newAPIError.StatusCode
@@ -330,19 +409,54 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			common.GetContextKeyInt(c, constant.ContextKeySchedulerInputTokens),
 			common.GetContextKeyInt(c, constant.ContextKeySchedulerOutputTokens))
 
-		attempt.Finish(c, finishInputFor(c, relayInfo, newAPIError))
+		outcome := attempt.Finish(c, finishInputFor(c, relayInfo, newAPIError))
+		if autoModel != "" {
+			switch outcome {
+			case attemptlog.OutcomeClientCancelled, attemptlog.OutcomeInvalidRequest,
+				attemptlog.OutcomeContextLengthExceeded, attemptlog.OutcomeQuotaExhausted:
+			default:
+				autorouter.FinishModelRequest(autoModel, outcome == attemptlog.OutcomeOK)
+			}
+		}
 
 		if newAPIError == nil {
+			if retryParam.GetRetry() > 0 {
+				service.RememberAutoRetrySuccess(c)
+			}
 			service.ResetChannelModelFailureConsecutive(channel.Id, relayInfo.OriginModelName)
 			service.MarkRequestPolicySuccess(c, relayInfo.StreamStatus)
 			relayInfo.LastError = nil
+			// 「仅 auto」下锁定模型的请求拒答照原样透传（200、照常计费）；补一条错误日志留痕。
+			if lockedRefusalPassthrough && relayInfo.PerformanceBusinessRejection && constant.ErrorLogEnabled {
+				other := model.NewLogOther()
+				other.SetPublic("error_type", "upstream_refusal")
+				other.SetPublic("error_code", "upstream_refusal_passthrough")
+				other.SetPublic("status_code", http.StatusOK)
+				service.AppendRelayLogAdminInfo(c, relayInfo, other)
+				startTime := common.GetContextKeyTime(c, constant.ContextKeyRequestStartTime)
+				if startTime.IsZero() {
+					startTime = time.Now()
+				}
+				model.RecordErrorLog(c, relayInfo.UserId, channel.Id, relayInfo.OriginModelName, c.GetString("token_name"),
+					"upstream refusal passed through without retry: "+common.GetContextKeyString(c, constant.ContextKeyAdminRejectReason),
+					relayInfo.TokenId, int(time.Since(startTime).Seconds()), relayInfo.IsStream, relayInfo.UsingGroup, other)
+			}
 			return
 		}
 
 		newAPIError = service.NormalizeViolationFeeError(newAPIError)
 		relayInfo.LastError = newAPIError
 
-		decision := service.DecideRelayRetry(c, newAPIError, common.RetryTimes-retryParam.GetRetry())
+		retryTimes := common.RetryTimes - retryParam.GetRetry()
+		if common.GetContextKeyBool(c, constant.ContextKeyAutoRouted) {
+			// The ordinary budget applies to channels of one model. Auto retries
+			// instead continue until every eligible model has had one attempt.
+			retryTimes = max(retryTimes, 1)
+		}
+		decision := service.DecideRelayRetry(c, newAPIError, retryTimes)
+		if common.GetContextKeyBool(c, constant.ContextKeyAutoRouted) && decision.Action == "retry" {
+			service.ExcludeAutoModel(c, relayInfo.OriginModelName)
+		}
 		service.RecordPolicyFailure(c, channel.Id, newAPIError, decision)
 		processChannelError(c, *types.NewChannelError(channel.Id, channel.Type, channel.Name, channel.ChannelInfo.IsMultiKey, common.GetContextKeyString(c, constant.ContextKeyChannelKey), channel.GetAutoBan()), newAPIError, relayInfo)
 
@@ -452,7 +566,7 @@ func finishInputFor(c *gin.Context, info *relaycommon.RelayInfo, apiErr *types.N
 	// 费用倍率在选定渠道时（SetupContextForSelectedChannel，每次尝试都会经过）按用户请求
 	// 一侧的模型名算好放在上下文里。这里不按 UpstreamModelName 查：那是映射后的上游名，
 	// 流式响应还会把它改成上游回报的模型名（比如带日期的快照名），会查不到。
-	// 倍率不参与计费，只乘 relay_attempts.cost_actual。
+	// 计费已按同一倍率扣过（service.ChannelBillingMultiplier），这里只把它记进 relay_attempts。
 	if multiplier, ok := common.GetContextKeyType[float64](c, constant.ContextKeyChannelCostMultiplier); ok && multiplier > 0 {
 		in.CostMultiplier = multiplier
 	}
@@ -848,6 +962,7 @@ func executeTaskSubmissionWith(
 		OriginModelName: relayInfo.OriginModelName,
 		PerCallBilling:  common.StringsContains(constant.TaskPricePatches, relayInfo.OriginModelName) || relayInfo.PriceData.UsePrice,
 		TieredSnapshot:  relayInfo.TieredBillingSnapshot,
+		CostMultiplier:  service.ChannelBillingMultiplier(c, relayInfo),
 	}
 	task.Quota = result.Quota
 	task.Data = result.TaskData

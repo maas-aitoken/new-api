@@ -47,12 +47,7 @@ import { useAutoRouterStatus, useSaveAutoRouterOptions } from './hooks'
 import { RankingStatus } from './ranking-status'
 import { RankingViewer } from './ranking-viewer'
 import { SecretField } from './secret-field'
-import {
-  changedOptions,
-  integerBetween,
-  parseCostWeights,
-  plainText,
-} from './settings'
+import { changedOptions, integerBetween, plainText } from './settings'
 import type { AutoRouterSettings } from './types'
 
 const SECRET_NAMES = [
@@ -189,11 +184,7 @@ export function RankingSection(props: RankingSectionProps) {
         </SettingsForm>
       </Form>
 
-      <RankingViewer
-        costWeights={parseCostWeights(
-          props.settings['autorouter_setting.cost_weights']
-        )}
-      />
+      <RankingViewer />
     </SettingsSection>
   )
 }

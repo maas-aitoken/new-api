@@ -19,48 +19,70 @@ For commercial licensing, please contact support@quantumnous.com
 import { describe, expect, test } from 'vitest'
 
 import {
-  DEFAULT_COST_WEIGHTS,
+  DEFAULT_PREFERENCE_WEIGHTS,
   changedOptions,
   normalizeDifficultyEfforts,
-  parseCostWeights,
-  serializeCostWeights,
+  parsePreferenceWeights,
+  serializePreferenceWeights,
 } from '../settings'
 
-describe('parseCostWeights', () => {
+describe('parsePreferenceWeights', () => {
   test.each([
     ['an empty object', '{}'],
     ['malformed JSON', '{not json'],
     ['JSON null', 'null'],
     ['an empty string', ''],
   ])('%s keeps every built-in weight', (_name, raw) => {
-    expect(parseCostWeights(raw)).toEqual(DEFAULT_COST_WEIGHTS)
+    expect(parsePreferenceWeights(raw)).toEqual(DEFAULT_PREFERENCE_WEIGHTS)
   })
 
-  test('a stored weight replaces its default and the others keep theirs', () => {
-    expect(parseCostWeights('{"balanced":0.12}')).toEqual({
-      ...DEFAULT_COST_WEIGHTS,
-      balanced: 0.12,
+  test('stored dimensions replace their defaults and the others keep theirs', () => {
+    expect(
+      parsePreferenceWeights(
+        '{"balanced":{"quality":0.4,"cost":0.12,"temperature":0}}'
+      )
+    ).toEqual({
+      ...DEFAULT_PREFERENCE_WEIGHTS,
+      balanced: {
+        ...DEFAULT_PREFERENCE_WEIGHTS.balanced,
+        quality: 0.4,
+        cost: 0.12,
+        temperature: 0,
+      },
     })
   })
 
-  test('a non-numeric weight and an unknown preference are ignored', () => {
-    expect(parseCostWeights('{"cost":"high","cheap":0.9}')).toEqual(
-      DEFAULT_COST_WEIGHTS
-    )
+  test('a stored policy without quality keeps the built-in quality strength', () => {
+    expect(parsePreferenceWeights('{"balanced":{"cost":0.2}}')).toEqual({
+      ...DEFAULT_PREFERENCE_WEIGHTS,
+      balanced: { ...DEFAULT_PREFERENCE_WEIGHTS.balanced, cost: 0.2 },
+    })
   })
 
-  test('adaptive has no weight of its own, so a stored one is ignored and never written back', () => {
-    const weights = parseCostWeights('{"adaptive":0.5,"cost":0.2}')
+  test('a non-numeric dimension and an unknown preference are ignored', () => {
+    expect(
+      parsePreferenceWeights('{"cost":"high","cheap":{"cost":0.9}}')
+    ).toEqual(DEFAULT_PREFERENCE_WEIGHTS)
+  })
 
-    expect(weights).toEqual({ ...DEFAULT_COST_WEIGHTS, cost: 0.2 })
-    expect(serializeCostWeights(weights)).not.toContain('adaptive')
+  test('adaptive has no weights of its own, so a stored one is ignored and never written back', () => {
+    const weights = parsePreferenceWeights(
+      '{"adaptive":{"cost":0.5},"cost":{"cost":0.2}}'
+    )
+
+    expect(weights).toEqual({
+      ...DEFAULT_PREFERENCE_WEIGHTS,
+      cost: { ...DEFAULT_PREFERENCE_WEIGHTS.cost, cost: 0.2 },
+    })
+    expect(serializePreferenceWeights(weights)).not.toContain('adaptive')
   })
 })
 
-test('serializeCostWeights writes every preference in a fixed order', () => {
-  expect(
-    serializeCostWeights({ cost: 0.4, capability: 0, balanced: 0.1 })
-  ).toBe('{"capability":0,"balanced":0.1,"cost":0.4}')
+test('serializePreferenceWeights writes every preference in a fixed order', () => {
+  const weights = parsePreferenceWeights('{}')
+  expect(serializePreferenceWeights(weights)).toBe(
+    '{"capability":{"quality":0.6,"cost":0,"capacity":0.2,"success":0.2,"temperature":0.12},"balanced":{"quality":0.4,"cost":0.2,"capacity":0.2,"success":0.2,"temperature":0.12},"cost":{"quality":0.2,"cost":0.4,"capacity":0.2,"success":0.2,"temperature":0.12}}'
+  )
 })
 
 describe('normalizeDifficultyEfforts', () => {

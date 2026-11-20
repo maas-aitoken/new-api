@@ -20,11 +20,17 @@ import type { AutoRouterResponse } from '../types'
 
 export type RouteLogOutcome = 'routed' | 'failed'
 
+/**
+ * 'all' 走管理员接口看全部留痕；'self' 走 /self 接口，服务端只返回当前用户自己的。
+ */
+export type RouteLogScope = 'all' | 'self'
+
 /** One row of the routing log list; the process itself is only in the detail. */
 export type RouteLogItem = {
   id: number
   created_at: number
   request_id: string
+  request_params: string
   user_id: number
   token_id: number
   using_group: string
@@ -48,6 +54,7 @@ export type RouteLogPage = {
 /** The list filters as typed into the toolbar; an empty string means no filter. */
 export type RouteLogFilters = {
   request_id: string
+  request_params: string
   user_id: string
   model: string
   task_type: string
@@ -83,13 +90,16 @@ export type RoutePickCandidate = {
   channel_id?: number
   channels?: number
   cost_source?: RouteCostSource
-  /**
-   * 调度器回答了预览、却没用上它给这个模型的答案时的原因（not_cached、error、unusable_channel、
-   * over_limit），这个模型按原生规则估算。
-   */
   preview?: string
-  discount: number
+  /** Five-minute request count and successful/failed outcome samples. */
+  requests: number
+  samples: number
+  /** The four normalized routing dimensions. */
+  cost_score: number
+  capacity: number
+  success: number
   utility: number
+  probability: number
 }
 
 /**
@@ -102,10 +112,18 @@ export type RoutePreviewOutcome = {
   http_status?: number
 }
 
+export type PickDimensions = {
+  quality: number
+  cost: number
+  capacity: number
+  success: number
+  temperature: number
+}
+
 export type RoutePick = {
   chosen: string
-  weight: number
   band: RoutePickCandidate[]
+  dimensions: PickDimensions
   /** 没配调度器、或这次没估算比较成本时没有。 */
   preview?: RoutePreviewOutcome
 }
@@ -153,6 +171,7 @@ export type RouteTraceValidity = {
   profiles?: string[]
 }
 
+/** Continuation keeps the previous model while it can serve the request. */
 export type RouteTraceContinuation = {
   previous: string
   task_change: number
@@ -160,17 +179,18 @@ export type RouteTraceContinuation = {
   continued: boolean
 }
 
-/** How an adaptive request got its cost weight; absent for a key with a fixed preference. */
+/** How an adaptive request got its policy; absent for a key with a fixed preference. */
 export type RouteTraceMode = {
-  /** Empty when the weight was judged; 'no_answer' when it fell back to the balanced weight. */
+  /** Empty when the policy was judged; 'no_answer' when it used the balanced policy. */
   reason?: string
   /** Each preference's share of the judged probability. */
   shares?: Record<string, number>
   /** Expected position on the capability (0), balanced (1), cost (2) scale. */
   position: number
   weight: number
-  /** The platform's three weights when the request ran. */
-  tiers: { capability: number; balanced: number; cost: number }
+  weights: PickDimensions
+  /** The platform's three policies when the request ran. */
+  tiers: Record<string, PickDimensions>
 }
 
 export type RouteTraceEffort = {

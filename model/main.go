@@ -566,6 +566,9 @@ func migrateClickHouseLogDB() error {
 	if err := LOG_DB.Exec(clickHouseAutoRouteLogCreateTableSQL(ttlDays)).Error; err != nil {
 		return err
 	}
+	if err := LOG_DB.Exec("ALTER TABLE auto_route_logs ADD COLUMN IF NOT EXISTS request_params String DEFAULT '' AFTER request_id").Error; err != nil {
+		return err
+	}
 	return syncClickHouseTableTTL("auto_route_logs", ttlDays)
 }
 
@@ -728,6 +731,7 @@ CREATE TABLE IF NOT EXISTS auto_route_logs (
 	id Int64 DEFAULT 0,
 	created_at Int64 DEFAULT 0,
 	request_id String DEFAULT '',
+	request_params String DEFAULT '',
 	user_id Int32 DEFAULT 0,
 	token_id Int32 DEFAULT 0,
 	using_group String DEFAULT '',

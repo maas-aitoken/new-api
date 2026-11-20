@@ -77,14 +77,12 @@ type AutoRouterSetting struct {
 	// refresh; like TaskModels it is ignored while the stored lists predate the
 	// current task types.
 	TaskScores map[string]map[string]float64 `json:"task_scores"`
-	// DefaultPreference is the preference of a key that sets none: capability,
-	// balanced or cost.
+	// DefaultPreference is the preference of a key that sets none: one of the three
+	// fixed preferences, or adaptive to blend them from the request's judgment.
 	DefaultPreference string `json:"default_preference"`
-	// CostWeights maps a preference to the most leaderboard score (0 to 1) a model
-	// may give up for being cheaper. The pick never falls below the best score by
-	// more than this; zero means the best-scored model always wins. A preference
-	// missing from the map uses its built-in weight.
-	CostWeights map[string]float64 `json:"cost_weights"`
+	// PreferenceWeights maps a preference to its four scoring strengths and
+	// sampling temperature. A preference missing from the map uses its built-in policy.
+	PreferenceWeights autorouter.PreferenceWeights `json:"preference_weights"`
 	// RouteLogMode decides which auto requests leave a routing log: off, decisions
 	// (a request that called the classifier, or found no model at all) or all.
 	// RouteLogRetentionDays is how long those logs are kept; a ClickHouse log
@@ -119,11 +117,11 @@ func (s *AutoRouterSetting) RouteLogRetention() time.Duration {
 	return time.Duration(days) * 24 * time.Hour
 }
 
-// defaultCostWeights are the weights of preferences the option leaves out.
-var defaultCostWeights = map[string]float64{
-	autorouter.PreferenceCapability: 0,
-	autorouter.PreferenceBalanced:   0.07,
-	autorouter.PreferenceCost:       0.3,
+// DefaultPreferenceWeights are the weights of preferences the option leaves out.
+var DefaultPreferenceWeights = autorouter.PreferenceWeights{
+	autorouter.PreferenceCapability: {Quality: 0.6, Cost: 0, Capacity: 0.2, Success: 0.2, Temperature: 0.12},
+	autorouter.PreferenceBalanced:   {Quality: 0.4, Cost: 0.2, Capacity: 0.2, Success: 0.2, Temperature: 0.12},
+	autorouter.PreferenceCost:       {Quality: 0.2, Cost: 0.4, Capacity: 0.2, Success: 0.2, Temperature: 0.12},
 }
 
 var autoRouterSetting = AutoRouterSetting{
@@ -138,7 +136,7 @@ var autoRouterSetting = AutoRouterSetting{
 	UpgradeBenefit:           0.5,
 	ContinuationTaskChange:   0.5,
 	DefaultPreference:        autorouter.PreferenceBalanced,
-	CostWeights:              maps.Clone(defaultCostWeights),
+	PreferenceWeights:        maps.Clone(DefaultPreferenceWeights),
 	RouteLogMode:             RouteLogDecisions,
 	RouteLogRetentionDays:    DefaultRouteLogRetentionDays,
 }
@@ -210,20 +208,32 @@ func (s *AutoRouterSetting) Ranking() Ranking {
 	}
 }
 
-// costWeight is the weight of a fixed preference on the score scale: the option's,
-// else the built-in one.
-func (s *AutoRouterSetting) costWeight(preference string) float64 {
-	weight, set := s.CostWeights[preference]
+// preferenceWeights returns the option's policy for a preference, else its
+// built-in one. Direct database edits are bounded before reaching scoring.
+func (s *AutoRouterSetting) preferenceWeights(preference string) autorouter.DimensionWeights {
+	weights, set := s.PreferenceWeights[preference]
 	if !set {
-		weight = defaultCostWeights[preference]
+		weights = DefaultPreferenceWeights[preference]
 	}
-	return scoreWeight(weight)
+	bounded := autorouter.DimensionWeights{
+		Quality:     scoreWeight(weights.Quality),
+		Cost:        scoreWeight(weights.Cost),
+		Capacity:    scoreWeight(weights.Capacity),
+		Success:     scoreWeight(weights.Success),
+		Temperature: scoreWeight(weights.Temperature),
+	}
+	if bounded.Quality+bounded.Cost+bounded.Capacity+bounded.Success == 0 {
+		defaults := DefaultPreferenceWeights[preference]
+		bounded.Quality, bounded.Cost = defaults.Quality, defaults.Cost
+		bounded.Capacity, bounded.Success = defaults.Capacity, defaults.Success
+	}
+	return bounded
 }
 
 // Policy builds the routing policy for one request. preference is the key's own;
 // one that is empty or unknown uses DefaultPreference, and that falling back to
-// balanced when it is unknown too. An adaptive preference starts from the balanced
-// weight and takes the weight its mode answer reads from the three tiers.
+// balanced when it is unknown too. An adaptive preference starts from balanced
+// and reads its weights from the three tiers using its mode answer.
 func (s *AutoRouterSetting) Policy(preference string) autorouter.Policy {
 	ranking := s.Ranking()
 	for _, candidate := range []string{preference, s.DefaultPreference, autorouter.PreferenceBalanced} {
@@ -232,10 +242,9 @@ func (s *AutoRouterSetting) Policy(preference string) autorouter.Policy {
 			break
 		}
 	}
-	tiers := autorouter.TierWeights{
-		Capability: s.costWeight(autorouter.PreferenceCapability),
-		Balanced:   s.costWeight(autorouter.PreferenceBalanced),
-		Cost:       s.costWeight(autorouter.PreferenceCost),
+	tiers := autorouter.PreferenceWeights{}
+	for _, tier := range autorouter.Preferences {
+		tiers[tier] = s.preferenceWeights(tier)
 	}
 	return autorouter.Policy{
 		TaskModels:             ranking.TaskModels,
@@ -246,8 +255,8 @@ func (s *AutoRouterSetting) Policy(preference string) autorouter.Policy {
 		ContinuationTaskChange: s.ContinuationTaskChange,
 		TaskScores:             ranking.TaskScores,
 		Preference:             preference,
-		CostWeight:             tiers.Of(preference),
 		Tiers:                  tiers,
+		DimensionWeights:       tiers.Of(preference),
 	}
 }
 

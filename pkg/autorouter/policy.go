@@ -36,19 +36,17 @@ type Policy struct {
 	// survives, and the effort may go up but never down.
 	ContinuationTaskChange float64
 	// TaskScores maps a task type to the quality score of its models. A decision
-	// that routes by a ranking picks among its scored models by quality and price; models
-	// without a score are only a fallback in TaskModels order. The scores under
-	// DefaultProfile rank DefaultModels the same way.
+	// that routes by a ranking scores every scored, servable model by quality, cost,
+	// capacity and success; models without a score are only a fallback in TaskModels order.
 	TaskScores map[string]map[string]float64
-	// Preference names the choice this request's key made between capability and
-	// price, and CostWeight is the most quality score that choice lets a model give
-	// up for being cheaper. It bounds how far the pick can fall below the best
-	// score; zero means the best-scored model always wins.
+	// Preference names the capability/cost balance chosen by this request's key.
 	Preference string
-	CostWeight float64
-	// Tiers are the platform's weights of the three fixed preferences. An adaptive
-	// request replaces CostWeight with a weight read from them by its mode answer.
-	Tiers TierWeights
+	// Tiers are the platform's configured strengths of the three fixed preferences.
+	// An adaptive request replaces DimensionWeights with strengths interpolated from them.
+	Tiers PreferenceWeights
+	// DimensionWeights holds the configured strengths; pickModels normalizes the four
+	// dimensions and leaves Temperature independent.
+	DimensionWeights DimensionWeights
 }
 
 // DefaultProfile is the ranking DefaultModels follow when no task-specific
@@ -135,7 +133,9 @@ func SelectRoute(decision *Decision, previous *Route, policy Policy, candidates 
 			probabilities = decision.ModeProbabilities
 		}
 		mode := policy.Tiers.Blend(probabilities)
-		policy.CostWeight = mode.Weight
+		policy.DimensionWeights = mode.Weights
+		mode.Weights = mode.Weights.Normalized()
+		mode.Weight = mode.Weights.Cost
 		trace.Mode = &mode
 	}
 	available, overridable := candidates.Available, candidates.Overridable
@@ -204,7 +204,7 @@ func SelectRoute(decision *Decision, previous *Route, policy Policy, candidates 
 }
 
 // choose picks a model from one ranking's list. With scores and prices it
-// compares quality and price under the policy's preference; otherwise, or when no
+// compares the four dimensions under the policy's weights; otherwise, or when no
 // scored model is servable, it takes the first available model in list order.
 // picked is set only for the comparison. Every call adds a step to trace.
 // ignoreClientReasoning 表示 available 撇开了客户端的推理字段（档位由判断定下时走 overridable），
@@ -221,7 +221,7 @@ func (p Policy) choose(profile string, models []string, available func(string) b
 				return candidates.Costs(names, effort, ignoreClientReasoning)
 			}
 		}
-		pick, ok := pickByQualityCost(models, scores, p.CostWeight, servable, candidates.Price, costs, candidates.Why)
+		pick, ok := pickModels(models, scores, p.DimensionWeights, servable, candidates.Price, costs, candidates.Metrics, candidates.Random, candidates.Why)
 		step.Skipped, step.SkippedMore = pick.skipped, pick.skippedMore
 		if ok {
 			picked, model, found = &pick, pick.Chosen, true
@@ -325,7 +325,7 @@ type Result struct {
 	// 任务类型是二级类，或任务类型是 unknown 但大模型收益达到提档阈值。其余情况（任务类型
 	// 是 unknown、没有合法判断、辅助请求）为 false，不碰客户端字段。
 	EffortOverride bool `json:"effort_override,omitempty"`
-	// Pick 是模型按质量和价格在多个候选里选出时的比较过程；沿用上一轮模型、
+	// Pick 是模型按质量、成本、容量和成功率在多个候选里选出时的比较过程；沿用上一轮模型、
 	// 兜底和按榜单顺序取第一个时为 nil。
 	Pick *Pick `json:"pick,omitempty"`
 	// AppliedEffort 和 EffortAction 是按模型的推理声明收敛后真正写进请求体的结果。

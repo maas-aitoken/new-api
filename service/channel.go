@@ -207,6 +207,10 @@ func ShouldDisableChannel(err *types.NewAPIError) bool {
 	if err == nil {
 		return false
 	}
+	// 上游拒答是内容问题，渠道本身是好的；错误信息里还带着上游原文，不能拿去匹配禁用关键词。
+	if err.GetErrorCode() == types.ErrorCodeUpstreamRefusal {
+		return false
+	}
 	if types.IsChannelError(err) {
 		return true
 	}

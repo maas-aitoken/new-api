@@ -201,6 +201,22 @@ func handleFinalStream(c *gin.Context, info *relaycommon.RelayInfo, resp *dto.Ch
 	return nil
 }
 
+// markGeminiBlockedFinish 把候选因安全、版权等策略被截停（finishReason 为 SAFETY 等）记成上游拒答，
+// 流式和非流式都要在写给客户端之前调用：上游拒答时重试靠这个标记判断这次尝试要不要改判为失败。
+func markGeminiBlockedFinish(c *gin.Context, info *relaycommon.RelayInfo, geminiResponse *dto.GeminiChatResponse) {
+	for _, candidate := range geminiResponse.Candidates {
+		if candidate.FinishReason == nil {
+			continue
+		}
+		switch *candidate.FinishReason {
+		case "SAFETY", "RECITATION", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII", "IMAGE_SAFETY", "IMAGE_PROHIBITED_CONTENT", "IMAGE_RECITATION":
+			info.PerformanceBusinessRejection = true
+			common.SetContextKey(c, constant.ContextKeyAdminRejectReason, "gemini_finish_reason="+*candidate.FinishReason)
+			return
+		}
+	}
+}
+
 func geminiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response, callback func(data string, geminiResponse *dto.GeminiChatResponse) bool) (*dto.Usage, *types.NewAPIError) {
 	var usage = &dto.Usage{}
 	var imageCount int
@@ -223,13 +239,10 @@ func geminiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 			common.SetContextKey(c, constant.ContextKeyAdminRejectReason, fmt.Sprintf("gemini_block_reason=%s", *geminiResponse.PromptFeedback.BlockReason))
 		}
 		info.ObserveResponseModel(ojson.Get(data, "modelVersion").Str)
+		markGeminiBlockedFinish(c, info, &geminiResponse)
 		for _, candidate := range geminiResponse.Candidates {
 			if candidate.FinishReason == nil || *candidate.FinishReason == "" || *candidate.FinishReason == "FINISH_REASON_UNSPECIFIED" {
 				continue
-			}
-			switch *candidate.FinishReason {
-			case "SAFETY", "RECITATION", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII", "IMAGE_SAFETY", "IMAGE_PROHIBITED_CONTENT", "IMAGE_RECITATION":
-				info.PerformanceBusinessRejection = true
 			}
 			info.StreamStatus.MarkCompleted()
 		}
@@ -462,6 +475,7 @@ func GeminiChatHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.R
 		}
 		return &usage, nil
 	}
+	markGeminiBlockedFinish(c, info, &geminiResponse)
 	fullTextResponse := responseGeminiChat2OpenAI(c, &geminiResponse)
 	fullTextResponse.Model = info.UpstreamModelName
 	usage := buildUsageFromGeminiResponse(c, info, &geminiResponse)

@@ -69,17 +69,21 @@ func ValidateOption(key, value string) error {
 		}
 	case "route_log_retention_days":
 		return integerInRange(value, 1, MaxRouteLogRetentionDays)
-	case "cost_weights":
-		var weights map[string]float64
+	case "preference_weights":
+		var weights autorouter.PreferenceWeights
 		if !decodeJSON(value, &weights) {
-			return common.NewMessage("Must be a JSON object that maps preferences to numbers between 0 and 1")
+			return common.NewMessage("Must be a JSON object that maps preferences to routing weights between 0 and 1")
 		}
-		for preference, weight := range weights {
+		for preference, policy := range weights {
 			if !slices.Contains(autorouter.Preferences, preference) {
 				return common.NewMessage("Unknown preference {{preference}}", map[string]any{"preference": preference})
 			}
-			if weight < 0 || weight > 1 {
-				return common.NewMessage("Must be a JSON object that maps preferences to numbers between 0 and 1")
+			if math.IsNaN(policy.Quality) || policy.Quality < 0 || policy.Quality > 1 ||
+				math.IsNaN(policy.Cost) || policy.Cost < 0 || policy.Cost > 1 ||
+				math.IsNaN(policy.Capacity) || policy.Capacity < 0 || policy.Capacity > 1 ||
+				math.IsNaN(policy.Success) || policy.Success < 0 || policy.Success > 1 ||
+				math.IsNaN(policy.Temperature) || policy.Temperature < 0 || policy.Temperature > 1 {
+				return common.NewMessage("Must be a JSON object that maps preferences to routing weights between 0 and 1")
 			}
 		}
 	case "task_models":

@@ -26,6 +26,7 @@ type externalUsageAnalyticsRow struct {
 // Columns are qualified because users is joined.
 const externalUsageMetricsSelect = "COALESCE(SUM(external_quota_data.count), 0) AS request_count, " +
 	"COALESCE(SUM(external_quota_data.quota), 0) AS quota, " +
+	"COALESCE(SUM(external_quota_data.quota), 0) AS list_quota, " +
 	"COALESCE(SUM(external_quota_data.token_used), 0) AS token_used, " +
 	"COALESCE(SUM(external_quota_data.input_tokens), 0) AS input_tokens, " +
 	"COALESCE(SUM(external_quota_data.completion_tokens), 0) AS completion_tokens, " +

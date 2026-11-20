@@ -32,6 +32,8 @@ import (
 	"github.com/tidwall/sjson"
 )
 
+const ginKeyAutoRetryReroute = "auto_retry_reroute"
+
 type ModelRequest struct {
 	Model    string `json:"model"`
 	Group    string `json:"group,omitempty"`
@@ -278,7 +280,7 @@ func Distribute() func(c *gin.Context) {
 							// 两种口径的备忘都记上，后面的兜底和最终解析都不会再选它。
 							refusals[candidate], refusals[candidate+"|auto-reasoning"] = reason, reason
 						}}
-					result, err := service.ResolveAutoModel(c, service.AutoCandidates{
+					candidates := service.AutoCandidates{
 						Serves:   serves,
 						Why:      func(candidate string) string { return refusal(candidate, true) },
 						Channels: func(candidate string) []int { return channels[candidate] },
@@ -287,7 +289,8 @@ func Distribute() func(c *gin.Context) {
 							return quote.PricePerMillion, quote.Kind == helper.RoutingPerToken
 						},
 						Costs: costs.estimate,
-					})
+					}
+					result, err := service.ResolveAutoModel(c, candidates)
 					if capabilityGate != nil {
 						capabilityGate.LogSummary(c)
 					}
@@ -300,14 +303,27 @@ func Distribute() func(c *gin.Context) {
 						return
 					}
 					modelRequest.Model = result.ResolvedModel
-					// 透传渠道（全局或渠道级）不重建请求体而是原样转发存储的字节，
-					// 所以 auto 定下的结论要直接写进存储的请求体：model 改成解析后的模型
-					// （否则上游收到的仍是 "auto"，而计费和日志记的是解析后的模型），
-					// 推理档位写进入站协议自己的字段。非透传渠道也读这份请求体。
-					protocol, _ := service.AutoRouterProtocol(c.Request.URL.Path)
-					if err := rewriteJSONBody(c, func(body []byte) ([]byte, error) {
-						return autorouter.PatchBody(body, protocol, result.ResolvedModel, result.EffortAction, result.AppliedEffort)
-					}); err != nil {
+					c.Set(ginKeyAutoRetryReroute, func() (string, *types.NewAPIError) {
+						next, found := service.ResolveAutoRetryModel(c, candidates)
+						if !found {
+							return "", nil
+						}
+						if err := patchAutoRoutedBody(c, next); err != nil {
+							return "", types.NewError(err, types.ErrorCodeInvalidRequest)
+						}
+						allowedChannels := usableChannelIDs(c, next.ResolvedModel, usingGroup, c.Request.URL.Path, model.GetRoutableChannelIDsForGroupModel)
+						constraints.Filters = slices.DeleteFunc(constraints.Filters, func(filter taskdto.ChannelFilter) bool {
+							return filter.Kind == taskdto.FilterCapability
+						})
+						if capabilityGate != nil {
+							narrowed := capabilityGate.FilterChannels(c, next.ResolvedModel, allowedChannels)
+							if len(narrowed) != len(allowedChannels) {
+								constraints.AddFilter(taskdto.ChannelFilter{Kind: taskdto.FilterCapability, AllowedChannelIDs: narrowed})
+							}
+						}
+						return next.ResolvedModel, nil
+					})
+					if err := patchAutoRoutedBody(c, result); err != nil {
 						abortWithOpenAiMessage(c, http.StatusInternalServerError, "failed to rewrite the auto routed request: "+err.Error())
 						return
 					}

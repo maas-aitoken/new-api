@@ -52,7 +52,7 @@ export function routeProcessSteps(
     steps.push('validity')
   }
   if (trace.continuation) steps.push('continuation')
-  // The cost weight only matters to a request that compared quality and price. One
+  // The adaptive policy only matters to a request that compared model dimensions. One
   // that kept the previous model or took the first servable model never used it.
   if (trace.mode && trace.ladder?.some((step) => step.outcome === 'compared')) {
     steps.push('mode')
