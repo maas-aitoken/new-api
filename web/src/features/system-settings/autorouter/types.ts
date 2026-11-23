@@ -31,6 +31,7 @@ export type AutoRouterSettings = {
   'autorouter_setting.max_runes': number
   'autorouter_setting.previous_max_runes': number
   'autorouter_setting.cache_ttl_seconds': number
+  'autorouter_setting.max_retries': number
   'autorouter_setting.default_preference': string
   /** JSON object: preference -> four scoring weights and sampling temperature. */
   'autorouter_setting.preference_weights': string

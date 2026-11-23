@@ -42,6 +42,7 @@ const settings: AutoRouterSettings = {
   'autorouter_setting.max_runes': 2000,
   'autorouter_setting.previous_max_runes': 500,
   'autorouter_setting.cache_ttl_seconds': 7200,
+  'autorouter_setting.max_retries': 10,
   'autorouter_setting.default_preference': 'balanced',
   'autorouter_setting.preference_weights': '{}',
   'autorouter_setting.continuation_task_change': 0.5,
@@ -206,4 +207,34 @@ test('enabled without any classifier endpoint warns, and typing an endpoint clea
       screen.queryByText('No classifier endpoint is configured')
     ).not.toBeInTheDocument()
   )
+})
+
+test('saving a changed auto retry limit writes only that option', async () => {
+  const user = userEvent.setup()
+  mockStatus('option')
+  renderSection()
+
+  const limit = await screen.findByLabelText('Auto retry limit')
+  expect(limit).toHaveValue(10)
+  fireEvent.change(limit, { target: { value: '3' } })
+  await user.click(screen.getByRole('button', { name: 'Save Changes' }))
+
+  await waitFor(() => expect(api.put).toHaveBeenCalledTimes(1))
+  expect(api.put).toHaveBeenCalledWith('/api/option/', {
+    key: 'autorouter_setting.max_retries',
+    value: 3,
+  })
+})
+
+test('an auto retry limit above 100 is rejected on the field and nothing is saved', async () => {
+  const user = userEvent.setup()
+  mockStatus('option')
+  renderSection()
+
+  const limit = await screen.findByLabelText('Auto retry limit')
+  fireEvent.change(limit, { target: { value: '101' } })
+  await user.click(screen.getByRole('button', { name: 'Save Changes' }))
+
+  await waitFor(() => expect(limit).toHaveAttribute('aria-invalid', 'true'))
+  expect(api.put).not.toHaveBeenCalled()
 })

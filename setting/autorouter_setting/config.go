@@ -39,6 +39,9 @@ type AutoRouterSetting struct {
 	MaxRunes         int  `json:"max_runes"`
 	PreviousMaxRunes int  `json:"previous_max_runes"`
 	CacheTTLSeconds  int  `json:"cache_ttl_seconds"`
+	// MaxRetries is how many times one auto request may be retried after its first
+	// attempt, across models and channels. 0 means no retry.
+	MaxRetries int `json:"max_retries"`
 	// The jev connection and the leaderboard keys. An empty value falls back to
 	// the environment variable of the same service (see Connections); the *_api_key
 	// options are write-only and never returned by the options API.
@@ -129,6 +132,7 @@ var autoRouterSetting = AutoRouterSetting{
 	MaxRunes:                 2000,
 	PreviousMaxRunes:         500,
 	CacheTTLSeconds:          7200,
+	MaxRetries:               10,
 	RankRefreshEnabled:       true,
 	RankRefreshIntervalHours: 24,
 	DifficultyEfforts:        []string{"low", "medium", "high", "xhigh"},
