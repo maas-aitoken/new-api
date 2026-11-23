@@ -45,6 +45,7 @@
     "auto cannot be listed in a ranking": "auto cannot be listed in a ranking",
     "Auto cannot tell what a request is about, so every request uses the default models.": "Auto cannot tell what a request is about, so every request uses the default models.",
     "Auto requests only": "Auto requests only",
+    "Auto retry limit": "Auto retry limit",
     "Auto routing": "Auto routing",
     "Basics": "Basics",
     "Below this task-change score the request continues the previous task: the model stays, so the prompt cache survives.": "Below this task-change score the request continues the previous task: the model stays, so the prompt cache survives.",

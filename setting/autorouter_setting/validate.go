@@ -17,6 +17,7 @@ const (
 	// maxDifficultyRungs bounds difficulty_efforts; rungs past the last entry reuse it.
 	maxDifficultyRungs = 8
 	maxRunesLimit      = 100000
+	maxRetriesLimit    = 100
 )
 
 // ValidateOption checks a value before it is stored under an autorouter_setting.*
@@ -40,6 +41,8 @@ func ValidateOption(key, value string) error {
 	case "cache_ttl_seconds":
 		// 0 would make the cache entries never expire in Redis.
 		return integerInRange(value, 1, 30*24*3600)
+	case "max_retries":
+		return integerInRange(value, 0, maxRetriesLimit)
 	case "rank_refresh_interval_hours":
 		return integerInRange(value, 1, 720)
 	case "upgrade_benefit", "continuation_task_change":

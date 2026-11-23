@@ -55,6 +55,7 @@ import type { AutoRouterSettings } from './types'
 
 const MAX_RUNES = 100000
 const MAX_CACHE_TTL_SECONDS = 30 * 24 * 3600
+const MAX_RETRIES = 100
 
 function createSchema(t: TFunction) {
   return z.object({
@@ -78,6 +79,7 @@ function createSchema(t: TFunction) {
     max_runes: integerBetween(t, 0, MAX_RUNES),
     previous_max_runes: integerBetween(t, 0, MAX_RUNES),
     cache_ttl_seconds: integerBetween(t, 1, MAX_CACHE_TTL_SECONDS),
+    max_retries: integerBetween(t, 0, MAX_RETRIES),
   })
 }
 
@@ -104,6 +106,7 @@ export function ConnectionSection(props: ConnectionSectionProps) {
       previous_max_runes:
         props.settings['autorouter_setting.previous_max_runes'],
       cache_ttl_seconds: props.settings['autorouter_setting.cache_ttl_seconds'],
+      max_retries: props.settings['autorouter_setting.max_retries'],
     }),
     [props.settings]
   )
@@ -277,6 +280,13 @@ export function ConnectionSection(props: ConnectionSectionProps) {
               )}
               min={0}
               max={MAX_RUNES}
+            />
+            <NumberSettingField
+              control={form.control}
+              name='max_retries'
+              label={t('Auto retry limit')}
+              min={0}
+              max={MAX_RETRIES}
             />
           </SettingsFormGrid>
         </SettingsForm>
