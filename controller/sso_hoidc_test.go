@@ -112,10 +112,18 @@ func TestSsoHoidcCallbackRedirectsWithoutAccessToken(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			response := httptest.NewRecorder()
 			c, _ := gin.CreateTestContext(response)
-			c.Request = httptest.NewRequest(http.MethodGet, "/api/sso/hoidc/callback?token=sso-token&redirect="+url.QueryEscape(test.redirect), nil)
+			callbackURL := "/api/sso/hoidc/callback?token=sso-token"
+			if test.redirect != "" {
+				callbackURL += "&redirect=" + url.QueryEscape(test.redirect)
+			}
+			c.Request = httptest.NewRequest(http.MethodGet, callbackURL, nil)
 			SsoHoidcCallback(c)
 			require.Equal(t, http.StatusFound, response.Code, response.Body.String())
-			assert.Equal(t, test.want, response.Header().Get("Location"))
+			wantRedirect := test.want
+			if test.redirect == "" {
+				wantRedirect = "https://maas.example.com/sso-callback"
+			}
+			assert.Equal(t, wantRedirect, response.Header().Get("Location"))
 			assert.Contains(t, strings.Join(response.Header().Values("Set-Cookie"), "\n"), service.RefreshCookieName+"=")
 		})
 	}
@@ -128,6 +136,7 @@ func TestProvisionSsoUserStartsWithNewUserQuotaUnlessQuotaTiersAreOn(t *testing.
 	previousDB, previousLogDB := model.DB, model.LOG_DB
 	previousMain, previousLog := common.MainDatabaseType(), common.LogDatabaseType()
 	previousRedis, previousNewUserQuota := common.RedisEnabled, common.QuotaForNewUser
+	previousQuotaTier := operation_setting.IsQuotaTierEnabled()
 	db, err := gorm.Open(sqlite.Open("file:sso_new_user_quota?mode=memory&cache=shared"), &gorm.Config{})
 	require.NoError(t, err)
 	require.NoError(t, db.AutoMigrate(&model.User{}, &model.Token{}, &model.Log{}, &model.QuotaData{}, &model.SubscriptionPlan{}, &model.UserSubscription{}))
@@ -136,7 +145,7 @@ func TestProvisionSsoUserStartsWithNewUserQuotaUnlessQuotaTiersAreOn(t *testing.
 	common.RedisEnabled = false
 	common.QuotaForNewUser = 500_000_000_000
 	t.Cleanup(func() {
-		operation_setting.SetQuotaTierEnabled(false)
+		operation_setting.SetQuotaTierEnabled(previousQuotaTier)
 		common.RedisEnabled, common.QuotaForNewUser = previousRedis, previousNewUserQuota
 		model.DB, model.LOG_DB = previousDB, previousLogDB
 		common.SetDatabaseTypes(previousMain, previousLog)
@@ -176,6 +185,27 @@ func TestProvisionSsoUserStartsWithNewUserQuotaUnlessQuotaTiersAreOn(t *testing.
 			require.Len(t, subs, 1)
 			assert.Equal(t, plan.Id, subs[0].PlanId)
 			assert.Equal(t, model.SubscriptionSourceQuotaTier, subs[0].Source)
+		})
+	}
+}
+
+func TestSsoHoidcCallbackMissingRedirectRejectsInvalidOrigin(t *testing.T) {
+	configureHoidcTest(t, "https://sso.example.com/api")
+	for _, test := range []struct{ name, origin string }{
+		{"missing", ""},
+		{"malformed", "https\\://maas.example.com"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			common.HoidcRedirectOrigin = test.origin
+			response := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(response)
+			c.Request = httptest.NewRequest(http.MethodGet, "/api/sso/hoidc/callback?token=sso-token", nil)
+
+			SsoHoidcCallback(c)
+
+			assert.NotEqual(t, http.StatusFound, response.Code)
+			assert.Empty(t, response.Header().Get("Location"))
+			assert.NotContains(t, strings.Join(response.Header().Values("Set-Cookie"), "\n"), service.RefreshCookieName+"=")
 		})
 	}
 }

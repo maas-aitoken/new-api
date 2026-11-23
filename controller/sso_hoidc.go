@@ -68,7 +68,21 @@ func SsoHoidcCallback(c *gin.Context) {
 
 	// The callback can be reached without our login endpoint, so it checks the
 	// redirect again.
-	redirect := sanitizeHoidcRedirect(c, c.Query("redirect"))
+	rawRedirect := c.Query("redirect")
+	missingRedirect := rawRedirect == ""
+	if missingRedirect {
+		origin := strings.TrimSpace(common.HoidcRedirectOrigin)
+		if _, err := common.NormalizeOrigin(origin); err != nil {
+			common.ApiErrorT(c, "HOIDC SSO is not properly configured")
+			return
+		}
+		rawRedirect = strings.TrimRight(origin, "/") + "/sso-callback"
+	}
+	redirect := sanitizeHoidcRedirect(c, rawRedirect)
+	if missingRedirect && redirect == "/" {
+		common.ApiErrorT(c, "HOIDC SSO is not properly configured")
+		return
+	}
 
 	userInfo, err := service.VerifySsoToken(token)
 	if err != nil {
