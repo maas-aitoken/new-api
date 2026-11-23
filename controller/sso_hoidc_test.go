@@ -136,6 +136,7 @@ func TestProvisionSsoUserStartsWithNewUserQuotaUnlessQuotaTiersAreOn(t *testing.
 	previousDB, previousLogDB := model.DB, model.LOG_DB
 	previousMain, previousLog := common.MainDatabaseType(), common.LogDatabaseType()
 	previousRedis, previousNewUserQuota := common.RedisEnabled, common.QuotaForNewUser
+	previousQuotaTier := operation_setting.IsQuotaTierEnabled()
 	db, err := gorm.Open(sqlite.Open("file:sso_new_user_quota?mode=memory&cache=shared"), &gorm.Config{})
 	require.NoError(t, err)
 	require.NoError(t, db.AutoMigrate(&model.User{}, &model.Token{}, &model.Log{}, &model.QuotaData{}, &model.SubscriptionPlan{}, &model.UserSubscription{}))
@@ -144,7 +145,7 @@ func TestProvisionSsoUserStartsWithNewUserQuotaUnlessQuotaTiersAreOn(t *testing.
 	common.RedisEnabled = false
 	common.QuotaForNewUser = 500_000_000_000
 	t.Cleanup(func() {
-		operation_setting.SetQuotaTierEnabled(false)
+		operation_setting.SetQuotaTierEnabled(previousQuotaTier)
 		common.RedisEnabled, common.QuotaForNewUser = previousRedis, previousNewUserQuota
 		model.DB, model.LOG_DB = previousDB, previousLogDB
 		common.SetDatabaseTypes(previousMain, previousLog)
