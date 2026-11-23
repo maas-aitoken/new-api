@@ -8410,6 +8410,27 @@
     "The weight given to recent request success rate.": "最近请求成功率所占的权重。",
     "Sampling temperature controls score variability; lower values produce more stable routing.": "采样温度控制评分的波动程度；值越低，路由越稳定。",
     "Capacity is one minus the request share. Success adds four prior successes to the measured outcomes; Samples shows the evidence strength.": "容量得分按 1 减去请求占比计算。成功率在实测结果上加入 4 次先验成功；样本数用于说明证据强度。",
-    "Capacity is the lowest remaining fraction of configured RPM, TPM and in-flight limits. Scheduler and affinity use their concrete channel; native estimates use first-attempt probabilities. No effective limit or estimate means full capacity; an exhausted pool means none.": "容量取已配置 RPM、TPM 和在途并发剩余比例的最小值。调度器和会话亲和使用确定渠道，原生估算按首次命中概率加权。无有效上限或估算时容量为 1，资源池耗尽时为 0。"
-  }
+    "Capacity is the lowest remaining fraction of configured RPM, TPM and in-flight limits. Scheduler and affinity use their concrete channel; native estimates use first-attempt probabilities. No effective limit or estimate means full capacity; an exhausted pool means none.": "容量取已配置 RPM、TPM 和在途并发剩余比例的最小值。调度器和会话亲和使用确定渠道，原生估算按首次命中概率加权。无有效上限或估算时容量为 1，资源池耗尽时为 0。",
+  "Base price": "基础价",
+  "Channel cost multipliers": "渠道费用倍率",
+  "Effective channel price": "折算后渠道单价",
+  "Failed to load serving channels": "加载服务渠道失败",
+  "Model base pricing is shared across channels. Set a per-channel multiplier (default 1×) to scale user charges when requests route through that channel.": "模型基础定价在全模型级共用；可按服务渠道单独设置费用倍率（默认 1×），请求命中该渠道时按「基础价 × 渠道倍率」计费。",
+  "Saved immediately on blur or Enter": "失焦或按回车立即保存",
+  "Capability narrowed": "有能力收窄",
+  "Capacity pool": "容量池",
+  "Channel effective": "本渠道生效能力",
+  "Channel narrowing JSON": "渠道能力收窄 JSON",
+  "Channel now matches model-level capabilities": "已恢复为同模型级能力",
+  "Configure narrowing": "配置收窄",
+  "Current effective differences": "当前收窄项对比",
+  "Declare capabilities": "去声明",
+  "Live usage / in flight": "实时负载 / 在途",
+  "Only write dimensions that this channel needs to restrict; omitted fields automatically follow the model-level declaration.": "只需填写本渠道需要进一步限制的维度，未填写的字段自动保持与模型级声明一致。",
+  "Rate & concurrency limits": "限流设置",
+  "Restore model-level capabilities": "恢复同模型级能力",
+  "Same as model capabilities": "同模型级能力",
+  "Same as model-level capability declaration.": "当前与模型级能力声明完全一致。",
+  "Model-level declaration": "模型级声明"
+}
 }

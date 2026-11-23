@@ -44,7 +44,6 @@ import { useMediaQuery } from '@/hooks'
 import { formatTimestampToDate } from '@/lib/format'
 import { getLobeIcon } from '@/lib/lobe-icon'
 
-import { getNameRuleConfig } from '../constants'
 import { parseModelTags, formatEndpointsDisplay } from '../lib'
 import { getModelChannelState } from '../lib/model-utils'
 import type { Model, Vendor } from '../types'
@@ -74,7 +73,6 @@ export function useModelsColumns(
     [pricing]
   )
   return useMemo<ColumnDef<Model>[]>(() => {
-    const rules = getNameRuleConfig(t)
     return [
       {
         id: 'select',
@@ -110,10 +108,11 @@ export function useModelsColumns(
           const model = row.original
           const vendor = vendorMap.get(model.vendor_id ?? 0)
           const iconKey = model.icon || vendor?.icon || model.model_name[0]
-          const matched = model.matched_models ?? []
-          // 规则命中的具体模型展开在本行下方；移动端卡片没有详情行，直接列出来。
+          // 展开显示该模型的服务渠道子表（渠道信息 / 限流 / 实时在途 / 能力收窄）。
           const expandable =
-            !isMobile && model.name_rule !== 0 && matched.length > 0
+            !isMobile &&
+            ((model.configured_channel_count ?? 0) > 0 ||
+              (model.bound_channels?.length ?? 0) > 0)
           return (
             <div className='flex max-w-[320px] min-w-0 items-start gap-1.5 py-1'>
               {!isMobile &&
@@ -149,21 +148,7 @@ export function useModelsColumns(
                       ? (vendor?.name ?? t('No vendor'))
                       : t('Missing metadata')}
                   </span>
-                  {model.name_rule !== 0 && (
-                    <span className='shrink-0'>
-                      {rules[model.name_rule as 0 | 1 | 2 | 3]?.label} ·{' '}
-                      {model.matched_count ?? 0}
-                    </span>
-                  )}
                 </div>
-                {isMobile && matched.length > 0 && (
-                  <p
-                    className='text-muted-foreground mt-1 truncate font-mono text-[11px]'
-                    title={matched.join(', ')}
-                  >
-                    {matched.join(', ')}
-                  </p>
-                )}
               </div>
             </div>
           )
@@ -180,13 +165,6 @@ export function useModelsColumns(
             return (
               <span className='text-muted-foreground text-xs'>
                 {t('Super admin')}
-              </span>
-            )
-          }
-          if (row.original.name_rule !== 0) {
-            return (
-              <span className='text-muted-foreground text-xs'>
-                {t('Per matched model')}
               </span>
             )
           }
@@ -336,15 +314,6 @@ export function useModelsColumns(
             {vendorMap.get(row.original.vendor_id ?? 0)?.name ?? '—'}
           </TruncatedCell>
         ),
-        meta: { mobileHidden: true },
-      },
-      {
-        accessorKey: 'name_rule',
-        header: t('Match Type'),
-        size: 100,
-        enableSorting: false,
-        cell: ({ row }) =>
-          rules[row.original.name_rule as 0 | 1 | 2 | 3]?.label,
         meta: { mobileHidden: true },
       },
       {

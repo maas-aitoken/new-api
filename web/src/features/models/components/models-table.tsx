@@ -18,7 +18,7 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { useQuery } from '@tanstack/react-query'
 import { getRouteApi } from '@tanstack/react-router'
-import { useMemo } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import {
@@ -27,8 +27,9 @@ import {
   useDataTable,
 } from '@/components/data-table'
 import { ErrorState } from '@/components/error-state'
+import { Input } from '@/components/ui/input'
 import { useModelPricing } from '@/features/model-pricing/api'
-import { useMediaQuery } from '@/hooks'
+import { useDebounce, useMediaQuery } from '@/hooks'
 import { useTableUrlState } from '@/hooks/use-table-url-state'
 import {
   getServerMessage,
@@ -40,7 +41,7 @@ import { DEFAULT_PAGE_SIZE } from '../constants'
 import { modelsQueryKeys, vendorsQueryKeys } from '../lib'
 import type { ModelSquareState } from '../types'
 import { DataTableBulkActions } from './data-table-bulk-actions'
-import { ModelMatchedModels } from './model-matched-models'
+import { ModelChannelsSubtable } from './model-channels-subtable'
 import { useModelsColumns } from './models-columns'
 import { useModels } from './models-provider'
 
@@ -48,7 +49,7 @@ const route = getRouteApi('/_authenticated/models/$section')
 
 export function ModelsTable() {
   const { t } = useTranslation()
-  const { selectedVendor } = useModels()
+  const { selectedVendor, setCurrentRow, setOpen } = useModels()
   const isMobile = useMediaQuery('(max-width: 640px)')
 
   // URL state management
@@ -73,6 +74,7 @@ export function ModelsTable() {
       { columnId: 'square_state', searchKey: 'square_state', type: 'array' },
       { columnId: 'vendor_id', searchKey: 'vendor', type: 'array' },
       { columnId: 'sync_official', searchKey: 'sync', type: 'array' },
+      { columnId: 'channel_id', searchKey: 'channel', type: 'string' },
     ],
   })
 
@@ -89,6 +91,25 @@ export function ModelsTable() {
   const syncFilter =
     (columnFilters.find((f) => f.id === 'sync_official')?.value as string[]) ||
     []
+  const channelFilter =
+    (columnFilters.find((f) => f.id === 'channel_id')?.value as
+      | string
+      | undefined) ?? ''
+  const channelID = Number.parseInt(channelFilter, 10) || 0
+
+  const [channelDraft, setChannelDraft] = useState(channelFilter)
+  useEffect(() => setChannelDraft(channelFilter), [channelFilter])
+  const debouncedChannel = useDebounce(channelDraft, 400)
+  useEffect(() => {
+    const next = debouncedChannel.replaceAll(/\D/g, '')
+    if (next === channelFilter) {
+      return
+    }
+    onColumnFiltersChange((current) => {
+      const rest = current.filter((filter) => filter.id !== 'channel_id')
+      return next ? [...rest, { id: 'channel_id', value: next }] : rest
+    })
+  }, [debouncedChannel, channelFilter, onColumnFiltersChange])
 
   // Fetch vendors for filter
   const { data: vendorsData } = useQuery({
@@ -99,7 +120,7 @@ export function ModelsTable() {
 
   const vendors = useMemo(
     () => vendorsData?.data?.items || [],
-    [vendorsData?.data?.items]
+    [vendorsData]
   )
 
   const vendorOptions = useMemo(() => {
@@ -131,7 +152,8 @@ export function ModelsTable() {
     activeVendorFilter ||
     statusFilterValue ||
     squareState ||
-    syncFilterValue
+    syncFilterValue ||
+    channelID > 0
   )
 
   // Fetch models data
@@ -144,6 +166,7 @@ export function ModelsTable() {
       status: statusFilterValue,
       square_state: squareState,
       sync_official: syncFilterValue,
+      channel_id: channelID || undefined,
       p: pagination.pageIndex + 1,
       page_size: pagination.pageSize,
     }),
@@ -157,6 +180,7 @@ export function ModelsTable() {
             status: statusFilterValue,
             square_state: squareState,
             sync_official: syncFilterValue,
+            channel_id: channelID || undefined,
             p: pagination.pageIndex + 1,
             page_size: pagination.pageSize,
           })
@@ -178,9 +202,7 @@ export function ModelsTable() {
 
   // Columns configuration
   const pricingQuery = useModelPricing(
-    models
-      .filter((item) => item.name_rule === 0)
-      .map((item) => item.model_name),
+    models.map((item) => item.model_name),
     models.length > 0
   )
   let pricingState: 'loading' | 'error' | undefined
@@ -257,7 +279,13 @@ export function ModelsTable() {
       applyHeaderSize
       renderRowDetail={(row) => (
         <DataTableDetailRow row={row}>
-          <ModelMatchedModels model={row.original} />
+          <ModelChannelsSubtable
+            modelName={row.original.model_name}
+            onDeclareCapabilities={() => {
+              setCurrentRow(row.original)
+              setOpen('capability-model')
+            }}
+          />
         </DataTableDetailRow>
       )}
       pinnedColumns={[
@@ -267,6 +295,20 @@ export function ModelsTable() {
       toolbarProps={{
         searchPlaceholder: t('Filter by model name...'),
         searchDebounceMs: 500,
+        additionalSearch: (
+          <Input
+            className='w-[150px]'
+            inputMode='numeric'
+            placeholder={t('Channel ID')}
+            aria-label={t('Filter by channel ID')}
+            value={channelDraft}
+            onChange={(event) =>
+              setChannelDraft(event.target.value.replaceAll(/\D/g, ''))
+            }
+          />
+        ),
+        hasAdditionalFilters: channelID > 0,
+        onReset: () => setChannelDraft(''),
         filters: [
           {
             columnId: 'status',

@@ -138,12 +138,13 @@ describe('model pricing entry', () => {
       })
     )
     expect(put).not.toHaveBeenCalled()
-    await user.click(screen.getByRole('tab', { name: 'Channels and groups' }))
+    for (const tab of ['Model metadata', 'Capabilities', 'Pricing']) {
+      expect(screen.getByRole('tab', { name: tab })).toBeVisible()
+    }
     expect(
-      screen.getByText(
-        'Channel availability and group access are derived from enabled channels. Importing metadata does not create a callable channel.'
-      )
-    ).toBeVisible()
+      screen.queryByRole('tab', { name: 'Channels and groups' })
+    ).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Name Rule')).not.toBeInTheDocument()
     expect(get).not.toHaveBeenCalledWith('/api/models/0')
     expect(post).not.toHaveBeenCalled()
     client.clear()
@@ -203,7 +204,7 @@ describe('model pricing entry', () => {
       screen.queryByRole('textbox', { name: 'Model name' })
     ).not.toBeInTheDocument()
     expect(screen.getByRole('complementary', { name: 'Preview' })).toBeVisible()
-    for (const tab of ['Model metadata', 'Channels and groups', 'Pricing']) {
+    for (const tab of ['Model metadata', 'Capabilities', 'Pricing']) {
       expect(screen.getByRole('tab', { name: tab })).toHaveClass(
         'min-w-0',
         'whitespace-normal'
@@ -235,15 +236,10 @@ describe('model pricing entry', () => {
     client.clear()
   })
 
-  it('requires a concrete model for matching rules and protects an unsaved price on close', async () => {
-    const matchedModel = {
-      ...model,
-      name_rule: 1,
-      matched_models: ['example-concrete'],
-    }
-    const get = vi.spyOn(api, 'get').mockImplementation(async (url) => {
+  it('opens pricing directly without matching-rule selection and protects an unsaved price on close', async () => {
+    vi.spyOn(api, 'get').mockImplementation(async (url) => {
       if (url === '/api/models/7') {
-        return { data: { success: true, data: matchedModel } }
+        return { data: { success: true, data: model } }
       }
       if (url === '/api/option/model_pricing') {
         return {
@@ -252,7 +248,7 @@ describe('model pricing entry', () => {
             data: {
               entries: [
                 {
-                  model_name: 'example-concrete',
+                  model_name: model.model_name,
                   version: 'v1',
                   configured: { ModelPrice: 1.5 },
                   effective: { ModelPrice: 1.5 },
@@ -266,18 +262,12 @@ describe('model pricing entry', () => {
       }
       return { data: { success: true, data: { items: [] } } }
     })
-    const client = renderModelActions(matchedModel)
+    const client = renderModelActions(model)
     const user = userEvent.setup()
     await user.click(screen.getByRole('button', { name: 'Pricing' }))
-    await user.click(
-      await screen.findByRole('combobox', { name: 'Select model' })
-    )
     expect(
-      get.mock.calls.some(([url]) => url === '/api/option/model_pricing')
-    ).toBe(false)
-    await user.click(
-      await screen.findByRole('option', { name: 'example-concrete' })
-    )
+      screen.queryByRole('combobox', { name: 'Select model' })
+    ).not.toBeInTheDocument()
     const price = await screen.findByPlaceholderText('0.01')
     await waitFor(() => expect(price).toHaveValue('1.5'))
     await user.clear(price)

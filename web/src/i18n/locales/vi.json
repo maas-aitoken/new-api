@@ -8400,6 +8400,27 @@
     "The weight given to recent request success rate.": "Trọng số dành cho tỷ lệ yêu cầu thành công gần đây.",
     "Sampling temperature controls score variability; lower values produce more stable routing.": "Nhiệt độ lấy mẫu kiểm soát độ biến động của điểm số; giá trị thấp hơn giúp định tuyến ổn định hơn.",
     "Capacity is one minus the request share. Success adds four prior successes to the measured outcomes; Samples shows the evidence strength.": "Dung lượng bằng 1 trừ tỷ lệ yêu cầu. Tỷ lệ thành công thêm bốn lần thành công tiên nghiệm vào kết quả đo được; số mẫu cho biết độ mạnh của bằng chứng.",
-    "Capacity is the lowest remaining fraction of configured RPM, TPM and in-flight limits. Scheduler and affinity use their concrete channel; native estimates use first-attempt probabilities. No effective limit or estimate means full capacity; an exhausted pool means none.": "Dung lượng là tỷ lệ còn lại nhỏ nhất trong các giới hạn RPM, TPM và yêu cầu đang xử lý đã cấu hình. Bộ lập lịch và liên kết phiên sử dụng kênh cụ thể; ước tính gốc tính trọng số theo xác suất của lần thử đầu tiên. Không có giới hạn hoặc ước tính khả dụng thì giá trị là 1; nhóm tài nguyên cạn kiệt thì là 0."
-  }
+    "Capacity is the lowest remaining fraction of configured RPM, TPM and in-flight limits. Scheduler and affinity use their concrete channel; native estimates use first-attempt probabilities. No effective limit or estimate means full capacity; an exhausted pool means none.": "Dung lượng là tỷ lệ còn lại nhỏ nhất trong các giới hạn RPM, TPM và yêu cầu đang xử lý đã cấu hình. Bộ lập lịch và liên kết phiên sử dụng kênh cụ thể; ước tính gốc tính trọng số theo xác suất của lần thử đầu tiên. Không có giới hạn hoặc ước tính khả dụng thì giá trị là 1; nhóm tài nguyên cạn kiệt thì là 0.",
+  "Base price": "Giá gốc",
+  "Channel cost multipliers": "Hệ số chi phí theo kênh",
+  "Effective channel price": "Đơn giá kênh sau quy đổi",
+  "Failed to load serving channels": "Không tải được kênh cung cấp",
+  "Model base pricing is shared across channels. Set a per-channel multiplier (default 1×) to scale user charges when requests route through that channel.": "Giá cơ bản của mô hình được dùng chung cho các kênh. Đặt hệ số riêng cho từng kênh (mặc định 1×) để điều chỉnh phí khi yêu cầu đi qua kênh đó.",
+  "Saved immediately on blur or Enter": "Lưu ngay khi rồi ô hoặc nhấn Enter",
+  "Capability narrowed": "Năng lực bị thu hẹp",
+  "Capacity pool": "Nhóm dung lượng",
+  "Channel effective": "Năng lực hiệu lực của kênh",
+  "Channel narrowing JSON": "JSON thu hẹp kênh",
+  "Channel now matches model-level capabilities": "Kênh đã khôi phục theo năng lực cấp mô hình",
+  "Configure narrowing": "Cấu hình thu hẹp",
+  "Current effective differences": "So sánh các mục thu hẹp hiện tại",
+  "Declare capabilities": "Khai báo năng lực",
+  "Live usage / in flight": "Tải trực tiếp / đang xử lý",
+  "Only write dimensions that this channel needs to restrict; omitted fields automatically follow the model-level declaration.": "Chỉ điền các chiều mà kênh này cần hạn chế thêm; các trường bỏ trống sẽ tự động theo tuyên bố cấp mô hình.",
+  "Rate & concurrency limits": "Giới hạn tốc độ & đồng thờ i",
+  "Restore model-level capabilities": "Khôi phục năng lực cấp mô hình",
+  "Same as model capabilities": "Giống năng lực mô hình",
+  "Same as model-level capability declaration.": "Hiện giống hoàn toàn với tuyên bố năng lực cấp mô hình.",
+  "Model-level declaration": "Tuyên bố cấp mô hình"
+}
 }
