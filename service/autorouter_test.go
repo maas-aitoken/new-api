@@ -1430,7 +1430,7 @@ func TestResolveAutoRetryModelExcludesFailedRankingEntries(t *testing.T) {
 		{"the model named after another is tried first", []string{"foo-max", "foo"}, []string{"foo", "foo-max"}, []string{"foo-max", "foo"}},
 		{"effort variants of one model are excluded together", []string{"coder", "other"}, []string{"coder-low", "coder-xhigh", "other"}, []string{"coder-xhigh", "other"}},
 	}
-	for _, tt := range tests {
+	for i, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var calls atomic.Int32
 			useAutoRouterSetting(t, fakeJev(t, &calls, 0).URL, 1000)
@@ -1438,7 +1438,8 @@ func TestResolveAutoRetryModelExcludesFailedRankingEntries(t *testing.T) {
 			setting.TaskModels = map[string][]string{"code.build": tt.entries}
 			setting.DefaultModels = tt.entries
 			candidates := candidatesFrom(func(name string) bool { return slices.Contains(tt.serves, name) })
-			c := newAutoRouterContext(9911, `{"messages":[{"role":"user","content":"hard"}]}`)
+			// 路由缓存按令牌和指令文字取键且跨用例共享，每个子用例用自己的令牌，才不会读到别的榜单缓存的路由。
+			c := newAutoRouterContext(9931+i, `{"messages":[{"role":"user","content":"hard"}]}`)
 			common.SetContextKey(c, constant.ContextKeyAutoRouted, true)
 
 			first, err := ResolveAutoModel(c, candidates)
