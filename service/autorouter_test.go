@@ -64,7 +64,7 @@ func fakeJev(t *testing.T, calls *atomic.Int32, delay time.Duration) *httptest.S
 			assert.Contains(t, criteria, preference)
 		}
 		taskType, difficulty, mode := "general.chat", "0", autorouter.PreferenceBalanced
-		probabilities, benefit := "", "0.1"
+		probabilities, benefit, taskChange := "", "0.1", "0.1"
 		switch payload.State["current_task"] {
 		case "hard":
 			taskType, difficulty = "code.build", "3"
@@ -76,6 +76,8 @@ func fakeJev(t *testing.T, calls *atomic.Int32, delay time.Duration) *httptest.S
 			taskType = autorouter.TaskTypeUnknown
 		case "still broken":
 			taskType, benefit = autorouter.TaskTypeUnknown, "0.8"
+		case "new":
+			taskType, taskChange = "general.chat", "1.0"
 		case "split":
 			// 概率最高的叶子是 general.chat，但只有 0.4；code 下的两个叶子加起来 0.6。
 			difficulty = "3"
@@ -96,7 +98,7 @@ func fakeJev(t *testing.T, calls *atomic.Int32, delay time.Duration) *httptest.S
 			"task_type":{"type":"choice","choice":"` + taskType + `","probabilities":{` + probabilities + `}},
 			"mode":{"type":"choice","choice":"` + mode + `","probabilities":{` + strings.Join(modeShares, ",") + `}},
 			"difficulty":{"type":"score","probabilities":{"` + difficulty + `":0.8}},
-			"task_change":{"type":"noul","noul":0.1},
+			"task_change":{"type":"noul","noul":` + taskChange + `},
 			"larger_model_benefit":{"type":"noul","noul":` + benefit + `}}}`))
 	}))
 	t.Cleanup(server.Close)
@@ -288,22 +290,182 @@ func TestResolveAutoModelOnlyPicksAvailableModels(t *testing.T) {
 	require.Error(t, err)
 }
 
-func TestResolveAutoModelRecomputesRouteFromCachedDecision(t *testing.T) {
+func TestResolveAutoModelKeepsTurnRouteUntilItIsUnavailable(t *testing.T) {
 	var calls atomic.Int32
 	useAutoRouterSetting(t, fakeJev(t, &calls, 0).URL, 1000)
 	body := `{"messages":[{"role":"user","content":"hard"}]}`
 
-	// 第一次只有兜底模型可用（比如这次请求带图，别的模型能力不满足）。
 	first, err := ResolveAutoModel(newAutoRouterContext(9411, body), candidatesFrom(func(model string) bool { return model == "general" }))
 	require.NoError(t, err)
 	assert.Equal(t, "general", first.ResolvedModel)
 
-	// 同一条指令的下一次请求所有模型都可用：不能被上一次的选择钉住，也不必再调 jev。
 	second, err := ResolveAutoModel(newAutoRouterContext(9411, body), allModelsAvailable)
 	require.NoError(t, err)
-	assert.Equal(t, "coder-xhigh", second.ResolvedModel)
+	assert.Equal(t, "general-xhigh", second.ResolvedModel, "更多模型可用时，本轮仍用已选定的模型，只按可用变体落到对应档位")
 	assert.Equal(t, autorouter.SourceCache, second.Source)
+
+	third, err := ResolveAutoModel(newAutoRouterContext(9411, body), candidatesFrom(func(model string) bool { return !strings.HasPrefix(model, "general") }))
+	require.NoError(t, err)
+	assert.Equal(t, "coder-xhigh", third.ResolvedModel, "已选定的模型不可用时，按缓存的判断重新选")
+	assert.Equal(t, autorouter.SourceCache, third.Source)
 	assert.Equal(t, int32(1), calls.Load())
+}
+
+func TestResolveAutoModelReusesRouteWithinCurrentTurn(t *testing.T) {
+	var calls atomic.Int32
+	useAutoRouterSetting(t, fakeJev(t, &calls, 0).URL, 1000)
+	setting := autorouter_setting.GetAutoRouterSetting()
+	setting.TaskModels = map[string][]string{
+		"code.build":   {"coder"},
+		"general.chat": {"chat", "general"},
+	}
+	setting.TaskScores = map[string]map[string]float64{
+		"code.build":   {"coder": 1},
+		"general.chat": {"chat": 0.9, "general": 0.95},
+	}
+	prices := map[string]float64{"chat": 10, "general": 1, "coder": 1}
+	candidates := func(allowed func(string) bool) AutoCandidates {
+		return AutoCandidates{
+			Serves:   func(name string, _ bool) bool { return allowed(name) },
+			Channels: func(string) []int { return nil },
+			Price: func(name string) (float64, bool) {
+				price, ok := prices[name]
+				return price, ok
+			},
+		}
+	}
+
+	_, err := ResolveAutoModel(newAutoRouterContext(9414, `{"messages":[{"role":"user","content":"hard"}]}`), candidates(func(name string) bool {
+		return name == "coder"
+	}))
+	require.NoError(t, err)
+
+	newTurn := `{"metadata":{"user_id":{"session_id":"sess-a"}},"messages":[
+		{"role":"user","content":"hard"},
+		{"role":"assistant","content":"done"},
+		{"role":"user","content":"new"}
+	]}`
+	first, err := ResolveAutoModel(newAutoRouterContext(9414, newTurn), candidates(func(name string) bool {
+		return name == "chat"
+	}))
+	require.NoError(t, err)
+	assert.Equal(t, "chat", first.ResolvedModel)
+
+	second, err := ResolveAutoModel(newAutoRouterContext(9414, newTurn), candidates(func(name string) bool {
+		return name == "chat" || name == "general" || name == "coder"
+	}))
+	require.NoError(t, err)
+	assert.Equal(t, "chat", second.ResolvedModel)
+	assert.Equal(t, autorouter.SourceCache, second.Source)
+	assert.Equal(t, int32(2), calls.Load())
+
+	otherSession, err := ResolveAutoModel(newAutoRouterContext(9414, strings.Replace(newTurn, "sess-a", "sess-b", 1)), candidates(func(name string) bool {
+		return name == "chat" || name == "general" || name == "coder"
+	}))
+	require.NoError(t, err)
+	assert.Equal(t, "general", otherSession.ResolvedModel, "另一个会话使用独立的路由缓存")
+	assert.Equal(t, int32(2), calls.Load(), "同一句话的判断仍可跨会话复用")
+}
+
+func TestResolveAutoModelKeepsSessionEffortOverrideAfterTurnReuse(t *testing.T) {
+	var calls atomic.Int32
+	useAutoRouterSetting(t, fakeJev(t, &calls, 0).URL, 1000)
+	session := "sess-effort"
+	hard := `{"client_metadata":{"session_id":"` + session + `"},"messages":[{"role":"user","content":"hard"}]}`
+	_, err := ResolveAutoModel(newAutoRouterContext(9415, hard), allModelsAvailable)
+	require.NoError(t, err)
+
+	serves := AutoCandidates{
+		Serves: func(name string, ignoreClientReasoning bool) bool {
+			if ignoreClientReasoning {
+				return name == "general"
+			}
+			return name == "coder" || name == "coder-xhigh"
+		},
+		Channels: func(string) []int { return nil },
+	}
+	unknown := `{"client_metadata":{"session_id":"` + session + `"},"messages":[
+		{"role":"user","content":"hard"},
+		{"role":"assistant","content":"done"},
+		{"role":"user","content":"ok"}
+	]}`
+	_, err = ResolveAutoModel(newAutoRouterContext(9415, unknown), serves)
+	require.NoError(t, err)
+	_, err = ResolveAutoModel(newAutoRouterContext(9415, unknown), serves)
+	require.NoError(t, err)
+
+	subAgent, err := ResolveAutoModel(newAutoRouterContext(9415, encryptedSubAgentBody(session)), serves)
+	require.NoError(t, err)
+	assert.Equal(t, "coder-xhigh", subAgent.ResolvedModel)
+	assert.False(t, subAgent.EffortOverride)
+}
+
+func TestResolveAutoRetryUpdatesSessionRoute(t *testing.T) {
+	var calls atomic.Int32
+	useAutoRouterSetting(t, fakeJev(t, &calls, 0).URL, 1000)
+	setting := autorouter_setting.GetAutoRouterSetting()
+	setting.DefaultModels = []string{"general"}
+	session := "sess-retry"
+	c := newAutoRouterContext(9416, `{"client_metadata":{"session_id":"`+session+`"},"messages":[{"role":"user","content":"hard"}]}`)
+	_, err := ResolveAutoModel(c, allModelsAvailable)
+	require.NoError(t, err)
+	assert.Equal(t, "coder-xhigh", GetAutoRouterResult(c).ResolvedModel)
+
+	ExcludeAutoModel(c, "coder")
+	retry, ok := ResolveAutoRetryModel(c, allModelsAvailable)
+	require.True(t, ok)
+	assert.Equal(t, "general-xhigh", retry.ResolvedModel)
+	RememberAutoRetrySuccess(c)
+
+	subAgent, err := ResolveAutoModel(newAutoRouterContext(9416, encryptedSubAgentBody(session)), allModelsAvailable)
+	require.NoError(t, err)
+	assert.Equal(t, "general-xhigh", subAgent.ResolvedModel, "无文本子 agent 应继承重试后的会话路由")
+}
+
+func TestResolveAutoRetryUpdatesInheritedSessionRoute(t *testing.T) {
+	var calls atomic.Int32
+	useAutoRouterSetting(t, fakeJev(t, &calls, 0).URL, 1000)
+	session := "sess-inherited-retry"
+	_, err := ResolveAutoModel(newAutoRouterContext(9417, `{"client_metadata":{"session_id":"`+session+`"},"messages":[{"role":"user","content":"hard"}]}`), allModelsAvailable)
+	require.NoError(t, err)
+
+	retryContext := newAutoRouterContext(9417, encryptedSubAgentBody(session))
+	inherited, err := ResolveAutoModel(retryContext, allModelsAvailable)
+	require.NoError(t, err)
+	assert.Equal(t, "coder-xhigh", inherited.ResolvedModel)
+	ExcludeAutoModel(retryContext, "coder")
+	retry, ok := ResolveAutoRetryModel(retryContext, allModelsAvailable)
+	require.True(t, ok)
+	assert.Equal(t, "general-medium", retry.ResolvedModel)
+	RememberAutoRetrySuccess(retryContext)
+
+	next, err := ResolveAutoModel(newAutoRouterContext(9417, encryptedSubAgentBody(session)), allModelsAvailable)
+	require.NoError(t, err)
+	assert.Equal(t, "general-medium", next.ResolvedModel, "后续无文本子 agent 应继承重试后的会话路由")
+}
+
+func TestResolveAutoRetryDoesNotOverwriteSessionRouteForAgent(t *testing.T) {
+	var calls atomic.Int32
+	useAutoRouterSetting(t, fakeJev(t, &calls, 0).URL, 1000)
+	session := "sess-agent-retry"
+	_, err := ResolveAutoModel(newAutoRouterContext(9418, `{"client_metadata":{"session_id":"`+session+`"},"messages":[{"role":"user","content":"hard"}]}`), allModelsAvailable)
+	require.NoError(t, err)
+
+	agent := `{"client_metadata":{"session_id":"` + session + `"},"messages":[
+		{"role":"user","content":"hard"},
+		{"role":"assistant","content":"done"},
+		{"role":"user","content":"Message Type: NEW_TASK\nTask name: /root/child\nSender: /root\nPayload: hard"}
+	]}`
+	retryContext := newAutoRouterContext(9418, agent)
+	_, err = ResolveAutoModel(retryContext, allModelsAvailable)
+	require.NoError(t, err)
+	ExcludeAutoModel(retryContext, "coder")
+	_, ok := ResolveAutoRetryModel(retryContext, allModelsAvailable)
+	require.True(t, ok)
+
+	next, err := ResolveAutoModel(newAutoRouterContext(9418, encryptedSubAgentBody(session)), allModelsAvailable)
+	require.NoError(t, err)
+	assert.Equal(t, "coder-xhigh", next.ResolvedModel, "带明文任务的子 agent 重试不能覆盖人类轮次的会话路由")
 }
 
 func TestResolveAutoModelSkipsJevWhenNothingIsRoutable(t *testing.T) {
@@ -440,7 +602,10 @@ func TestResolveAutoModelAdaptivePreferenceReadsTheWeightFromTheModeAnswer(t *te
 		saved := setting.PreferenceWeights
 		setting.PreferenceWeights = autorouter.PreferenceWeights{"capability": {Quality: 1, Cost: 0}, "balanced": {Quality: 0.97, Cost: 0.03}, "cost": {Quality: 0.95, Cost: 0.05}}
 		t.Cleanup(func() { setting.PreferenceWeights = saved })
-		second := resolve(t, 9635, autorouter.PreferenceAdaptive, "frugal")
+		c := newAutoRouterContext(9635, `{"metadata":{"user_id":{"session_id":"another"}},"messages":[{"role":"user","content":"frugal"}]}`)
+		common.SetContextKey(c, constant.ContextKeyTokenAutoPreference, autorouter.PreferenceAdaptive)
+		second, err := ResolveAutoModel(c, candidates)
+		require.NoError(t, err)
 		assert.Equal(t, before+1, calls.Load(), "命中判断缓存，不再调 jev")
 		assert.Equal(t, autorouter.SourceCache, second.Source)
 		assert.Equal(t, "opus-m-xhigh", second.ResolvedModel, "平台改了三档权重，同一个判断读出的权重跟着变")
@@ -668,7 +833,7 @@ func TestResolveAutoModelTrace(t *testing.T) {
 		second, err := ResolveAutoModel(newAutoRouterContext(9901, body), allModelsAvailable)
 		require.NoError(t, err)
 		assert.Equal(t, autorouter.JudgmentCache, second.Trace.Judgment)
-		assert.Equal(t, trace.Ladder, second.Trace.Ladder, "同一个判断、同样的可用集合，走出同样的榜单")
+		assert.Equal(t, []autorouter.LadderStep{{Profile: "code.build", Outcome: autorouter.OutcomeInherited, Model: "coder"}}, second.Trace.Ladder, "同一轮的后续请求沿用本轮已选的路由")
 	})
 
 	t.Run("a jev failure, then the failure marker", func(t *testing.T) {
