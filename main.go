@@ -347,6 +347,12 @@ func InitResources() error {
 		common.FatalLog(common.LogText("failed to initialize authorization: %s", err.Error()))
 		return err
 	}
+	if common.IsMasterNode {
+		// 在加载能力缓存之前完成非精确模型规则的一次性展开，使缓存从启动起即只读取完全匹配条目。
+		if err := model.MigrateModelNameRulesToExact(); err != nil {
+			common.SysError(common.LogText("failed to migrate model name rules: %s", err.Error()))
+		}
+	}
 	// 能力门控依赖模型级声明缓存；不开启内存渠道缓存时 InitChannelCache 不会被调用，
 	// 因此在启动时无条件加载一次。非主节点可能还没建表，失败只记录不阻断启动。
 	if err := model.InitCapabilityCache(); err != nil {

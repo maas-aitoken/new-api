@@ -292,7 +292,7 @@ func PreviewModelPricingConversion(name string, draft PricingValues) (*ModelPric
 	}
 	var metadata []Model
 	if err := DB.Select("model_name", "name_rule", "endpoints").
-		Where("model_name IN ? OR name_rule <> ?", names, NameRuleExact).
+		Where("model_name IN ? AND name_rule = ?", names, NameRuleExact).
 		Where("endpoints <> ?", "").Find(&metadata).Error; err != nil {
 		return nil, err
 	}

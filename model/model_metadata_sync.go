@@ -37,7 +37,7 @@ func lockMetadataMutation(tx *gorm.DB) error {
 
 var ErrMetadataSyncConflict = errors.New("metadata changed; preview again before applying")
 
-var MetadataSyncFields = []string{"description", "icon", "tags", "vendor", "endpoints", "name_rule", "status"}
+var MetadataSyncFields = []string{"description", "icon", "tags", "vendor", "endpoints", "status"}
 
 type MetadataValues struct {
 	Description string `json:"description"`
@@ -93,8 +93,8 @@ func GetMetadataSyncState(db *gorm.DB) (map[string]*Model, map[string]*Vendor, e
 }
 
 func ValidateMetadataValues(values MetadataValues) error {
-	if values.NameRule < NameRuleExact || values.NameRule > NameRuleSuffix {
-		return errors.New("invalid metadata matching rule")
+	if values.NameRule != NameRuleExact {
+		return errors.New("only exact model matching is supported")
 	}
 	if values.Status != 0 && values.Status != 1 {
 		return errors.New("invalid catalog visibility")

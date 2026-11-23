@@ -352,7 +352,7 @@ var accessTokenRouteRules = map[string]accessTokenRouteRule{
 	"GET /api/models/capability-targets":                  accessTokenScopeRule("model:read"),
 	"GET /api/channel-model-capabilities/":                accessTokenScopeRule("model:read"),
 	"PUT /api/channel-model-capabilities/":                accessTokenScopeRule("model:write"),
-	"PUT /api/channel-model-capabilities/cost-multiplier": accessTokenScopeRule("model:write"),
+	"PUT /api/channel-model-capabilities/cost-multiplier": accessTokenScopeRule("option:write"),
 	"PUT /api/channel-model-capabilities/limit":           accessTokenScopeRule("model:write"),
 	"GET /api/channel-model-capabilities/capacity":        accessTokenScopeRule("model:read"),
 	"DELETE /api/channel-model-capabilities/":             accessTokenScopeRule("model:write"),

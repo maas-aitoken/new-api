@@ -149,6 +149,9 @@ func TestAccessTokenRouteRulesCoverEveryDashboardRoute(t *testing.T) {
 		assert.Equal(t, "scope", rule.Kind(), key)
 		assert.Equal(t, service.AccessTokenScopeOf(permission), rule.Scope(), key)
 	}
+	costMultiplierRule, ok := middleware.AccessTokenRouteRule("PUT /api/channel-model-capabilities/cost-multiplier")
+	require.True(t, ok)
+	assert.Equal(t, "option:write", costMultiplierRule.Scope())
 }
 
 func TestModelSquareRoutesRespectRequiredAuthentication(t *testing.T) {

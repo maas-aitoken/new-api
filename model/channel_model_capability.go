@@ -42,23 +42,20 @@ var capabilityCache struct {
 	sync.RWMutex
 	initialized bool
 	exact       map[string]modelCapabilityRecord
-	prefix      []modelCapabilityRecord
-	suffix      []modelCapabilityRecord
-	contains    []modelCapabilityRecord
 	channel     map[int]map[string]capability.Spec
 }
 
 // InitCapabilityCache 重新加载模型级声明与渠道收窄。写入路径在提交事务后调用。
+// 仅加载完全匹配（name_rule=0）的模型声明。
 func InitCapabilityCache() error {
 	if DB == nil {
 		return nil
 	}
 	var models []Model
-	if err := DB.Select("id", "model_name", "name_rule", "capabilities").Order("id").Find(&models).Error; err != nil {
+	if err := DB.Select("id", "model_name", "name_rule", "capabilities").Where("name_rule = ?", NameRuleExact).Order("id").Find(&models).Error; err != nil {
 		return err
 	}
 	exact := make(map[string]modelCapabilityRecord)
-	var prefix, suffix, contains []modelCapabilityRecord
 	for _, metadata := range models {
 		spec, problems := capability.Parse(metadata.Capabilities)
 		if len(problems) > 0 {
@@ -68,22 +65,12 @@ func InitCapabilityCache() error {
 		if strings.TrimSpace(metadata.Capabilities) == "" {
 			continue
 		}
-		record := modelCapabilityRecord{
+		exact[metadata.ModelName] = modelCapabilityRecord{
 			id:   metadata.Id,
 			name: metadata.ModelName,
-			rule: metadata.NameRule,
+			rule: NameRuleExact,
 			raw:  metadata.Capabilities,
 			spec: spec,
-		}
-		switch metadata.NameRule {
-		case NameRulePrefix:
-			prefix = append(prefix, record)
-		case NameRuleSuffix:
-			suffix = append(suffix, record)
-		case NameRuleContains:
-			contains = append(contains, record)
-		default:
-			exact[metadata.ModelName] = record
 		}
 	}
 
@@ -106,9 +93,6 @@ func InitCapabilityCache() error {
 
 	capabilityCache.Lock()
 	capabilityCache.exact = exact
-	capabilityCache.prefix = prefix
-	capabilityCache.suffix = suffix
-	capabilityCache.contains = contains
 	capabilityCache.channel = channel
 	capabilityCache.initialized = true
 	capabilityCache.Unlock()
@@ -120,9 +104,6 @@ func InvalidateCapabilityCache() {
 	capabilityCache.Lock()
 	capabilityCache.initialized = false
 	capabilityCache.exact = nil
-	capabilityCache.prefix = nil
-	capabilityCache.suffix = nil
-	capabilityCache.contains = nil
 	capabilityCache.channel = nil
 	capabilityCache.Unlock()
 }
@@ -132,14 +113,10 @@ func InvalidateCapabilityCache() {
 func HasCapabilityDeclarations() bool {
 	capabilityCache.RLock()
 	defer capabilityCache.RUnlock()
-	return capabilityCache.initialized &&
-		(len(capabilityCache.exact) > 0 || len(capabilityCache.prefix) > 0 ||
-			len(capabilityCache.suffix) > 0 || len(capabilityCache.contains) > 0)
+	return capabilityCache.initialized && len(capabilityCache.exact) > 0
 }
 
-// ResolveModelCapability 按 name_rule 的优先级（精确、前缀、后缀、包含）取模型级声明。
-// 同一规则内以更长的匹配键优先，这样 claude-sonnet-4-5 的具体声明不会被
-// claude-sonnet-4 的家族默认声明先命中。
+// ResolveModelCapability 按模型名精确取模型级能力声明。
 func ResolveModelCapability(modelName string) (capability.Spec, bool) {
 	record, ok := resolveModelCapabilityRecord(modelName)
 	return record.spec, ok
@@ -157,43 +134,8 @@ func resolveModelCapabilityRecord(modelName string) (modelCapabilityRecord, bool
 	if !capabilityCache.initialized {
 		return modelCapabilityRecord{}, false
 	}
-	return resolveCapabilityRecordIn(capabilityCache.exact, capabilityCache.prefix, capabilityCache.suffix, capabilityCache.contains, modelName)
-}
-
-// resolveCapabilityRecordIn 是纯解析：精确 → 前缀 → 后缀 → 包含，同一规则内最长键优先。
-// 缓存解析和"保存前校验"共用它，避免两处规则漂移。
-func resolveCapabilityRecordIn(exact map[string]modelCapabilityRecord, prefix, suffix, contains []modelCapabilityRecord, modelName string) (modelCapabilityRecord, bool) {
-	if record, ok := exact[modelName]; ok {
-		return record, true
-	}
-	for _, records := range [][]modelCapabilityRecord{prefix, suffix, contains} {
-		var matched *modelCapabilityRecord
-		for i := range records {
-			if !metadataMatchesName(records[i].name, records[i].rule, modelName) {
-				continue
-			}
-			if matched == nil || len(records[i].name) > len(matched.name) {
-				matched = &records[i]
-			}
-		}
-		if matched != nil {
-			return *matched, true
-		}
-	}
-	return modelCapabilityRecord{}, false
-}
-
-func metadataMatchesName(name string, rule int, modelName string) bool {
-	switch rule {
-	case NameRulePrefix:
-		return strings.HasPrefix(modelName, name)
-	case NameRuleSuffix:
-		return strings.HasSuffix(modelName, name)
-	case NameRuleContains:
-		return strings.Contains(modelName, name)
-	default:
-		return modelName == name
-	}
+	record, ok := capabilityCache.exact[modelName]
+	return record, ok
 }
 
 // GetChannelModelCapability 返回渠道层收窄声明；没有记录时 ok=false。
@@ -246,13 +188,12 @@ func ValidateChannelModelCapabilities(modelName string, raw string) error {
 	return nil
 }
 
-// ValidateModelCapabilityNarrowings 校验"保存这条模型级声明之后"，所有以它为
-// 声明来源的渠道收窄仍然落在它的值域内。
-//
-// 收窄只在保存收窄时校验一次子集关系；模型级后来被收紧时，存量收窄可能已经越界。
-// 这里在保存模型级之前按"保存后"的声明归属重新解析，一旦越界就拒绝保存并列出
-// 冲突的渠道与维度，避免运行期出现"渠道比模型级更宽"的配置。
+// ValidateModelCapabilityNarrowings 校验保存这条完全匹配模型级声明之后，
+// 该模型现有的渠道收窄仍然落在它的值域内。
 func ValidateModelCapabilityNarrowings(pending Model) error {
+	if pending.NameRule != NameRuleExact {
+		return errors.New("only exact model matching is supported")
+	}
 	if strings.TrimSpace(pending.Capabilities) == "" {
 		return nil
 	}
@@ -262,50 +203,15 @@ func ValidateModelCapabilityNarrowings(pending Model) error {
 	}
 
 	var narrowings []ChannelModelCapability
-	if err := DB.Select("channel_id", "model", "capabilities").Order("channel_id, model").Find(&narrowings).Error; err != nil {
+	if err := DB.Select("channel_id", "model", "capabilities").Where("model = ?", pending.ModelName).Order("channel_id").Find(&narrowings).Error; err != nil {
 		return err
 	}
 	if len(narrowings) == 0 {
 		return nil
 	}
 
-	var declarations []Model
-	if err := DB.Select("id", "model_name", "name_rule", "capabilities").Order("id").Find(&declarations).Error; err != nil {
-		return err
-	}
-	exact := make(map[string]modelCapabilityRecord)
-	var prefix, suffix, contains []modelCapabilityRecord
-	collect := func(record Model, parsed capability.Spec) {
-		item := modelCapabilityRecord{id: record.Id, name: record.ModelName, rule: record.NameRule, raw: record.Capabilities, spec: parsed}
-		switch record.NameRule {
-		case NameRulePrefix:
-			prefix = append(prefix, item)
-		case NameRuleSuffix:
-			suffix = append(suffix, item)
-		case NameRuleContains:
-			contains = append(contains, item)
-		default:
-			exact[record.ModelName] = item
-		}
-	}
-	for _, declaration := range declarations {
-		if declaration.Id == pending.Id || strings.TrimSpace(declaration.Capabilities) == "" {
-			continue
-		}
-		parsed, declarationProblems := capability.Parse(declaration.Capabilities)
-		if len(declarationProblems) > 0 {
-			continue
-		}
-		collect(declaration, parsed)
-	}
-	collect(pending, spec)
-
 	conflicts := make([]string, 0)
 	for _, narrowing := range narrowings {
-		record, ok := resolveCapabilityRecordIn(exact, prefix, suffix, contains, narrowing.Model)
-		if !ok || record.id != pending.Id {
-			continue
-		}
 		over, narrowingProblems := capability.Parse(narrowing.Capabilities)
 		if len(narrowingProblems) > 0 {
 			conflicts = append(conflicts, fmt.Sprintf("channel #%d / %s: stored narrowing is invalid: %s", narrowing.ChannelId, narrowing.Model, strings.Join(narrowingProblems, "; ")))
@@ -490,21 +396,27 @@ func SetChannelModelCostMultiplier(channelID int, publicModel string, multiplier
 	return nil
 }
 
-// CapabilityTargetQuery 是能力设置页的筛选与分页参数。Limit<=0 表示不分页。
+// CapabilityTargetQuery 是模型服务渠道清单的筛选与分页参数。Limit<=0 表示不分页。
 type CapabilityTargetQuery struct {
+	Model     string
 	Keyword   string
 	ChannelID int
 	Offset    int
 	Limit     int
 }
 
-// GetCapabilityTargets 返回所有能解析到模型级声明的渠道模型及其服务渠道。
-// 精确行即使暂无渠道也会列出；前缀/通配行则通过渠道声明的具体模型名展开，
-// 这样管理员可以直接给 deepseek-v4-pro 这类具体模型配置渠道收窄。
+// GetCapabilityTargets 返回具体模型及其启用态服务渠道清单。
+// 传入 query.Model 时只查询该精确模型，供单行展开与定价面板按需拉取。
 // 第二个返回值是筛选后、分页前的总数。
 func GetCapabilityTargets(query CapabilityTargetQuery) ([]CapabilityTarget, int, error) {
+	exactModel := strings.TrimSpace(query.Model)
+
 	var exactNames []string
-	if err := DB.Model(&Model{}).Where("name_rule = ?", NameRuleExact).Pluck("model_name", &exactNames).Error; err != nil {
+	exactQuery := DB.Model(&Model{}).Where("name_rule = ?", NameRuleExact)
+	if exactModel != "" {
+		exactQuery = exactQuery.Where("model_name = ?", exactModel)
+	}
+	if err := exactQuery.Pluck("model_name", &exactNames).Error; err != nil {
 		return nil, 0, err
 	}
 
@@ -517,10 +429,14 @@ func GetCapabilityTargets(query CapabilityTargetQuery) ([]CapabilityTarget, int,
 		ModelMapping *string
 		Setting      *string
 	}
-	err := DB.Table("abilities").
+	abilitiesQuery := DB.Table("abilities").
 		Select("abilities.model as model, channels.id as id, channels.name as name, channels.type as type, channels.models as models, channels.model_mapping as model_mapping, channels.setting as setting").
 		Joins("JOIN channels ON channels.id = abilities.channel_id").
-		Where("abilities.enabled = ? AND channels.status = ?", true, common.ChannelStatusEnabled).
+		Where("abilities.enabled = ? AND channels.status = ?", true, common.ChannelStatusEnabled)
+	if exactModel != "" {
+		abilitiesQuery = abilitiesQuery.Where("abilities.model = ?", exactModel)
+	}
+	err := abilitiesQuery.
 		Distinct().
 		Order("abilities.model, channels.id").
 		Scan(&rows).Error
@@ -590,9 +506,17 @@ func GetCapabilityTargets(query CapabilityTargetQuery) ([]CapabilityTarget, int,
 		})
 	}
 
-	configuredRows, err := GetConfiguredModelCapabilityKeys()
-	if err != nil {
+	configuredQuery := DB.Select("channel_id", "model")
+	if exactModel != "" {
+		configuredQuery = configuredQuery.Where("model = ?", exactModel)
+	}
+	var configuredSlice []ChannelModelCapability
+	if err := configuredQuery.Find(&configuredSlice).Error; err != nil {
 		return nil, 0, err
+	}
+	configuredRows := make(map[ChannelModelCapabilityKey]bool, len(configuredSlice))
+	for _, row := range configuredSlice {
+		configuredRows[ChannelModelCapabilityKey{ChannelId: row.ChannelId, Model: row.Model}] = true
 	}
 	modelNames := make([]string, 0, len(names))
 	for name := range names {
@@ -603,6 +527,9 @@ func GetCapabilityTargets(query CapabilityTargetQuery) ([]CapabilityTarget, int,
 	keyword := strings.ToLower(strings.TrimSpace(query.Keyword))
 	targets := make([]CapabilityTarget, 0, len(modelNames))
 	for _, name := range modelNames {
+		if exactModel != "" && name != exactModel {
+			continue
+		}
 		record, declared := resolveModelCapabilityRecord(name)
 		if keyword != "" && !strings.Contains(strings.ToLower(name), keyword) {
 			continue

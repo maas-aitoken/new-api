@@ -448,19 +448,16 @@ func TestModelPricingConversionDatabaseMatrix(t *testing.T) {
 			assert.Equal(t, `tier("image", fixed(1)) * image_count`, preview.Expression)
 			assert.Empty(t, preview.UnsupportedReason)
 			for _, tc := range []struct {
-				name, rule string
-				nameRule   int
-				endpoint   constant.EndpointType
+				name     string
+				endpoint constant.EndpointType
 			}{
-				{"catalog-image-prefix-opaque", "catalog-image-prefix-", model.NameRulePrefix, constant.EndpointTypeImageGeneration},
-				{"opaque-catalog-image-suffix", "-catalog-image-suffix", model.NameRuleSuffix, constant.EndpointTypeImageGeneration},
-				{"before-catalog-image-middle-after", "catalog-image-middle", model.NameRuleContains, constant.EndpointTypeImageGeneration},
-				{"opaque-catalog-video", "opaque-catalog-video", model.NameRuleExact, constant.EndpointTypeOpenAIVideo},
+				{"catalog-image-exact-opaque", constant.EndpointTypeImageGeneration},
+				{"opaque-catalog-video", constant.EndpointTypeOpenAIVideo},
 			} {
 				t.Run("endpoint_metadata/"+tc.name, func(t *testing.T) {
 					endpoints, err := common.Marshal(map[string]string{string(tc.endpoint): "/v1/fixture"})
 					require.NoError(t, err)
-					require.NoError(t, db.Create(&model.Model{ModelName: tc.rule, NameRule: tc.nameRule, Endpoints: string(endpoints)}).Error)
+					require.NoError(t, db.Create(&model.Model{ModelName: tc.name, NameRule: model.NameRuleExact, Endpoints: string(endpoints)}).Error)
 					converted, err := model.PreviewModelPricingConversion(tc.name, model.PricingValues{"ModelPrice": 1.0})
 					require.NoError(t, err)
 					if tc.endpoint == constant.EndpointTypeOpenAIVideo {
@@ -503,26 +500,23 @@ export function parseTaskResult() { return {}; }
 					{ModelName: "square-hidden", Status: 0},
 					{ModelName: "square-catalog", Status: 1},
 					{ModelName: "square-hidden-catalog", Status: 0},
-					{ModelName: "square-partial-", NameRule: model.NameRulePrefix, Status: 1},
 					{ModelName: "square-partial-hidden", Status: 0},
-					{ModelName: "square-hidden-", NameRule: model.NameRulePrefix, Status: 0},
 					{ModelName: "square-hidden-override", Status: 1},
-					{ModelName: "square-off-", NameRule: model.NameRulePrefix, Status: 0},
-					{ModelName: "square-empty", NameRule: model.NameRulePrefix, Status: 1},
-					{ModelName: "square-empty-hidden", NameRule: model.NameRulePrefix, Status: 0},
-					{ModelName: "-ending", NameRule: model.NameRuleSuffix, Status: 1},
-					{ModelName: "square-prefix-", NameRule: model.NameRulePrefix, Status: 0},
-					{ModelName: "square-contains", NameRule: model.NameRuleContains, Status: 0},
 				}
 				ids := make([]int, 0, len(records))
 				for i := range records {
 					require.NoError(t, records[i].Insert())
 					ids = append(ids, records[i].Id)
 				}
+				rejectedRule := model.Model{ModelName: "square-prefix-", NameRule: model.NameRulePrefix, Status: 1}
+				require.ErrorContains(t, rejectedRule.Insert(), "only exact model matching is supported")
+				rejectedCreate := modelManagementRequest(t, CreateModelMeta, http.MethodPost, "/api/models/", rejectedRule, nil)
+				assert.NotContains(t, rejectedCreate.Body.String(), `"success":true`)
+
 				active := model.Channel{Name: "Square active", Type: 1, Key: "fixture", Group: "default", Status: common.ChannelStatusEnabled,
-					Models: "square-visible,square-hidden,square-bare,square-partial-on,square-partial-hidden,square-hidden-child,square-hidden-override,square-prefix-ending,square-contains-ending"}
+					Models: "square-visible,square-hidden,square-bare,square-partial-hidden,square-hidden-override"}
 				inactive := model.Channel{Name: "Square inactive", Type: 1, Key: "fixture", Group: "default", Status: common.ChannelStatusManuallyDisabled,
-					Models: "square-disabled,square-partial-off,square-off-child"}
+					Models: "square-disabled"}
 				for _, channel := range []*model.Channel{&active, &inactive} {
 					require.NoError(t, channel.Insert())
 				}
@@ -554,34 +548,17 @@ export function parseTaskResult() { return {}; }
 					"square-hidden-catalog":  model.ModelSquareHidden,
 					"square-bare":            model.ModelSquareVisible,
 					"square-disabled":        model.ModelSquareUnavailable,
-					"square-partial-":        model.ModelSquarePartial,
 					"square-partial-hidden":  model.ModelSquareHidden,
-					"square-hidden-":         model.ModelSquareHidden,
 					"square-hidden-override": model.ModelSquareVisible,
-					"square-off-":            model.ModelSquareHidden,
-					"square-empty":           model.ModelSquareUnavailable,
-					"square-empty-hidden":    model.ModelSquareHidden,
-					"square-prefix-":         model.ModelSquareHidden,
-					"square-contains":        model.ModelSquareHidden,
-					"-ending":                model.ModelSquareVisible,
 				}
 				for name, state := range expected {
 					row, exists := byName[name]
 					require.True(t, exists, name)
 					assert.Equal(t, state, row.SquareState, name)
-					if row.NameRule == model.NameRuleExact {
-						assert.Equal(t, state == model.ModelSquareVisible, catalog[name], name)
-					}
+					assert.Equal(t, state == model.ModelSquareVisible, catalog[name], name)
 				}
-				// 被规则命中的具体模型只在规则行的 matched_models 里，不再单独成行。
-				assert.Equal(t, []string{"square-partial-off", "square-partial-on"}, byName["square-partial-"].MatchedModels)
-				assert.Equal(t, []string{"square-hidden-child"}, byName["square-hidden-"].MatchedModels)
-				assert.Equal(t, []string{"square-off-child"}, byName["square-off-"].MatchedModels)
 				assert.Zero(t, byName["square-bare"].Id)
 				assert.Zero(t, byName["square-disabled"].Id)
-				for _, grouped := range []string{"square-partial-on", "square-hidden-child", "square-off-child", "square-prefix-ending", "square-contains-ending"} {
-					assert.NotContains(t, byName, grouped)
-				}
 				t.Run("filter_square_state_before_pagination", func(t *testing.T) {
 					type filteredResponse struct {
 						Success bool
@@ -624,11 +601,10 @@ export function parseTaskResult() { return {}; }
 						query   string
 						names   []string
 					}{
-						{"list", GetAllModelsMeta, "?include_channel_models=true&square_state=visible", []string{"square-visible", "square-bare", "square-hidden-override", "-ending"}},
+						{"list", GetAllModelsMeta, "?include_channel_models=true&square_state=visible", []string{"square-visible", "square-bare", "square-hidden-override"}},
 						{"metadata_only", SearchModelsMeta, "?keyword=square-&square_state=visible", []string{"square-visible", "square-hidden-override"}},
 						{"keyword", SearchModelsMeta, "?include_channel_models=true&keyword=square-partial&square_state=hidden", []string{"square-partial-hidden"}},
-						{"policy", SearchModelsMeta, "?include_channel_models=true&keyword=square-&square_state=partial&status=disabled", []string{}},
-						{"vendor_and_sync", SearchModelsMeta, "?include_channel_models=true&keyword=square-&square_state=partial&vendor=0&sync_official=no", []string{"square-partial-"}},
+						{"channel_id", SearchModelsMeta, fmt.Sprintf("?include_channel_models=true&keyword=square-&channel_id=%d", inactive.Id), []string{"square-disabled"}},
 						{"no_matches", SearchModelsMeta, "?include_channel_models=true&keyword=square-bare&square_state=hidden", []string{}},
 					} {
 						t.Run(test.name, func(t *testing.T) {
@@ -648,6 +624,8 @@ export function parseTaskResult() { return {}; }
 						recorder := modelManagementRequest(t, handler, "GET", "/api/models/?square_state=unknown", nil, &result)
 						assert.Equal(t, http.StatusBadRequest, recorder.Code)
 						assert.False(t, result.Success)
+						badChannelRecorder := modelManagementRequest(t, handler, "GET", "/api/models/?channel_id=invalid", nil, &result)
+						assert.Equal(t, http.StatusBadRequest, badChannelRecorder.Code)
 					}
 					for _, query := range []string{"p=-1", "page_size=-1"} {
 						recorder := modelManagementRequest(t, SearchModelsMeta, "GET", "/api/models/search?square_state=visible&"+query, nil, nil)
@@ -664,20 +642,20 @@ export function parseTaskResult() { return {}; }
 					Data    model.Model
 				}
 				modelManagementRequest(t, func(c *gin.Context) {
-					c.Params = gin.Params{{Key: "id", Value: strconv.Itoa(records[4].Id)}}
+					c.Params = gin.Params{{Key: "id", Value: strconv.Itoa(records[0].Id)}}
 					GetModelMeta(c)
-				}, "GET", "/api/models/"+strconv.Itoa(records[4].Id), nil, &detail)
+				}, "GET", "/api/models/"+strconv.Itoa(records[0].Id), nil, &detail)
 				require.True(t, detail.Success)
-				assert.Equal(t, model.ModelSquarePartial, detail.Data.SquareState)
+				assert.Equal(t, model.ModelSquareVisible, detail.Data.SquareState)
 			})
 			t.Run("channel_model_listing", func(t *testing.T) {
 				exact := model.Model{ModelName: "listing-exact", Status: 1, SyncOfficial: 1}
 				catalog := model.Model{ModelName: "listing-catalog", Status: 1}
-				rule := model.Model{ModelName: "listing-rule-", NameRule: model.NameRulePrefix, Status: 1}
-				for _, item := range []*model.Model{&exact, &catalog, &rule} {
+				otherExact := model.Model{ModelName: "listing-other", Status: 1}
+				for _, item := range []*model.Model{&exact, &catalog, &otherExact} {
 					require.NoError(t, item.Insert())
 				}
-				active := model.Channel{Name: "Listing active", Type: 1, Key: "fixture", Models: "listing-exact, listing-new,listing-rule-child,listing-new, ,", Group: "default", Status: common.ChannelStatusEnabled}
+				active := model.Channel{Name: "Listing active", Type: 1, Key: "fixture", Models: "listing-exact, listing-new,listing-new, ,", Group: "default", Status: common.ChannelStatusEnabled}
 				inactive := model.Channel{Name: "Listing inactive", Type: 1, Key: "fixture", Models: "listing-new,listing-disabled", Group: "default", Status: common.ChannelStatusManuallyDisabled}
 				for _, channel := range []*model.Channel{&active, &inactive} {
 					require.NoError(t, channel.Insert())
@@ -705,9 +683,8 @@ export function parseTaskResult() { return {}; }
 					names = append(names, item.ModelName)
 					byName[item.ModelName] = item
 				}
-				assert.Equal(t, []string{"listing-rule-", "listing-catalog", "listing-exact", "listing-disabled", "listing-new"}, names)
+				assert.Equal(t, []string{"listing-other", "listing-catalog", "listing-exact", "listing-disabled", "listing-new"}, names)
 				assert.True(t, byName[exact.ModelName].HasMetadata)
-				assert.Equal(t, []string{"listing-rule-child"}, byName["listing-rule-"].MatchedModels)
 				assert.False(t, byName["listing-new"].HasMetadata)
 				assert.Zero(t, byName["listing-new"].Id)
 				assert.Equal(t, 2, byName["listing-new"].ConfiguredChannelCount)
@@ -721,9 +698,10 @@ export function parseTaskResult() { return {}; }
 				}{
 					{"&p=2&page_size=2", 5, []string{"listing-exact", "listing-disabled"}},
 					{"&p=9&page_size=2", 5, []string{}},
-					{"&status=enabled", 3, []string{"listing-rule-", "listing-catalog", "listing-exact"}},
-					{"&sync_official=no", 2, []string{"listing-rule-", "listing-catalog"}},
-					{"&vendor=0", 5, []string{"listing-rule-", "listing-catalog", "listing-exact", "listing-disabled", "listing-new"}},
+					{"&status=enabled", 3, []string{"listing-other", "listing-catalog", "listing-exact"}},
+					{"&sync_official=no", 2, []string{"listing-other", "listing-catalog"}},
+					{"&vendor=0", 5, []string{"listing-other", "listing-catalog", "listing-exact", "listing-disabled", "listing-new"}},
+					{fmt.Sprintf("&channel_id=%d", inactive.Id), 2, []string{"listing-disabled", "listing-new"}},
 					{"&vendor=999", 0, []string{}},
 				} {
 					var page listingResponse
@@ -927,13 +905,10 @@ export function parseTaskResult() { return {}; }
 				}).Error)
 				exact := &model.Model{ModelName: "matrix-hidden-unpriced", Status: 0, SyncOfficial: 0}
 				require.NoError(t, exact.Insert())
-				rule := &model.Model{ModelName: "matrix-hidden-", NameRule: model.NameRulePrefix}
-				enrichModels([]*model.Model{exact, rule})
+				_, err := enrichModels([]*model.Model{exact})
+				require.NoError(t, err)
 				assert.Equal(t, []string{"available"}, exact.EnableGroups)
 				assert.Equal(t, []model.BoundChannel{{ID: active.Id, Name: "Active route", Type: 1}}, exact.BoundChannels)
-				// 精确行优先，规则不再“拥有”该模型，matched_models 只列规则兜底的具体模型。
-				assert.Empty(t, rule.MatchedModels)
-				assert.Zero(t, rule.MatchedCount)
 				assert.Empty(t, exact.Endpoints, "inferred endpoints must not become stored configuration")
 				priceBefore, err := model.GetModelPricingSnapshot([]string{"matrix-hidden-unpriced"})
 				require.NoError(t, err)
@@ -944,7 +919,8 @@ export function parseTaskResult() { return {}; }
 				assert.Contains(t, response.Body.String(), `"success":true`)
 				var reloaded model.Model
 				require.NoError(t, db.First(&reloaded, exact.Id).Error)
-				enrichModels([]*model.Model{&reloaded})
+				_, err = enrichModels([]*model.Model{&reloaded})
+				require.NoError(t, err)
 				assert.Equal(t, exact.Endpoints, reloaded.Endpoints)
 				assert.Empty(t, reloaded.BoundChannels)
 				prices, err := model.GetModelPricingSnapshot([]string{"matrix-hidden-unpriced", "matrix-renamed"})
@@ -982,6 +958,7 @@ export function parseTaskResult() { return {}; }
 							{ModelName: "matrix-new", Description: "New model", VendorName: "Matrix vendor", Status: 0, Endpoints: []byte(`{"openai":"/v1/chat/completions"}`)},
 							{ModelName: "matrix-blocked", Description: "Do not overwrite", Status: 1},
 							{ModelName: "matrix-catalog", Description: "Catalog only", Status: 1},
+							{ModelName: "matrix-ignored-prefix-", NameRule: model.NameRulePrefix, Description: "Skipped upstream rule", Status: 1},
 						}
 					}
 					encoded, err := common.Marshal(payload)
@@ -1008,6 +985,7 @@ export function parseTaskResult() { return {}; }
 				assert.Equal(t, "site", byName["matrix-new"].Scope)
 				assert.Equal(t, "catalog", byName["matrix-catalog"].Scope)
 				assert.Equal(t, "blocked", byName["matrix-blocked"].Kind)
+				assert.NotContains(t, byName, "matrix-ignored-prefix-", "upstream non-exact rules must be skipped")
 				var count int64
 				require.NoError(t, db.Model(&model.Vendor{}).Count(&count).Error)
 				assert.Zero(t, count)
@@ -1139,7 +1117,7 @@ func TestVendorManagementDatabaseMatrix(t *testing.T) {
 				assert.ErrorIs(t, edit.Update(), model.ErrVendorConflict)
 
 				one := model.Model{ModelName: "vendor-model-one", VendorID: source.Id, Icon: "Custom", Description: "Preserve description", Status: 0, SyncOfficial: 0}
-				rule := model.Model{ModelName: "vendor-rule-", VendorID: source.Id, NameRule: model.NameRulePrefix, Status: 1, SyncOfficial: 1}
+				rule := model.Model{ModelName: "vendor-model-two", VendorID: source.Id, NameRule: model.NameRuleExact, Status: 1, SyncOfficial: 1}
 				require.NoError(t, one.Insert())
 				require.NoError(t, rule.Insert())
 				priceBefore, err := model.GetModelPricingSnapshot([]string{one.ModelName})
@@ -1329,111 +1307,94 @@ func TestModelDeletionDatabaseMatrix(t *testing.T) {
 			require.NoError(t, db.Model(&model.Ability{}).Where("channel_id = ?", channel.Id).Count(&count).Error)
 			assert.EqualValues(t, 1, count)
 
-			for _, rule := range []int{model.NameRuleExact, model.NameRulePrefix, model.NameRuleContains, model.NameRuleSuffix} {
-				t.Run(fmt.Sprintf("rule_%d_exact_names_only_atomic_and_cached", rule), func(t *testing.T) {
-					name := fmt.Sprintf("delete-rule-%d", rule)
-					first := model.Model{ModelName: name, NameRule: rule, Status: 1}
-					second := model.Model{ModelName: name + "-second", Status: 1}
-					require.NoError(t, first.Insert())
-					require.NoError(t, second.Insert())
-					mapping := `{"` + name + `":"upstream-name"}`
-					priority, weight := int64(7), uint(9)
-					channels := []model.Channel{
-						{Name: "Enabled", Type: 1, Key: "fixture-key", Models: name + "," + name + "-keep," + second.ModelName, Group: "default,vip", Status: common.ChannelStatusEnabled, ModelMapping: &mapping, Priority: &priority, Weight: &weight},
-						{Name: "Disabled", Type: 1, Models: name + ",prefix-" + name, Group: "disabled-group", Status: common.ChannelStatusManuallyDisabled},
-						{Name: "Last model", Type: 1, Models: name, Group: "last-model-group", Status: common.ChannelStatusEnabled},
-						{Name: "Case-sensitive name", Type: 1, Models: strings.ToUpper(name), Group: "case-group", Status: common.ChannelStatusEnabled},
+			t.Run("exact_names_only_atomic_and_cached", func(t *testing.T) {
+				name := "delete-rule-0"
+				first := model.Model{ModelName: name, NameRule: model.NameRuleExact, Status: 1}
+				second := model.Model{ModelName: name + "-second", Status: 1}
+				require.NoError(t, first.Insert())
+				require.NoError(t, second.Insert())
+				mapping := `{"` + name + `":"upstream-name"}`
+				priority, weight := int64(7), uint(9)
+				channels := []model.Channel{
+					{Name: "Enabled", Type: 1, Key: "fixture-key", Models: name + "," + name + "-keep," + second.ModelName, Group: "default,vip", Status: common.ChannelStatusEnabled, ModelMapping: &mapping, Priority: &priority, Weight: &weight},
+					{Name: "Disabled", Type: 1, Models: name + ",prefix-" + name, Group: "disabled-group", Status: common.ChannelStatusManuallyDisabled},
+					{Name: "Last model", Type: 1, Models: name, Group: "last-model-group", Status: common.ChannelStatusEnabled},
+					{Name: "Case-sensitive name", Type: 1, Models: strings.ToUpper(name), Group: "case-group", Status: common.ChannelStatusEnabled},
+				}
+				for i := range channels {
+					require.NoError(t, db.Create(&channels[i]).Error)
+					require.NoError(t, channels[i].UpdateAbilities(db))
+				}
+				common.MemoryCacheEnabled = true
+				model.InitChannelCache()
+				cached, err := model.GetRandomSatisfiedChannel("default", name, 0, nil)
+				require.NoError(t, err)
+				require.NotNil(t, cached)
+				baseline, err := model.GetModelPricingSnapshot([]string{name})
+				require.NoError(t, err)
+				require.NoError(t, model.UpdateModelPricing([]model.ModelPricingChange{{ModelName: name, ExpectedVersion: baseline.EmptyVersion, Pricing: model.PricingValues{"ModelPrice": float64(2)}}}))
+				pricingBefore, err := model.GetModelPricingSnapshot([]string{name, second.ModelName})
+				require.NoError(t, err)
+				body := map[string]any{"model_ids": []int{first.Id, second.Id, first.Id}, "remove_from_channels": true}
+				// A failure at the final metadata delete must undo every earlier
+				// channel/ability write and keep the published cache intact.
+				require.NoError(t, db.Callback().Delete().Before("gorm:delete").Register("fail_model_deletion", func(tx *gorm.DB) {
+					if tx.Statement.Table == "models" {
+						tx.AddError(errors.New("injected model deletion failure"))
 					}
-					for i := range channels {
-						require.NoError(t, db.Create(&channels[i]).Error)
-						require.NoError(t, channels[i].UpdateAbilities(db))
+				}))
+				result, err := model.DeleteModelMetadata([]int{first.Id, second.Id}, true, false)
+				require.Error(t, err)
+				assert.Zero(t, result)
+				require.NoError(t, db.Callback().Delete().Remove("fail_model_deletion"))
+				for _, original := range channels {
+					var after model.Channel
+					require.NoError(t, db.First(&after, original.Id).Error)
+					assert.Equal(t, original, after)
+				}
+				cached, err = model.GetRandomSatisfiedChannel("default", name, 0, nil)
+				require.NoError(t, err)
+				require.NotNil(t, cached)
+				recorder := modelManagementRequest(t, BatchDeleteModelMeta, http.MethodPost, "/api/models/delete", body, &response)
+				require.True(t, response.Success, recorder.Body.String())
+				assert.Equal(t, model.ModelDeleteResult{DeletedCount: 2, UpdatedChannels: 3}, response.Data)
+				for i, original := range channels {
+					var after model.Channel
+					require.NoError(t, db.First(&after, original.Id).Error)
+					original.Models = []string{name + "-keep", "prefix-" + name, "", strings.ToUpper(name)}[i]
+					assert.Equal(t, original, after, "only the model list changes")
+				}
+				var abilities []model.Ability
+				require.NoError(t, db.Where("channel_id IN ?", []int{channels[0].Id, channels[1].Id, channels[2].Id, channels[3].Id}).Find(&abilities).Error)
+				assert.Len(t, abilities, 4)
+				for _, ability := range abilities {
+					assert.NotEqual(t, name, ability.Model)
+					assert.NotEqual(t, second.ModelName, ability.Model)
+					assert.NotEmpty(t, ability.Model)
+					if ability.ChannelId == channels[0].Id {
+						assert.Equal(t, &priority, ability.Priority)
+						assert.Equal(t, weight, ability.Weight)
+						assert.True(t, ability.Enabled)
 					}
-					common.MemoryCacheEnabled = true
-					model.InitChannelCache()
-					cached, err := model.GetRandomSatisfiedChannel("default", name, 0, nil)
-					require.NoError(t, err)
-					require.NotNil(t, cached)
-					baseline, err := model.GetModelPricingSnapshot([]string{name})
-					require.NoError(t, err)
-					require.NoError(t, model.UpdateModelPricing([]model.ModelPricingChange{{ModelName: name, ExpectedVersion: baseline.EmptyVersion, Pricing: model.PricingValues{"ModelPrice": float64(2)}}}))
-					pricingBefore, err := model.GetModelPricingSnapshot([]string{name, second.ModelName})
-					require.NoError(t, err)
-					if rule != model.NameRuleExact {
-						_, err := model.DeleteModelMetadata([]int{first.Id, second.Id}, true, true)
-						require.EqualError(t, err, "only exact-match models can be removed from channels")
-						after, err := model.GetModelPricingSnapshot([]string{name, second.ModelName})
-						require.NoError(t, err)
-						assert.Equal(t, pricingBefore, after)
-						require.NoError(t, db.Model(&model.Model{}).Where("id IN ?", []int{first.Id, second.Id}).Count(&count).Error)
-						assert.EqualValues(t, 2, count)
-						for _, original := range channels {
-							var after model.Channel
-							require.NoError(t, db.First(&after, original.Id).Error)
-							assert.Equal(t, original, after)
-						}
-						return
+					if ability.ChannelId == channels[1].Id {
+						assert.False(t, ability.Enabled)
 					}
-					body := map[string]any{"model_ids": []int{first.Id, second.Id, first.Id}, "remove_from_channels": true}
-					// A failure at the final metadata delete must undo every earlier
-					// channel/ability write and keep the published cache intact.
-					require.NoError(t, db.Callback().Delete().Before("gorm:delete").Register("fail_model_deletion", func(tx *gorm.DB) {
-						if tx.Statement.Table == "models" {
-							tx.AddError(errors.New("injected model deletion failure"))
-						}
-					}))
-					result, err := model.DeleteModelMetadata([]int{first.Id, second.Id}, true, false)
-					require.Error(t, err)
-					assert.Zero(t, result)
-					require.NoError(t, db.Callback().Delete().Remove("fail_model_deletion"))
-					for _, original := range channels {
-						var after model.Channel
-						require.NoError(t, db.First(&after, original.Id).Error)
-						assert.Equal(t, original, after)
-					}
-					cached, err = model.GetRandomSatisfiedChannel("default", name, 0, nil)
-					require.NoError(t, err)
-					require.NotNil(t, cached)
-					recorder := modelManagementRequest(t, BatchDeleteModelMeta, http.MethodPost, "/api/models/delete", body, &response)
-					require.True(t, response.Success, recorder.Body.String())
-					assert.Equal(t, model.ModelDeleteResult{DeletedCount: 2, UpdatedChannels: 3}, response.Data)
-					for i, original := range channels {
-						var after model.Channel
-						require.NoError(t, db.First(&after, original.Id).Error)
-						original.Models = []string{name + "-keep", "prefix-" + name, "", strings.ToUpper(name)}[i]
-						assert.Equal(t, original, after, "only the model list changes")
-					}
-					var abilities []model.Ability
-					require.NoError(t, db.Where("channel_id IN ?", []int{channels[0].Id, channels[1].Id, channels[2].Id, channels[3].Id}).Find(&abilities).Error)
-					assert.Len(t, abilities, 4)
-					for _, ability := range abilities {
-						assert.NotEqual(t, name, ability.Model)
-						assert.NotEqual(t, second.ModelName, ability.Model)
-						assert.NotEmpty(t, ability.Model)
-						if ability.ChannelId == channels[0].Id {
-							assert.Equal(t, &priority, ability.Priority)
-							assert.Equal(t, weight, ability.Weight)
-							assert.True(t, ability.Enabled)
-						}
-						if ability.ChannelId == channels[1].Id {
-							assert.False(t, ability.Enabled)
-						}
-					}
-					for _, group := range []string{"default", "vip", "last-model-group"} {
-						cached, _ = model.GetRandomSatisfiedChannel(group, name, 0, nil)
-						assert.Nil(t, cached)
-					}
-					cached, err = model.GetRandomSatisfiedChannel("default", name+"-keep", 0, nil)
-					require.NoError(t, err)
-					require.NotNil(t, cached)
-					pricingAfter, err := model.GetModelPricingSnapshot([]string{name, second.ModelName})
-					require.NoError(t, err)
-					assert.Equal(t, pricingBefore, pricingAfter)
-					require.NoError(t, db.Model(&model.Model{}).Where("id IN ?", []int{first.Id, second.Id}).Count(&count).Error)
-					assert.Zero(t, count)
-					_, err = model.DeleteModelMetadata([]int{first.Id}, true, false)
-					assert.Error(t, err, "stale selections cannot delete newly created records")
-				})
-			}
+				}
+				for _, group := range []string{"default", "vip", "last-model-group"} {
+					cached, _ = model.GetRandomSatisfiedChannel(group, name, 0, nil)
+					assert.Nil(t, cached)
+				}
+				cached, err = model.GetRandomSatisfiedChannel("default", name+"-keep", 0, nil)
+				require.NoError(t, err)
+				require.NotNil(t, cached)
+				pricingAfter, err := model.GetModelPricingSnapshot([]string{name, second.ModelName})
+				require.NoError(t, err)
+				assert.Equal(t, pricingBefore, pricingAfter)
+				require.NoError(t, db.Model(&model.Model{}).Where("id IN ?", []int{first.Id, second.Id}).Count(&count).Error)
+				assert.Zero(t, count)
+				_, err = model.DeleteModelMetadata([]int{first.Id}, true, false)
+				assert.Error(t, err, "stale selections cannot delete newly created records")
+			})
 			for _, removeChannels := range []bool{false, true} {
 				t.Run(fmt.Sprintf("pricing_removal_channels_%t", removeChannels), func(t *testing.T) {
 					name := fmt.Sprintf("remove-pricing-%t", removeChannels)

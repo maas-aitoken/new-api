@@ -321,6 +321,9 @@ func validateOptionValue(key string, value string) error {
 	if key == costMultiplierKeyMigratedKey {
 		return errCostMultiplierKeyMigratedReadOnly
 	}
+	if key == modelNameRuleExactMigratedKey {
+		return errModelNameRuleExactMigratedReadOnly
+	}
 	if err := operation_setting.ValidateQuotaOption(key, value); err != nil {
 		return err
 	}
@@ -483,7 +486,7 @@ func UpdateOptionsBulk(values map[string]string) error {
 }
 
 func updateOptionMap(key string, value string) (err error) {
-	if key == retiredThemeOptionKey || key == legacyAccessTokenRetireAtKey || key == costMultiplierKeyMigratedKey {
+	if key == retiredThemeOptionKey || key == legacyAccessTokenRetireAtKey || key == costMultiplierKeyMigratedKey || key == modelNameRuleExactMigratedKey {
 		common.OptionMapRWMutex.Lock()
 		delete(common.OptionMap, key)
 		common.OptionMapRWMutex.Unlock()
