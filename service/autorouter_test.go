@@ -6,6 +6,7 @@ import (
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -1413,4 +1414,46 @@ func TestAutoRouterListedOnlyWhenResolvable(t *testing.T) {
 
 	autorouter_setting.GetAutoRouterSetting().Enabled = false
 	assert.False(t, AutoRouterListed([]string{"chat"}))
+}
+
+// 重试按榜单条目排除失败的模型：名字自带 -max 这类后缀的模型和它的档位变体
+// 靠名字区分不开，条目没有这个歧义。
+func TestResolveAutoRetryModelExcludesFailedRankingEntries(t *testing.T) {
+	tests := []struct {
+		name    string
+		entries []string
+		serves  []string
+		want    []string
+	}{
+		{"a model named like an effort is tried once", []string{"qwen3.7-max"}, []string{"qwen3.7-max", "qwen3.7-max-xhigh"}, []string{"qwen3.7-max-xhigh"}},
+		{"a failed model does not exclude the model named after it", []string{"foo", "foo-max"}, []string{"foo", "foo-max"}, []string{"foo", "foo-max"}},
+		{"the model named after another is tried first", []string{"foo-max", "foo"}, []string{"foo", "foo-max"}, []string{"foo-max", "foo"}},
+		{"effort variants of one model are excluded together", []string{"coder", "other"}, []string{"coder-low", "coder-xhigh", "other"}, []string{"coder-xhigh", "other"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var calls atomic.Int32
+			useAutoRouterSetting(t, fakeJev(t, &calls, 0).URL, 1000)
+			setting := autorouter_setting.GetAutoRouterSetting()
+			setting.TaskModels = map[string][]string{"code.build": tt.entries}
+			setting.DefaultModels = tt.entries
+			candidates := candidatesFrom(func(name string) bool { return slices.Contains(tt.serves, name) })
+			c := newAutoRouterContext(9911, `{"messages":[{"role":"user","content":"hard"}]}`)
+			common.SetContextKey(c, constant.ContextKeyAutoRouted, true)
+
+			first, err := ResolveAutoModel(c, candidates)
+			require.NoError(t, err)
+			attempts := []string{first.ResolvedModel}
+			// 榜单条目有限，每次重试排除一个，所以走完所有条目后一定停下；上限只防止测试自己挂死。
+			for range len(tt.entries) + 1 {
+				ExcludeAutoModel(c, attempts[len(attempts)-1])
+				next, found := ResolveAutoRetryModel(c, candidates)
+				if !found {
+					break
+				}
+				attempts = append(attempts, next.ResolvedModel)
+			}
+			assert.Equal(t, tt.want, attempts)
+		})
+	}
 }
