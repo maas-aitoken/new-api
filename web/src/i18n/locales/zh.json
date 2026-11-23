@@ -56,6 +56,8 @@
     "Auto requests only": "仅 auto 请求",
     "Auto retry limit": "Auto 重试上限",
     "Auto routing": "Auto 路由",
+    "Auto routing always enforces": "Auto 路由始终拦截",
+    "Auto-routed requests (model auto and smart routing keys) enforce capability declarations even in shadow mode. Models without a declaration are not selectable. Other requests keep the gate mode above.": "auto 路由请求（model=auto、智能路由 key）在 shadow 模式下也按能力声明真正过滤候选模型与渠道，未声明模型不可选。非 auto 请求仍按上面的门控模式执行。",
     "Basics": "基础",
     "Below this task-change score the request continues the previous task: the model stays, so the prompt cache survives.": "任务变化分低于该值时，视为延续上一个任务：模型保持不变，提示词缓存得以保留。",
     "Best on the gateway": "是网关上的最高分",

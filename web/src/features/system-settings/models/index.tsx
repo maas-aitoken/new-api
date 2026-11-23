@@ -101,6 +101,7 @@ const defaultModelSettings: ModelSettings = {
   'capability_gate_setting.event_retention_days': 30,
   'capability_gate_setting.record_only_dimensions': 'params,tools.parallel',
   'capability_gate_setting.record_passed': false,
+  'capability_gate_setting.auto_enforce': false,
   'channel_affinity_setting.enabled': false,
   'channel_affinity_setting.switch_on_success': true,
   'channel_affinity_setting.keep_on_channel_disabled': false,
