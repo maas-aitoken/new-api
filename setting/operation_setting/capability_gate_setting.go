@@ -10,9 +10,14 @@ import (
 
 // CapabilityGateSetting 是请求能力门控的运行时配置（全部来自系统设置）。
 type CapabilityGateSetting struct {
-	Mode               string `json:"mode"`
-	MaxBodyBytes       int64  `json:"max_body_bytes"`
-	EventRetentionDays int    `json:"event_retention_days"`
+	Mode string `json:"mode"`
+	// AutoEnforce 让 auto 路由请求（客户端传 model=auto、智能路由 key、额度档位
+	// 强制 auto）在全局 shadow 下也按 enforce 处置：候选模型按严格白名单筛选
+	// （未声明模型不可选），选定后的渠道同样真正收窄。非 auto 请求维持全局模式，
+	// 全局 off 仍然整体关闭。
+	AutoEnforce        bool  `json:"auto_enforce"`
+	MaxBodyBytes       int64 `json:"max_body_bytes"`
+	EventRetentionDays int   `json:"event_retention_days"`
 	// RecordOnlyDimensions 是"只记录不拦截"的维度：可以写维度组（params）
 	// 或单个维度（tools.parallel），命中规则同 name_rule 的前缀语义。
 	RecordOnlyDimensions string `json:"record_only_dimensions"`

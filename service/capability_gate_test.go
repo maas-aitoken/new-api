@@ -518,7 +518,7 @@ func TestCapabilityGateContextWindowFollowsTheCandidatesTokenizerFamily(t *testi
 	setting.Mode = operation_setting.CapabilityGateModeEnforce
 
 	allows := func(body, candidate string) bool {
-		gate := BuildCapabilityGate(estimateContext(chat.path, body))
+		gate := BuildCapabilityGate(estimateContext(chat.path, body), false)
 		require.NotNil(t, gate)
 		return gate.AllowsAnyChannel(candidate, []int{1}, false)
 	}
@@ -526,6 +526,43 @@ func TestCapabilityGateContextWindowFollowsTheCandidatesTokenizerFamily(t *testi
 	assert.False(t, allows(chat.body, "claude-opus-4-7"), "同样的窗口放不下 opus 4.7 更碎的 tokenizer")
 	assert.False(t, allows(chat.body, "claude-3-5-haiku"), "带上 tools 定义就超出窗口")
 	assert.True(t, allows(bare, "claude-3-5-haiku"), "同一个窗口，去掉 tools 就放得下")
+}
+
+// auto_enforce 只把 auto 路由请求在全局 shadow 下提升为 enforce：严格白名单
+// （未声明模型不可选）和渠道收窄都真正生效；非 auto 请求维持 shadow，
+// 全局 off 仍是总开关，enforce 不需要开关。
+func TestBuildCapabilityGateAutoEnforceOnlyUpgradesAutoRequests(t *testing.T) {
+	setupCapabilityGateTest(t)
+	chat := estimateCases(t)[0]
+	setting := operation_setting.GetCapabilityGateSetting()
+	previousMode, previousAuto := setting.Mode, setting.AutoEnforce
+	t.Cleanup(func() { setting.Mode, setting.AutoEnforce = previousMode, previousAuto })
+
+	build := func(mode string, autoEnforce, autoRouting bool) *CapabilityGate {
+		setting.Mode, setting.AutoEnforce = mode, autoEnforce
+		return BuildCapabilityGate(estimateContext(chat.path, chat.body), autoRouting)
+	}
+
+	gate := build(operation_setting.CapabilityGateModeShadow, true, true)
+	require.NotNil(t, gate)
+	assert.Equal(t, CapabilityGateEnforce, gate.mode)
+	assert.False(t, gate.AllowsAnyChannel("unregistered-model", []int{1, 2}, false), "未声明模型在 auto 严格白名单下不可选")
+	assert.Equal(t, []int{2}, gate.FilterChannels(&gin.Context{}, "gated-model", []int{1, 2}), "渠道收窄真正生效")
+
+	gate = build(operation_setting.CapabilityGateModeShadow, true, false)
+	require.NotNil(t, gate)
+	assert.Equal(t, CapabilityGateShadow, gate.mode, "非 auto 请求维持 shadow")
+	assert.True(t, gate.AllowsAnyChannel("unregistered-model", []int{1, 2}, false))
+
+	gate = build(operation_setting.CapabilityGateModeShadow, false, true)
+	require.NotNil(t, gate)
+	assert.Equal(t, CapabilityGateShadow, gate.mode, "开关关闭时 auto 也维持 shadow")
+
+	assert.Nil(t, build(operation_setting.CapabilityGateModeOff, true, true), "全局 off 仍是总开关")
+
+	gate = build(operation_setting.CapabilityGateModeEnforce, false, false)
+	require.NotNil(t, gate)
+	assert.Equal(t, CapabilityGateEnforce, gate.mode)
 }
 
 func TestCapabilityGateEventTruncatesRejectedChannelsOnAWholeChannelId(t *testing.T) {

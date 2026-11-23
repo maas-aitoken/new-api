@@ -90,10 +90,16 @@ type CapabilityGateSummary struct {
 }
 
 // BuildCapabilityGate 解析一次请求体并构造闸门。非四协议入口返回 nil。
-func BuildCapabilityGate(c *gin.Context) *CapabilityGate {
+// autoRouting 表示本请求由 auto 选模（客户端传 model=auto、智能路由 key、
+// 额度档位强制 auto）；capability_gate_setting.auto_enforce 打开时这类请求
+// 在全局 shadow 下也按 enforce 处置，全局 off 仍是总开关。
+func BuildCapabilityGate(c *gin.Context, autoRouting bool) *CapabilityGate {
 	mode := CurrentCapabilityGateMode()
 	if mode == CapabilityGateOff {
 		return nil
+	}
+	if autoRouting && mode == CapabilityGateShadow && operation_setting.GetCapabilityGateSetting().AutoEnforce {
+		mode = CapabilityGateEnforce
 	}
 	if !model.HasCapabilityDeclarations() {
 		return nil
