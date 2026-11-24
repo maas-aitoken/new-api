@@ -648,6 +648,48 @@ func TestDistributeLockedKeyRejectsAuto(t *testing.T) {
 	})
 }
 
+func TestDistributeHybridKeyAllowsAutoAndNamedModels(t *testing.T) {
+	setupAutoRoutingDistribute(t, []string{"general"}, map[int][]string{1: {"general", "private-model"}})
+	useModelPrices(t, map[string]float64{"general": 1, "private-model": 1})
+	hybridKey := func(c *gin.Context) {
+		common.SetContextKey(c, constant.ContextKeyTokenRoutingMode, common.TokenRoutingModeHybrid)
+	}
+
+	autoBody := `{"model":"auto","messages":[{"role":"user","content":"hello"}]}`
+	stored, originalModel, recorder := serveAutoRoutingRequestIn(t, "/v1/chat/completions", "default", 9641, autoBody, hybridKey)
+	require.Equal(t, http.StatusNoContent, recorder.Code, recorder.Body.String())
+	assert.Equal(t, "general", originalModel)
+	assert.JSONEq(t, `{"model":"general","messages":[{"role":"user","content":"hello"}]}`, stored)
+
+	namedBody := `{"model":"private-model","messages":[{"role":"user","content":"hello"}]}`
+	stored, originalModel, recorder = serveAutoRoutingRequestIn(t, "/v1/chat/completions", "default", 9642, namedBody, hybridKey)
+	require.Equal(t, http.StatusNoContent, recorder.Code, recorder.Body.String())
+	assert.Equal(t, "private-model", originalModel)
+	assert.Equal(t, namedBody, stored)
+
+	poolKey := func(c *gin.Context) {
+		hybridKey(c)
+		common.SetContextKey(c, constant.ContextKeyTokenModelLimitEnabled, true)
+		common.SetContextKey(c, constant.ContextKeyTokenModelLimit, map[string]bool{"private-model": true})
+	}
+	_, _, recorder = serveAutoRoutingRequestIn(t, "/v1/chat/completions", "default", 9643,
+		`{"model":"general","messages":[{"role":"user","content":"hello"}]}`, poolKey)
+	assert.Equal(t, http.StatusForbidden, recorder.Code, "a hybrid key still enforcing its model pool on named models")
+
+	_, _, recorder = serveAutoRoutingRequestIn(t, "/v1/completions", "default", 9644,
+		`{"model":"auto","prompt":"hello"}`, hybridKey)
+	assert.Equal(t, http.StatusForbidden, recorder.Code, "auto is not available on formats the auto router cannot serve")
+
+	geminiBody := `{"contents":[{"role":"user","parts":[{"text":"hello"}]}]}`
+	_, _, recorder = serveAutoRoutingRequestIn(t, "/v1beta/models/auto:generateContent", "default", 9645, geminiBody, hybridKey)
+	assert.Equal(t, http.StatusForbidden, recorder.Code)
+
+	stored, originalModel, recorder = serveAutoRoutingRequestIn(t, "/v1beta/models/private-model:generateContent", "default", 9646, geminiBody, hybridKey)
+	require.Equal(t, http.StatusNoContent, recorder.Code, recorder.Body.String())
+	assert.Equal(t, "private-model", originalModel)
+	assert.Equal(t, geminiBody, stored)
+}
+
 // Gemini 原生格式（模型名在 URL 里）和 /v1/completions 都是对话，但 auto 改写不了：智能路由 key 在里面
 // 写具体模型就能绕开 auto，所以平台开着 auto 时整种格式都拒绝（Gemini 的 embedContent 也拒，embedding
 // 走 /v1/embeddings）。锁定模型 key 不受影响；平台关了 auto 时智能路由 key 照常按模型池直接调。

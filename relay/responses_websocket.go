@@ -19,6 +19,7 @@ import (
 	"github.com/QuantumNous/new-api/i18n"
 	"github.com/QuantumNous/new-api/middleware"
 	appmodel "github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/pkg/autorouter"
 	perfmetrics "github.com/QuantumNous/new-api/pkg/perf_metrics"
 	"github.com/QuantumNous/new-api/pkg/wsmanager"
 	relaychannel "github.com/QuantumNous/new-api/relay/channel"
@@ -27,6 +28,7 @@ import (
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting/autorouter_setting"
 
 	"github.com/MoeForge/moego/ojson"
 	"github.com/gin-gonic/gin"
@@ -262,6 +264,13 @@ func (s *responsesWSSession) runCall(c *gin.Context, state *responsesWSCallState
 	}()
 	if modelName == "" {
 		return newResponsesWSInvalidRequestError(errors.New("model is required"))
+	}
+	if modelName == autorouter.AutoModel && autorouter_setting.GetAutoRouterSetting().Enabled {
+		routingMode, _ := common.GetContextKeyType[common.TokenRoutingMode](c, appconstant.ContextKeyTokenRoutingMode)
+		if routingMode == common.TokenRoutingModeHybrid {
+			return types.NewErrorWithStatusCode(errors.New(i18n.T(c, i18n.MsgRelayHybridAutoResponsesWSUnsupported)),
+				types.ErrorCodeAccessDenied, http.StatusForbidden, types.ErrOptionWithSkipRetry())
+		}
 	}
 	if s.lockedModel != "" && modelName != s.lockedModel {
 		return newResponsesWSInvalidRequestError(fmt.Errorf("responses websocket connection is locked to model %q", s.lockedModel))
