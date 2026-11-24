@@ -8400,6 +8400,27 @@
     "The weight given to recent request success rate.": "Poids accordé au taux de réussite récent des requêtes.",
     "Sampling temperature controls score variability; lower values produce more stable routing.": "La température d'échantillonnage contrôle la variabilité du score ; une valeur plus basse rend le routage plus stable.",
     "Capacity is one minus the request share. Success adds four prior successes to the measured outcomes; Samples shows the evidence strength.": "La capacité vaut un moins la part de requêtes. La réussite ajoute quatre succès a priori aux résultats mesurés ; le nombre d’échantillons indique la solidité des preuves.",
-    "Capacity is the lowest remaining fraction of configured RPM, TPM and in-flight limits. Scheduler and affinity use their concrete channel; native estimates use first-attempt probabilities. No effective limit or estimate means full capacity; an exhausted pool means none.": "La capacité est la plus faible fraction restante parmi les limites configurées de RPM, TPM et de requêtes en cours. Le scheduler et l’affinité utilisent leur canal concret ; les estimations natives pondèrent les canaux selon la probabilité de première tentative. Sans limite ou estimation exploitable, elle vaut 1 ; un pool épuisé vaut 0."
-  }
+    "Capacity is the lowest remaining fraction of configured RPM, TPM and in-flight limits. Scheduler and affinity use their concrete channel; native estimates use first-attempt probabilities. No effective limit or estimate means full capacity; an exhausted pool means none.": "La capacité est la plus faible fraction restante parmi les limites configurées de RPM, TPM et de requêtes en cours. Le scheduler et l’affinité utilisent leur canal concret ; les estimations natives pondèrent les canaux selon la probabilité de première tentative. Sans limite ou estimation exploitable, elle vaut 1 ; un pool épuisé vaut 0.",
+  "Base price": "Prix de base",
+  "Channel cost multipliers": "Multiplicateurs de coût par canal",
+  "Effective channel price": "Prix effectif par canal",
+  "Failed to load serving channels": "Échec du chargement des canaux",
+  "Model base pricing is shared across channels. Set a per-channel multiplier (default 1×) to scale user charges when requests route through that channel.": "La tarification de base du modèle est commune aux canaux. Définissez un multiplicateur par canal (1× par défaut) pour ajuster la facturation lorsque les requêtes passent par ce canal.",
+  "Saved immediately on blur or Enter": "Enregistrement immédiat à la perte de focus ou avec Entrée",
+  "Capability narrowed": "Capacité restreinte",
+  "Capacity pool": "Pool de capacité",
+  "Channel effective": "Capacité effective du canal",
+  "Channel narrowing JSON": "JSON de restriction du canal",
+  "Channel now matches model-level capabilities": "Le canal correspond désormais aux capacités du modèle",
+  "Configure narrowing": "Configurer la restriction",
+  "Current effective differences": "Différences effectives actuelles",
+  "Declare capabilities": "Déclarer les capacités",
+  "Live usage / in flight": "Utilisation en direct / en cours",
+  "Only write dimensions that this channel needs to restrict; omitted fields automatically follow the model-level declaration.": "Indiquez uniquement les dimensions à restreindre pour ce canal ; les champs omis suivent automatiquement la déclaration du modèle.",
+  "Rate & concurrency limits": "Limites de débit et de concurrence",
+  "Restore model-level capabilities": "Restaurer les capacités du modèle",
+  "Same as model capabilities": "Identique aux capacités du modèle",
+  "Same as model-level capability declaration.": "Identique à la déclaration de capacité du modèle.",
+  "Model-level declaration": "Déclaration du modèle"
+}
 }

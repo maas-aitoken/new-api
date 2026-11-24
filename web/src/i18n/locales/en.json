@@ -8412,6 +8412,27 @@
     "The weight given to recent request success rate.": "The weight given to recent request success rate.",
     "Sampling temperature controls score variability; lower values produce more stable routing.": "Sampling temperature controls score variability; lower values produce more stable routing.",
     "Capacity is one minus the request share. Success adds four prior successes to the measured outcomes; Samples shows the evidence strength.": "Capacity is one minus the request share. Success adds four prior successes to the measured outcomes; Samples shows the evidence strength.",
-    "Capacity is the lowest remaining fraction of configured RPM, TPM and in-flight limits. Scheduler and affinity use their concrete channel; native estimates use first-attempt probabilities. No effective limit or estimate means full capacity; an exhausted pool means none.": "Capacity is the lowest remaining fraction of configured RPM, TPM and in-flight limits. Scheduler and affinity use their concrete channel; native estimates use first-attempt probabilities. No effective limit or estimate means full capacity; an exhausted pool means none."
-  }
+    "Capacity is the lowest remaining fraction of configured RPM, TPM and in-flight limits. Scheduler and affinity use their concrete channel; native estimates use first-attempt probabilities. No effective limit or estimate means full capacity; an exhausted pool means none.": "Capacity is the lowest remaining fraction of configured RPM, TPM and in-flight limits. Scheduler and affinity use their concrete channel; native estimates use first-attempt probabilities. No effective limit or estimate means full capacity; an exhausted pool means none.",
+  "Base price": "Base price",
+  "Channel cost multipliers": "Channel cost multipliers",
+  "Effective channel price": "Effective channel price",
+  "Failed to load serving channels": "Failed to load serving channels",
+  "Model base pricing is shared across channels. Set a per-channel multiplier (default 1×) to scale user charges when requests route through that channel.": "Model base pricing is shared across channels. Set a per-channel multiplier (default 1×) to scale user charges when requests route through that channel.",
+  "Saved immediately on blur or Enter": "Saved immediately on blur or Enter",
+  "Capability narrowed": "Capability narrowed",
+  "Capacity pool": "Capacity pool",
+  "Channel effective": "Channel effective",
+  "Channel narrowing JSON": "Channel narrowing JSON",
+  "Channel now matches model-level capabilities": "Channel now matches model-level capabilities",
+  "Configure narrowing": "Configure narrowing",
+  "Current effective differences": "Current effective differences",
+  "Declare capabilities": "Declare capabilities",
+  "Live usage / in flight": "Live usage / in flight",
+  "Only write dimensions that this channel needs to restrict; omitted fields automatically follow the model-level declaration.": "Only write dimensions that this channel needs to restrict; omitted fields automatically follow the model-level declaration.",
+  "Rate & concurrency limits": "Rate & concurrency limits",
+  "Restore model-level capabilities": "Restore model-level capabilities",
+  "Same as model capabilities": "Same as model capabilities",
+  "Same as model-level capability declaration.": "Same as model-level capability declaration.",
+  "Model-level declaration": "Model-level declaration"
+}
 }

@@ -32,16 +32,6 @@ const MODELS_SECTIONS = [
     titleKey: 'Vendors',
     build: () => null,
   },
-  {
-    id: 'capabilities',
-    titleKey: 'Model channel capabilities',
-    build: () => null,
-  },
-  {
-    id: 'deployments',
-    titleKey: 'Deployments',
-    build: () => null,
-  },
 ] as const
 
 export type ModelsSectionId = (typeof MODELS_SECTIONS)[number]['id']

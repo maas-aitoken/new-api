@@ -230,6 +230,7 @@ export async function deleteVendor(
 
 export async function getCapabilityTargets(
   params: {
+    model?: string
     keyword?: string
     channel_id?: number
     p?: number

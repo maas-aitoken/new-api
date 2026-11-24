@@ -8400,6 +8400,27 @@
     "The weight given to recent request success rate.": "最近のリクエスト成功率に与える重みです。",
     "Sampling temperature controls score variability; lower values produce more stable routing.": "サンプリング温度はスコアの変動性を制御します。値が低いほどルーティングが安定します。",
     "Capacity is one minus the request share. Success adds four prior successes to the measured outcomes; Samples shows the evidence strength.": "容量は 1 からリクエスト占有率を引いた値です。成功率には測定結果へ事前成功 4 件を加え、サンプル数は証拠の強さを示します。",
-    "Capacity is the lowest remaining fraction of configured RPM, TPM and in-flight limits. Scheduler and affinity use their concrete channel; native estimates use first-attempt probabilities. No effective limit or estimate means full capacity; an exhausted pool means none.": "容量は、設定された RPM、TPM、実行中リクエストの各上限に対する残りの割合の最小値です。スケジューラとアフィニティは確定したチャンネルを使用し、ネイティブ推定では初回試行の確率で重み付けします。有効な上限または推定がない場合は 1、プールが枯渇している場合は 0 です。"
-  }
+    "Capacity is the lowest remaining fraction of configured RPM, TPM and in-flight limits. Scheduler and affinity use their concrete channel; native estimates use first-attempt probabilities. No effective limit or estimate means full capacity; an exhausted pool means none.": "容量は、設定された RPM、TPM、実行中リクエストの各上限に対する残りの割合の最小値です。スケジューラとアフィニティは確定したチャンネルを使用し、ネイティブ推定では初回試行の確率で重み付けします。有効な上限または推定がない場合は 1、プールが枯渇している場合は 0 です。",
+  "Base price": "基本価格",
+  "Channel cost multipliers": "チャネル別コスト倍率",
+  "Effective channel price": "チャネル適用単価",
+  "Failed to load serving channels": "サービスチャネルの読み込みに失敗しました",
+  "Model base pricing is shared across channels. Set a per-channel multiplier (default 1×) to scale user charges when requests route through that channel.": "モデルの基本料金は全チャネルで共通です。チャネルごとの倍率（デフォルト 1×）を設定すると、そのチャネルを経由するリクエストの課金額を調整できます。",
+  "Saved immediately on blur or Enter": "フォーカス移動または Enter で即時保存",
+  "Capability narrowed": "能力を制限中",
+  "Capacity pool": "キャパシティプール",
+  "Channel effective": "チャネル有効能力",
+  "Channel narrowing JSON": "チャネル制限 JSON",
+  "Channel now matches model-level capabilities": "モデルレベルの能力に戻しました",
+  "Configure narrowing": "制限を設定",
+  "Current effective differences": "現在の有効な差分",
+  "Declare capabilities": "能力を宣言",
+  "Live usage / in flight": "リアルタイム負荷 / 処理中",
+  "Only write dimensions that this channel needs to restrict; omitted fields automatically follow the model-level declaration.": "このチャネルで制限が必要なディメンションのみを記述してください。省略したフィールドはモデルレベルの宣言に従います。",
+  "Rate & concurrency limits": "レート・同時実行制限",
+  "Restore model-level capabilities": "モデルレベルの能力に戻す",
+  "Same as model capabilities": "モデルと同じ能力",
+  "Same as model-level capability declaration.": "モデルレベルの能力宣言と一致しています。",
+  "Model-level declaration": "モデルレベル宣言"
+}
 }

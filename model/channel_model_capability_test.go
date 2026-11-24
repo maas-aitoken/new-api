@@ -33,29 +33,38 @@ func setupCapabilityModelTest(t *testing.T) *gorm.DB {
 	return db
 }
 
-func TestCapabilityTargetsExpandPrefixDeclarations(t *testing.T) {
+func TestCapabilityTargetsExactModelQuery(t *testing.T) {
 	db := setupCapabilityModelTest(t)
-	require.NoError(t, db.Create(&Model{ModelName: "deepseek-v4-pro", NameRule: NameRulePrefix, Capabilities: `{"context":{"max_output_tokens":100}}`}).Error)
-	require.NoError(t, db.Create(&Channel{Id: 1, Name: "ds", Group: "default", Models: "deepseek-v4-pro", Status: common.ChannelStatusEnabled}).Error)
-	require.NoError(t, db.Create(&Ability{Group: "default", Model: "deepseek-v4-pro", ChannelId: 1, Enabled: true}).Error)
+	require.NoError(t, db.Create(&[]Model{
+		{ModelName: "deepseek-v4", NameRule: NameRuleExact, Capabilities: `{"context":{"max_output_tokens":100}}`},
+		{ModelName: "deepseek-v4-pro", NameRule: NameRuleExact, Capabilities: `{"context":{"max_output_tokens":200}}`},
+	}).Error)
+	require.NoError(t, db.Create(&Channel{Id: 1, Name: "ds", Group: "default", Models: "deepseek-v4,deepseek-v4-pro", Status: common.ChannelStatusEnabled}).Error)
+	require.NoError(t, db.Create(&[]Ability{
+		{Group: "default", Model: "deepseek-v4", ChannelId: 1, Enabled: true},
+		{Group: "default", Model: "deepseek-v4-pro", ChannelId: 1, Enabled: true},
+	}).Error)
 	require.NoError(t, InitCapabilityCache())
 
-	targets, _, err := GetCapabilityTargets(CapabilityTargetQuery{})
+	targets, total, err := GetCapabilityTargets(CapabilityTargetQuery{Model: "deepseek-v4"})
 	require.NoError(t, err)
+	assert.Equal(t, 1, total)
 	require.Len(t, targets, 1)
 	assert.True(t, targets[0].Declared)
-	assert.Equal(t, "deepseek-v4-pro", targets[0].ModelName)
-	assert.Equal(t, "deepseek-v4-pro", targets[0].DeclarationName)
-	assert.Equal(t, NameRulePrefix, targets[0].NameRule)
-	assert.Contains(t, targets[0].Capabilities, "max_output_tokens")
+	assert.Equal(t, "deepseek-v4", targets[0].ModelName)
+	assert.Equal(t, NameRuleExact, targets[0].NameRule)
+	assert.Contains(t, targets[0].Capabilities, "100")
 	require.Len(t, targets[0].Channels, 1)
 	assert.Equal(t, 1, targets[0].Channels[0].ID)
 }
 
 func TestCapabilityTargetsFilterAndPaginate(t *testing.T) {
 	db := setupCapabilityModelTest(t)
-	require.NoError(t, db.Create(&Model{ModelName: "family-", NameRule: NameRulePrefix, Capabilities: `{"context":{"max_output_tokens":100}}`}).Error)
-	require.NoError(t, db.Create(&Model{ModelName: "other-model", NameRule: NameRuleExact, Capabilities: `{"context":{"max_output_tokens":100}}`}).Error)
+	require.NoError(t, db.Create(&[]Model{
+		{ModelName: "family-a", NameRule: NameRuleExact, Capabilities: `{"context":{"max_output_tokens":100}}`},
+		{ModelName: "family-b", NameRule: NameRuleExact, Capabilities: `{"context":{"max_output_tokens":100}}`},
+		{ModelName: "other-model", NameRule: NameRuleExact, Capabilities: `{"context":{"max_output_tokens":100}}`},
+	}).Error)
 	require.NoError(t, db.Create(&[]Channel{
 		{Id: 1, Name: "one", Group: "default", Models: "family-a,family-b", Status: common.ChannelStatusEnabled},
 		{Id: 2, Name: "two", Group: "default", Models: "family-a,other-model", Status: common.ChannelStatusEnabled},
@@ -73,7 +82,7 @@ func TestCapabilityTargetsFilterAndPaginate(t *testing.T) {
 	assert.Equal(t, 3, total)
 	require.Len(t, targets, 3)
 	assert.Equal(t, []string{"family-a", "family-b", "other-model"}, []string{targets[0].ModelName, targets[1].ModelName, targets[2].ModelName})
-	assert.Equal(t, "family-", targets[0].DeclarationName)
+	assert.Equal(t, "family-a", targets[0].DeclarationName)
 	assert.Equal(t, NameRuleExact, targets[2].NameRule)
 
 	targets, total, err = GetCapabilityTargets(CapabilityTargetQuery{Keyword: "FAMILY-B"})
@@ -139,10 +148,9 @@ func TestCapabilitySchemaSQLiteIdempotent(t *testing.T) {
 	require.Error(t, err)
 }
 
-func TestCapabilityResolutionFollowsNameRulePrecedence(t *testing.T) {
+func TestCapabilityResolutionMatchesExactDeclarationsOnly(t *testing.T) {
 	db := setupCapabilityModelTest(t)
 	require.NoError(t, db.Create(&Model{ModelName: "gpt-", NameRule: NameRulePrefix, Capabilities: `{"context":{"max_output_tokens":1000}}`}).Error)
-	require.NoError(t, db.Create(&Model{ModelName: "gpt-4o-", NameRule: NameRulePrefix, Capabilities: `{"context":{"max_output_tokens":1500}}`}).Error)
 	require.NoError(t, db.Create(&Model{ModelName: "gpt-4o", NameRule: NameRuleExact, Capabilities: `{"context":{"max_output_tokens":2000}}`}).Error)
 	require.NoError(t, InitCapabilityCache())
 
@@ -150,13 +158,8 @@ func TestCapabilityResolutionFollowsNameRulePrecedence(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, int64(2000), *exact.Context.MaxOutputTokens)
 
-	prefix, ok := ResolveModelCapability("gpt-4o-mini")
-	require.True(t, ok)
-	assert.Equal(t, int64(1500), *prefix.Context.MaxOutputTokens, "longer prefix must win over the family default")
-
-	family, ok := ResolveModelCapability("gpt-5")
-	require.True(t, ok)
-	assert.Equal(t, int64(1000), *family.Context.MaxOutputTokens)
+	_, ok = ResolveModelCapability("gpt-4o-mini")
+	assert.False(t, ok, "prefix declarations must be ignored at runtime")
 
 	_, ok = ResolveModelCapability("claude-3")
 	assert.False(t, ok)

@@ -8400,6 +8400,27 @@
     "The weight given to recent request success rate.": "Вес, придаваемый недавней доле успешных запросов.",
     "Sampling temperature controls score variability; lower values produce more stable routing.": "Температура сэмплирования управляет изменчивостью оценки; меньшее значение делает маршрутизацию стабильнее.",
     "Capacity is one minus the request share. Success adds four prior successes to the measured outcomes; Samples shows the evidence strength.": "Ёмкость равна единице минус доля запросов. В показатель успеха добавляются четыре априорных успеха; число выборок показывает силу данных.",
-    "Capacity is the lowest remaining fraction of configured RPM, TPM and in-flight limits. Scheduler and affinity use their concrete channel; native estimates use first-attempt probabilities. No effective limit or estimate means full capacity; an exhausted pool means none.": "Ёмкость — это наименьшая оставшаяся доля среди настроенных ограничений RPM, TPM и выполняемых запросов. Планировщик и сходство используют конкретный канал; встроенная оценка взвешивает каналы по вероятности первой попытки. Без действующего ограничения или оценки значение равно 1, для исчерпанного пула — 0."
-  }
+    "Capacity is the lowest remaining fraction of configured RPM, TPM and in-flight limits. Scheduler and affinity use their concrete channel; native estimates use first-attempt probabilities. No effective limit or estimate means full capacity; an exhausted pool means none.": "Ёмкость — это наименьшая оставшаяся доля среди настроенных ограничений RPM, TPM и выполняемых запросов. Планировщик и сходство используют конкретный канал; встроенная оценка взвешивает каналы по вероятности первой попытки. Без действующего ограничения или оценки значение равно 1, для исчерпанного пула — 0.",
+  "Base price": "Базовая цена",
+  "Channel cost multipliers": "Коэффициенты стоимости по каналам",
+  "Effective channel price": "Итоговая цена по каналу",
+  "Failed to load serving channels": "Не удалось загрузить каналы",
+  "Model base pricing is shared across channels. Set a per-channel multiplier (default 1×) to scale user charges when requests route through that channel.": "Базовая цена модели общая для всех каналов. Задайте множитель для каждого канала (по умолчанию 1×), чтобы изменять плату при маршрутизации запросов через этот канал.",
+  "Saved immediately on blur or Enter": "Сохранение сразу при потере фокуса или по Enter",
+  "Capability narrowed": "Возможности ограничены",
+  "Capacity pool": "Пул ёмкости",
+  "Channel effective": "Действующие возможности канала",
+  "Channel narrowing JSON": "JSON ограничений канала",
+  "Channel now matches model-level capabilities": "Канал снова соответствует возможностям модели",
+  "Configure narrowing": "Настроить ограничение",
+  "Current effective differences": "Текущие действующие различия",
+  "Declare capabilities": "Объявить возможности",
+  "Live usage / in flight": "Использование в реальном времени / в полёте",
+  "Only write dimensions that this channel needs to restrict; omitted fields automatically follow the model-level declaration.": "Указывайте только те измерения, которые нужно ограничить для этого канала; пропущенные поля автоматически следуют объявлению модели.",
+  "Rate & concurrency limits": "Ограничения скорости и параллелизма",
+  "Restore model-level capabilities": "Восстановить возможности модели",
+  "Same as model capabilities": "Как у модели",
+  "Same as model-level capability declaration.": "Совпадает с объявлением возможностей модели.",
+  "Model-level declaration": "Объявление модели"
+}
 }
