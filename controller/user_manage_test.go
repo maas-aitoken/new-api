@@ -201,6 +201,147 @@ func TestManageUserDemoteAdvancesAuthVersionAndRevokesSessionsOnce(t *testing.T)
 	assert.Equal(t, 1, sessionUpdateCount)
 }
 
+func TestManageUserPromoteRootRequiresDistinctProofAndRevokesSessions(t *testing.T) {
+	for _, role := range []int{common.RoleCommonUser, common.RoleAdminUser} {
+		t.Run(fmt.Sprint(role), func(t *testing.T) {
+			db := setupManageUserTestDB(t)
+			target := model.User{
+				Username: "root-promotion-target", Password: "password", Role: role,
+				Status: common.UserStatusEnabled, Group: "default", AuthVersion: 1,
+			}
+			require.NoError(t, db.Create(&target).Error)
+			now := time.Now().Unix()
+			require.NoError(t, db.Create(&model.UserSession{
+				SID: "root-promotion-session", UserID: target.Id, Version: 1, UserAuthVersion: 1,
+				Status: model.UserSessionStatusActive, RefreshHash: "root-promotion-refresh", LoginMethod: "password",
+				LastActiveAt: now, ExpiresAt: now + 3600,
+			}).Error)
+
+			oldOperation := service.VerificationOperation{
+				Scope:   service.VerificationScopeAdminUserManage,
+				Context: []byte(fmt.Sprintf(`{"user_id":%d,"action":"promote"}`, target.Id)),
+			}
+			identity, oldProof := manageUserProof(t, db, oldOperation)
+			body := fmt.Sprintf(`{"id":%d,"action":"promote_root"}`, target.Id)
+			response := performVerifiedManageUserRequest(t, body, identity, "")
+			var result securityEnrollmentResponse
+			require.NoError(t, common.Unmarshal(response.Body.Bytes(), &result))
+			assert.Equal(t, http.StatusForbidden, response.Code)
+			assert.Equal(t, "SECURITY_PROOF_REQUIRED", result.Code)
+			response = performVerifiedManageUserRequest(t, body, identity, oldProof)
+			require.NoError(t, common.Unmarshal(response.Body.Bytes(), &result))
+			assert.Equal(t, http.StatusForbidden, response.Code)
+			assert.Equal(t, "SECURITY_PROOF_CONTEXT_MISMATCH", result.Code)
+			require.NoError(t, db.First(&target, target.Id).Error)
+			assert.Equal(t, role, target.Role)
+
+			operation := service.VerificationOperation{
+				Scope:   service.VerificationScopeAdminUserManage,
+				Context: []byte(fmt.Sprintf(`{"user_id":%d,"action":"promote_root"}`, target.Id)),
+			}
+			binding, err := service.BindVerificationOperation(operation)
+			require.NoError(t, err)
+			proof, _, err := service.IssueSecurityProof(identity, service.VerificationMethodPassword, binding)
+			require.NoError(t, err)
+			response = performVerifiedManageUserRequest(t, body, identity, proof)
+			assert.Equal(t, http.StatusOK, response.Code)
+			assert.Contains(t, response.Body.String(), `"success":true`)
+			require.NoError(t, db.First(&target, target.Id).Error)
+			assert.Equal(t, common.RoleRootUser, target.Role)
+			assert.EqualValues(t, 2, target.AuthVersion)
+			var session model.UserSession
+			require.NoError(t, db.First(&session, "sid = ?", "root-promotion-session").Error)
+			assert.Equal(t, model.UserSessionStatusRevoked, session.Status)
+			var audit model.AuditLog
+			require.NoError(t, model.LOG_DB.Where("action = ?", "user.manage").Last(&audit).Error)
+			require.NotNil(t, audit.Other.Op)
+			assert.Equal(t, "promote_root", audit.Other.Op.Params["action"])
+			assert.EqualValues(t, role, audit.Other.Op.Params["previous_role"])
+			assert.EqualValues(t, common.RoleRootUser, audit.Other.Op.Params["new_role"])
+		})
+	}
+}
+
+func TestManageUserPromoteRootRejectsUnauthorizedAndInactiveTargets(t *testing.T) {
+	db := setupManageUserTestDB(t)
+	target := model.User{
+		Username: "inactive-promotion-target", Password: "password", Role: common.RoleCommonUser,
+		Status: common.UserStatusEnabled, Group: "default", AuthVersion: 1,
+	}
+	require.NoError(t, db.Create(&target).Error)
+	operation := service.VerificationOperation{
+		Scope:   service.VerificationScopeAdminUserManage,
+		Context: []byte(fmt.Sprintf(`{"user_id":%d,"action":"promote_root"}`, target.Id)),
+	}
+	identity, proof := manageUserProof(t, db, operation)
+	body := fmt.Sprintf(`{"id":%d,"action":"promote_root"}`, target.Id)
+	response := adminUserRequest(http.MethodPost, "/api/user/manage", body, proof, identity, common.RoleAdminUser, nil, ManageUser)
+	assert.Contains(t, response.Body.String(), `"success":false`)
+	require.NoError(t, db.First(&target, target.Id).Error)
+	assert.Equal(t, common.RoleCommonUser, target.Role)
+
+	require.NoError(t, db.Model(&target).Update("status", common.UserStatusDisabled).Error)
+	response = performVerifiedManageUserRequest(t, body, identity, proof)
+	assert.Contains(t, response.Body.String(), `"success":false`)
+	require.NoError(t, db.First(&target, target.Id).Error)
+	assert.Equal(t, common.RoleCommonUser, target.Role)
+
+	require.NoError(t, db.Delete(&target).Error)
+	response = performVerifiedManageUserRequest(t, body, identity, proof)
+	assert.Contains(t, response.Body.String(), `"success":false`)
+	require.NoError(t, db.Unscoped().First(&target, target.Id).Error)
+	assert.Equal(t, common.RoleCommonUser, target.Role)
+}
+
+func TestManageUserDemoteRootPreservesRemainingRootAndRevokesSessions(t *testing.T) {
+	db := setupManageUserTestDB(t)
+	previousMaster := common.IsMasterNode
+	common.IsMasterNode = false
+	t.Cleanup(func() { common.IsMasterNode = previousMaster })
+	require.NoError(t, authz.Init(db))
+	target := model.User{
+		Username: "root-demotion-target", Password: "password", Role: common.RoleRootUser,
+		Status: common.UserStatusEnabled, Group: "default", AuthVersion: 1,
+	}
+	require.NoError(t, db.Create(&target).Error)
+	now := time.Now().Unix()
+	require.NoError(t, db.Create(&model.UserSession{
+		SID: "root-demotion-session", UserID: target.Id, Version: 1, UserAuthVersion: 1,
+		Status: model.UserSessionStatusActive, RefreshHash: "root-demotion-refresh", LoginMethod: "password",
+		LastActiveAt: now, ExpiresAt: now + 3600,
+	}).Error)
+	operation := service.VerificationOperation{
+		Scope:   service.VerificationScopeAdminUserManage,
+		Context: []byte(fmt.Sprintf(`{"user_id":%d,"action":"demote_root"}`, target.Id)),
+	}
+	identity, proof := manageUserProof(t, db, operation)
+	body := fmt.Sprintf(`{"id":%d,"action":"demote_root"}`, target.Id)
+	response := performVerifiedManageUserRequest(t, body, identity, "")
+	var result securityEnrollmentResponse
+	require.NoError(t, common.Unmarshal(response.Body.Bytes(), &result))
+	assert.Equal(t, http.StatusForbidden, response.Code)
+	assert.Equal(t, "SECURITY_PROOF_REQUIRED", result.Code)
+	response = performVerifiedManageUserRequest(t, body, identity, proof)
+	assert.Equal(t, http.StatusOK, response.Code)
+	assert.Contains(t, response.Body.String(), `"success":true`)
+	require.NoError(t, db.First(&target, target.Id).Error)
+	assert.Equal(t, common.RoleAdminUser, target.Role)
+	assert.EqualValues(t, 2, target.AuthVersion)
+	var session model.UserSession
+	require.NoError(t, db.First(&session, "sid = ?", "root-demotion-session").Error)
+	assert.Equal(t, model.UserSessionStatusRevoked, session.Status)
+	assert.Equal(t, "root_demote", session.RevokedReason)
+	var roots int64
+	require.NoError(t, db.Model(&model.User{}).Where("role = ?", common.RoleRootUser).Count(&roots).Error)
+	assert.EqualValues(t, 1, roots)
+
+	self := fmt.Sprintf(`{"id":%d,"action":"demote_root"}`, identity.UserID)
+	response = performVerifiedManageUserRequest(t, self, identity, "")
+	assert.Contains(t, response.Body.String(), `"success":false`)
+	require.NoError(t, db.Model(&model.User{}).Where("role = ?", common.RoleRootUser).Count(&roots).Error)
+	assert.EqualValues(t, 1, roots)
+}
+
 func TestManageUserDeleteReturnsImmediatelyAndUnknownActionFails(t *testing.T) {
 	db := setupManageUserTestDB(t)
 	deleted := model.User{

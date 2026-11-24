@@ -1229,6 +1229,7 @@ func ManageUser(c *gin.Context) {
 		common.ApiErrorT(c, "No permission to update users of same or higher permission level")
 		return
 	}
+	previousRole := user.Role
 	switch req.Action {
 	case "disable":
 		user.Status = common.UserStatusDisabled
@@ -1279,6 +1280,16 @@ func ManageUser(c *gin.Context) {
 			return
 		}
 		user.Role = common.RoleAdminUser
+	case "promote_root":
+		if myRole != common.RoleRootUser {
+			common.ApiErrorT(c, "No permission to update users of same or higher permission level")
+			return
+		}
+		if user.DeletedAt.Valid || user.Status != common.UserStatusEnabled || (user.Role != common.RoleCommonUser && user.Role != common.RoleAdminUser) {
+			common.ApiErrorT(c, "Invalid parameters")
+			return
+		}
+		user.Role = common.RoleRootUser
 	case "demote":
 		if user.Role == common.RoleRootUser {
 			common.ApiErrorT(c, "Cannot demote super administrator user")
@@ -1289,6 +1300,16 @@ func ManageUser(c *gin.Context) {
 			return
 		}
 		user.Role = common.RoleCommonUser
+	case "demote_root":
+		if myRole != common.RoleRootUser {
+			common.ApiErrorT(c, "No permission to update users of same or higher permission level")
+			return
+		}
+		if user.Id == c.GetInt("id") || user.DeletedAt.Valid || user.Status != common.UserStatusEnabled || user.Role != common.RoleRootUser {
+			common.ApiErrorT(c, "Invalid parameters")
+			return
+		}
+		user.Role = common.RoleAdminUser
 	default:
 		common.ApiErrorT(c, "Invalid parameters")
 		return
@@ -1320,6 +1341,91 @@ func ManageUser(c *gin.Context) {
 			common.ApiError(c, err)
 			return
 		}
+	} else if req.Action == "promote_root" || req.Action == "demote_root" {
+		errInvalidRoleChange := errors.New("invalid role transition")
+		errLastRoot := errors.New("last root user")
+		actorID := c.GetInt("id")
+		err := model.DB.Transaction(func(tx *gorm.DB) error {
+			roots, err := model.ListRootUsersForUpdate(tx)
+			if err != nil {
+				return err
+			}
+			actorIsRoot := false
+			for _, root := range roots {
+				if root.Id == actorID {
+					actorIsRoot = true
+					break
+				}
+			}
+			if !actorIsRoot {
+				return errInvalidRoleChange
+			}
+			current, err := model.GetUserForUpdate(tx, user.Id)
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return errInvalidRoleChange
+			}
+			if err != nil {
+				return err
+			}
+			if current.Status != common.UserStatusEnabled {
+				return errInvalidRoleChange
+			}
+			previousRole = current.Role
+			if req.Action == "promote_root" {
+				if current.Role != common.RoleCommonUser && current.Role != common.RoleAdminUser {
+					return errInvalidRoleChange
+				}
+				current.Role = common.RoleRootUser
+			} else {
+				if current.Role != common.RoleRootUser || current.Id == actorID {
+					return errInvalidRoleChange
+				}
+				if len(roots) <= 1 {
+					return errLastRoot
+				}
+				current.Role = common.RoleAdminUser
+			}
+			if err := current.UpdateWithTx(tx, false); err != nil {
+				return err
+			}
+			if req.Action == "demote_root" {
+				if err := authz.ClearUserAuthorizationInTx(tx, current.Id); err != nil {
+					return err
+				}
+			}
+			user = current
+			return nil
+		})
+		if errors.Is(err, errInvalidRoleChange) {
+			common.ApiErrorT(c, "Invalid parameters")
+			return
+		}
+		if errors.Is(err, errLastRoot) {
+			common.ApiErrorT(c, "Cannot demote super administrator user")
+			return
+		}
+		if err != nil {
+			common.ApiError(c, err)
+			return
+		}
+		if req.Action == "demote_root" {
+			if err := authz.ReloadPolicy(); err != nil {
+				common.ApiError(c, err)
+				return
+			}
+		}
+		if err := model.PublishUserAuthCache(user.Id); err != nil {
+			common.ApiError(c, err)
+			return
+		}
+		reason := "user_security_changed"
+		if req.Action == "demote_root" {
+			reason = "root_demote"
+		}
+		if _, err := model.RevokeAllUserSessions(user.Id, reason); err != nil {
+			common.ApiError(c, err)
+			return
+		}
 	} else {
 		if err := user.Update(false); err != nil {
 			common.ApiError(c, err)
@@ -1337,6 +1443,8 @@ func ManageUser(c *gin.Context) {
 		"action":              req.Action,
 		"username":            user.Username,
 		"id":                  user.Id,
+		"previous_role":       previousRole,
+		"new_role":            user.Role,
 		"verification_method": authorization.Method,
 	})
 	clearUser := model.User{
