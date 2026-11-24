@@ -185,13 +185,13 @@ func TestGetModelSquareDetailRejectsUnknownModel(t *testing.T) {
 	assert.Equal(t, "model not found", response.Message)
 }
 
-func TestGetModelSquareListsRuleMatchedModelsWithChannels(t *testing.T) {
+func TestGetModelSquareListsExactModelsWithChannels(t *testing.T) {
 	db := setupModelSquareControllerTest(t)
 	require.NoError(t, db.Create(&model.Model{
 		Id:           10,
-		ModelName:    "family-",
+		ModelName:    "family-model-1",
 		Status:       1,
-		NameRule:     model.NameRulePrefix,
+		NameRule:     model.NameRuleExact,
 		Capabilities: `{"params":{"top_p":{"min":0,"max":1}},"tools":{"supported":true}}`,
 	}).Error)
 	setting := `{"cost_multiplier":{"family-model-1":1.5}}`
@@ -225,7 +225,7 @@ func TestGetModelSquareListsRuleMatchedModelsWithChannels(t *testing.T) {
 	item := response.Data.Items[0]
 	assert.Equal(t, "family-model-1", item.ModelName)
 	assert.True(t, strings.HasPrefix(item.CatalogKey, "m_"), "详情路由键按模型名编码")
-	assert.Equal(t, 10, item.ID, "元数据取命中的前缀声明行")
+	assert.Equal(t, 10, item.ID, "元数据取该模型的精确声明行")
 	require.NotNil(t, item.Pricing, "列表条目带美元单价")
 	assert.Contains(t, item.Capabilities, "function_calling")
 	require.Len(t, item.Channels, 1)
