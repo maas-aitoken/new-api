@@ -32,6 +32,11 @@ type TokenParams struct {
 	ImgO  float64 // image output tokens
 	AI    float64 // audio input tokens
 	AO    float64 // audio output tokens
+	// AudioSec / VideoSec 是 realtime 链路的计费秒数（火山 usage.duration_details
+	// 的 audio/vision 毫秒折算），只对实时模型有意义；普通聊天请求恒为 0，
+	// 引用它们的表达式（dur()）在非 realtime 入口计费为零。
+	AudioSec float64
+	VideoSec float64
 }
 
 // RequestRuleTrace describes one request-dependent multiplier detected at compile time.

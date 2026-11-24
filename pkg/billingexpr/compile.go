@@ -116,6 +116,7 @@ type cachedEntry struct {
 	requestRules  []RequestRuleTrace
 	version       int
 	fixedPricing  bool
+	usesDur       bool
 }
 
 var (
@@ -138,8 +139,11 @@ var compileEnvPrototypeV1 = map[string]any{
 	"img_o":       float64(0),
 	"ai":          float64(0),
 	"ao":          float64(0),
+	"audio_sec":   float64(0),
+	"video_sec":   float64(0),
 	"tier":        func(string, float64) float64 { return 0 },
 	"fixed":       func(float64) float64 { return 0 },
+	"dur":         func(float64, float64) float64 { return 0 },
 	"_trace":      func(int, bool, float64) float64 { return 1 },
 	"_trace_int":  func(int, bool, int) int { return 1 },
 	"header":      func(string) string { return "" },
@@ -209,6 +213,17 @@ func compileEntryFromCacheByHash(exprStr, hash string) (*cachedEntry, error) {
 			return nil, fmt.Errorf("expr compile error: %w", err)
 		}
 	}
+	// dur(seconds, usd_per_minute) 的单价必须是编译期可核实的非负数字字面量，
+	// 运行期秒数由结算侧做墙钟饱和，引擎不再重复校验。
+	usesDur := ast.Find(tree.Node, func(node ast.Node) bool {
+		identifier, ok := node.(*ast.IdentifierNode)
+		return ok && identifier.Value == "dur"
+	}) != nil
+	if usesDur {
+		if err := validateDurCalls(tree.Node); err != nil {
+			return nil, fmt.Errorf("expr compile error: %w", err)
+		}
+	}
 	patcher := &requestRulePatcher{}
 	prog, err := expr.Compile(body, expr.Env(getCompileEnv(version)), expr.Patch(patcher), expr.AsFloat64())
 	if patcher.restrictedIdentifier != "" {
@@ -225,6 +240,7 @@ func compileEntryFromCacheByHash(exprStr, hash string) (*cachedEntry, error) {
 		requestRules:  patcher.requestRules,
 		version:       version,
 		fixedPricing:  fixedPricing,
+		usesDur:       usesDur,
 	}
 	cacheMu.Lock()
 	if len(cache) >= maxCacheSize {
