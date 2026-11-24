@@ -56,6 +56,8 @@
     "Auto requests only": "Auto requests only",
     "Auto retry limit": "Auto retry limit",
     "Auto routing": "Auto routing",
+    "Auto routing always enforces": "Auto routing always enforces",
+    "Auto-routed requests (model auto and smart routing keys) enforce capability declarations even in shadow mode. Models without a declaration are not selectable. Other requests keep the gate mode above.": "Auto-routed requests (model auto and smart routing keys) enforce capability declarations even in shadow mode. Models without a declaration are not selectable. Other requests keep the gate mode above.",
     "Basics": "Basics",
     "Below this task-change score the request continues the previous task: the model stays, so the prompt cache survives.": "Below this task-change score the request continues the previous task: the model stays, so the prompt cache survives.",
     "Best on the gateway": "Best on the gateway",

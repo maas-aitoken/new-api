@@ -74,6 +74,7 @@ type CapabilityGateDefaults = {
   event_retention_days: number
   record_only_dimensions: string
   record_passed: boolean
+  auto_enforce: boolean
 }
 
 // 与后端 CapabilityGateDimensionGroups 一一对应；值会原样存进
@@ -146,6 +147,7 @@ const createSchema = (t: (key: string) => string) =>
       .max(MAX_RETENTION_DAYS, t('Maximum 3650 days')),
     record_only_dimensions: z.string(),
     record_passed: z.boolean(),
+    auto_enforce: z.boolean(),
   })
 
 type GateFormValues = z.output<ReturnType<typeof createSchema>>
@@ -170,6 +172,7 @@ export function CapabilityGateSection(props: {
       event_retention_days: props.defaultValues.event_retention_days,
       record_only_dimensions: props.defaultValues.record_only_dimensions,
       record_passed: props.defaultValues.record_passed,
+      auto_enforce: props.defaultValues.auto_enforce,
     }),
     [props.defaultValues]
   )
@@ -199,6 +202,10 @@ export function CapabilityGateSection(props: {
     await updateOption.mutateAsync({
       key: 'capability_gate_setting.record_passed',
       value: values.record_passed,
+    })
+    await updateOption.mutateAsync({
+      key: 'capability_gate_setting.auto_enforce',
+      value: values.auto_enforce,
     })
     toast.success(t('Capability gate settings saved'))
   }
@@ -342,6 +349,27 @@ export function CapabilityGateSection(props: {
                 )}
               />
             </SettingsFormGrid>
+
+            <FormField
+              control={form.control}
+              name='auto_enforce'
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>{t('Auto routing always enforces')}</FormLabel>
+                  <FormControl>
+                    <Switch
+                      checked={field.value}
+                      onCheckedChange={(checked) => field.onChange(checked)}
+                    />
+                  </FormControl>
+                  <FormDescription>
+                    {t(
+                      'Auto-routed requests (model auto and smart routing keys) enforce capability declarations even in shadow mode. Models without a declaration are not selectable. Other requests keep the gate mode above.'
+                    )}
+                  </FormDescription>
+                </FormItem>
+              )}
+            />
 
             <FormField
               control={form.control}

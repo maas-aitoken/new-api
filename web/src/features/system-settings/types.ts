@@ -407,6 +407,7 @@ export type ModelSettings = {
   'capability_gate_setting.event_retention_days': number
   'capability_gate_setting.record_only_dimensions': string
   'capability_gate_setting.record_passed': boolean
+  'capability_gate_setting.auto_enforce': boolean
   'channel_affinity_setting.enabled': boolean
   'channel_affinity_setting.switch_on_success': boolean
   'channel_affinity_setting.keep_on_channel_disabled': boolean

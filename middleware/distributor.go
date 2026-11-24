@@ -91,7 +91,6 @@ func Distribute() func(c *gin.Context) {
 		}
 		// 能力门控在模型确定前构建：auto 用它筛候选模型，选定模型后再做渠道级收窄。
 		// 未配置、请求体不可用或没有任何模型级声明时返回 nil，行为与改动前一致。
-		capabilityGate := service.BuildCapabilityGate(c)
 		_, pinned, _ := constraints.ResolvedPin()
 		// 额度档位用完后，支持 auto 的请求改走 auto，忽略令牌模型池和路由偏好；
 		// 其他接口由计费拦截。业务场景的 key 不受限。
@@ -133,6 +132,9 @@ func Distribute() func(c *gin.Context) {
 			abortWithOpenAiMessage(c, http.StatusBadRequest, "model auto is not supported for a token pinned to a channel")
 			return
 		}
+		// auto_enforce 打开时 auto 路由请求在全局 shadow 下也按 enforce 处置；
+		// 此刻 autoRouting 已含智能路由 key 和额度档位强制的 auto。
+		capabilityGate := service.BuildCapabilityGate(c, autoRouting)
 		if !pinned {
 			// Select a channel for the user
 			// check token model mapping

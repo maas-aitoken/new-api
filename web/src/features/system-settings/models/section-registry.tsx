@@ -119,6 +119,7 @@ const MODELS_SECTIONS = [
             'params,tools.parallel',
           record_passed:
             settings['capability_gate_setting.record_passed'] ?? true,
+          auto_enforce: settings['capability_gate_setting.auto_enforce'] ?? false,
         }}
       />
     ),
