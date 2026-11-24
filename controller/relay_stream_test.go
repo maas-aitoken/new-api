@@ -150,6 +150,27 @@ func TestRelayAutoRetriesNextModelBeyondChannelRetryBudget(t *testing.T) {
 	router.ServeHTTP(response, request)
 	require.Equal(t, http.StatusTooManyRequests, response.Code)
 	assert.Len(t, requests, 2, "the request ends after every eligible model has failed once")
+
+	for _, tt := range []struct {
+		maxRetries   int
+		wantRequests []string
+	}{
+		{0, []string{"failed-model"}},
+		{1, []string{"failed-model", "available-model"}},
+	} {
+		requests = nil
+		response = httptest.NewRecorder()
+		request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"auto","messages":[{"role":"user","content":"retry limit `+strconv.Itoa(tt.maxRetries)+`"}]}`))
+		request.Header.Set("Content-Type", "application/json")
+		autoSetting.DefaultModels = []string{"failed-model", "available-model", "last-model"}
+		autoSetting.MaxRetries = tt.maxRetries
+		router.ServeHTTP(response, request)
+		require.Equal(t, http.StatusTooManyRequests, response.Code, "max_retries=%d", tt.maxRetries)
+		require.Len(t, requests, len(tt.wantRequests), "max_retries=%d must stop before the model that would have answered", tt.maxRetries)
+		for i, want := range tt.wantRequests {
+			assert.Contains(t, requests[i], `"model":"`+want+`"`)
+		}
+	}
 }
 
 func TestRelayAutoRetryRefreshesModelScopedRequestState(t *testing.T) {

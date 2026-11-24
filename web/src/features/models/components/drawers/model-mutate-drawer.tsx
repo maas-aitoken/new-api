@@ -51,8 +51,6 @@ import {
   FormMessage,
 } from '@/components/ui/form'
 import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
-import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group'
 import {
   Sheet,
   SheetContent,
@@ -72,7 +70,7 @@ import {
 } from '@/lib/server-error-message'
 
 import { createModel, updateModel, getModel, getVendors } from '../../api'
-import { getNameRuleOptions, ENDPOINT_TEMPLATES } from '../../constants'
+import { ENDPOINT_TEMPLATES } from '../../constants'
 import { modelsQueryKeys, vendorsQueryKeys } from '../../lib'
 import {
   modelFormSchema,
@@ -82,13 +80,12 @@ import {
   type ModelFormValues,
 } from '../../lib/model-form'
 import type { Model } from '../../types'
-import { ModelConnections } from '../model-connections'
 
 export function ModelMutateDrawer(props: {
   open: boolean
   onOpenChange: (open: boolean) => void
   currentRow?: Model | null
-  initialSection?: 'metadata' | 'pricing'
+  initialSection?: 'metadata' | 'capabilities' | 'pricing'
 }) {
   const { t } = useTranslation()
   const queryClient = useQueryClient()
@@ -105,14 +102,10 @@ export function ModelMutateDrawer(props: {
   const [section, setSection] = useState<string>(
     props.initialSection ?? 'metadata'
   )
-  const [pricingName, setPricingName] = useState('')
   const [pricingVisited, setPricingVisited] = useState(
     props.initialSection === 'pricing'
   )
   const [pricingDirty, setPricingDirty] = useState(false)
-  const [pendingPricingName, setPendingPricingName] = useState<string | null>(
-    null
-  )
   const [closeConfirm, setCloseConfirm] = useState(false)
   const loadedKey = useRef('')
   const form = useForm({
@@ -147,9 +140,7 @@ export function ModelMutateDrawer(props: {
     if (!props.open) return
     setSection(props.initialSection ?? 'metadata')
     setPricingVisited(props.initialSection === 'pricing')
-    setPricingName('')
     setPricingDirty(false)
-    setPendingPricingName(null)
     setCloseConfirm(false)
   }, [
     props.open,
@@ -270,7 +261,7 @@ export function ModelMutateDrawer(props: {
             }}
             className='shrink-0 px-4'
           >
-            <TabsList className='grid w-full grid-cols-4 group-data-horizontal/tabs:h-auto'>
+            <TabsList className='grid w-full grid-cols-3 group-data-horizontal/tabs:h-auto'>
               <TabsTrigger
                 value='metadata'
                 className='h-auto min-w-0 whitespace-normal'
@@ -289,13 +280,6 @@ export function ModelMutateDrawer(props: {
                 className='h-auto min-w-0 whitespace-normal'
               >
                 {t('Pricing')}
-              </TabsTrigger>
-              <TabsTrigger
-                value='connections'
-                disabled={!hasModelName}
-                className='h-auto min-w-0 whitespace-normal'
-              >
-                {t('Channels and groups')}
               </TabsTrigger>
             </TabsList>
           </Tabs>
@@ -524,56 +508,6 @@ export function ModelMutateDrawer(props: {
                       />
                     </SideDrawerSection>
 
-                    {/* Matching Configuration */}
-                    <SideDrawerSection>
-                      <h3 className='text-sm font-semibold'>
-                        {t('Matching Rules')}
-                      </h3>
-
-                      <FormField
-                        control={form.control}
-                        name='name_rule'
-                        render={({ field }) => (
-                          <FormItem>
-                            <FormLabel>{t('Name Rule')}</FormLabel>
-                            <FormControl>
-                              <RadioGroup
-                                onValueChange={(value) =>
-                                  field.onChange(Number.parseInt(value))
-                                }
-                                value={String(field.value)}
-                                className='grid grid-cols-2 gap-4'
-                              >
-                                {getNameRuleOptions(t).map((option) => (
-                                  <div
-                                    key={option.value}
-                                    className='flex items-center space-x-2'
-                                  >
-                                    <RadioGroupItem
-                                      value={String(option.value)}
-                                      id={`rule-${option.value}`}
-                                    />
-                                    <Label
-                                      htmlFor={`rule-${option.value}`}
-                                      className='cursor-pointer font-normal'
-                                    >
-                                      {option.label}
-                                    </Label>
-                                  </div>
-                                ))}
-                              </RadioGroup>
-                            </FormControl>
-                            <FormDescription>
-                              {t(
-                                'Matching rules apply to metadata. Pricing is configured for each concrete model.'
-                              )}
-                            </FormDescription>
-                            <FormMessage />
-                          </FormItem>
-                        )}
-                      />
-                    </SideDrawerSection>
-
                     {/* Endpoints Configuration */}
                     <SideDrawerSection>
                       <div className='flex items-center justify-between'>
@@ -725,52 +659,14 @@ export function ModelMutateDrawer(props: {
                   : 'hidden'
               }
             >
-              {savedModel.name_rule !== 0 && (
-                <div className='space-y-2 p-4'>
-                  <p className='text-muted-foreground text-sm'>
-                    {t(
-                      'Select a concrete model to configure pricing. Metadata matching does not propagate prices.'
-                    )}
-                  </p>
-                  <Combobox
-                    value={pricingName}
-                    onValueChange={(value) => {
-                      if (pricingDirty) {
-                        setPendingPricingName(value ?? '')
-                        setCloseConfirm(true)
-                      } else {
-                        setPricingName(value ?? '')
-                      }
-                    }}
-                    options={(savedModel.matched_models ?? []).map((name) => ({
-                      value: name,
-                      label: name,
-                    }))}
-                    aria-label={t('Select model')}
-                    className='w-full'
-                    placeholder={t('Select model')}
-                  />
-                </div>
-              )}
-              {(savedModel.name_rule === 0 || pricingName) && (
+              {savedModel.model_name && (
                 <ModelPricingPanel
                   onDirtyChange={setPricingDirty}
-                  key={
-                    savedModel.name_rule === 0
-                      ? savedModel.model_name
-                      : pricingName
-                  }
-                  modelName={
-                    savedModel.name_rule === 0
-                      ? savedModel.model_name
-                      : pricingName
-                  }
+                  key={savedModel.model_name}
+                  modelName={savedModel.model_name}
                 />
               )}
             </div>
-          )}
-          {props.open && section === 'connections' && savedModel && (
-            <ModelConnections model={savedModel} />
           )}
         </SheetContent>
       </Sheet>
@@ -782,13 +678,7 @@ export function ModelMutateDrawer(props: {
         confirmText={t('Discard changes')}
         handleConfirm={() => {
           setCloseConfirm(false)
-          if (pendingPricingName !== null) {
-            setPricingName(pendingPricingName)
-            setPendingPricingName(null)
-            setPricingDirty(false)
-          } else {
-            props.onOpenChange(false)
-          }
+          props.onOpenChange(false)
         }}
       />
     </>

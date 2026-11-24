@@ -978,3 +978,40 @@ func TestRoutingPricerMatchesPreConsume(t *testing.T) {
 }
 
 func (s *priceTestReservation) ReserveBeforeSubmit(quota int) error { return s.Reserve(quota) }
+
+func TestRealtimeDurationPreConsumeFloor(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	saved := map[string]string{}
+	require.NoError(t, config.GlobalConfig.SaveToDB(func(key, value string) error {
+		saved[key] = value
+		return nil
+	}))
+	t.Cleanup(func() { require.NoError(t, config.GlobalConfig.LoadFromDB(saved)) })
+	require.NoError(t, config.GlobalConfig.LoadFromDB(map[string]string{
+		"billing_setting.billing_mode":    `{"dur-test":"tiered_expr"}`,
+		"billing_setting.billing_expr":    `{"dur-test":"tier(\"base\", dur(audio_sec, 0.0278) + dur(video_sec, 0.0556))"}`,
+		"group_ratio_setting.group_ratio": `{"default":1}`,
+	}))
+
+	// Realtime 入口：拿不到实际通话时长，按 60 秒兜底预扣
+	// (0.0278 + 0.0556) USD/min × 1min × 500000 quota/USD = 41700
+	ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/v1/realtime", nil)
+	info := &relaycommon.RelayInfo{
+		OriginModelName: "dur-test", UserGroup: "default", UsingGroup: "default",
+		RelayFormat: types.RelayFormatOpenAIRealtime, BillingRequestInput: &billingexpr.RequestInput{},
+	}
+	price, err := ModelPriceHelper(ctx, info, 0, &types.TokenCountMeta{})
+	require.NoError(t, err)
+	assert.Equal(t, 41700, price.QuotaToPreConsume)
+	require.NotNil(t, info.TieredBillingSnapshot)
+
+	// 非 realtime 入口：时长恒为 0，零预扣（不应给聊天模型配 dur()）
+	chatInfo := &relaycommon.RelayInfo{
+		OriginModelName: "dur-test", UserGroup: "default", UsingGroup: "default",
+		RelayFormat: types.RelayFormatOpenAI, BillingRequestInput: &billingexpr.RequestInput{},
+	}
+	chatPrice, err := ModelPriceHelper(ctx, chatInfo, 1000, &types.TokenCountMeta{})
+	require.NoError(t, err)
+	assert.Zero(t, chatPrice.QuotaToPreConsume)
+}

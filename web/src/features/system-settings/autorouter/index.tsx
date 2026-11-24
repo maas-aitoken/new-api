@@ -32,6 +32,7 @@ const defaultAutoRouterSettings: AutoRouterSettings = {
   'autorouter_setting.max_runes': 2000,
   'autorouter_setting.previous_max_runes': 500,
   'autorouter_setting.cache_ttl_seconds': 7200,
+  'autorouter_setting.max_retries': 10,
   'autorouter_setting.default_preference': 'balanced',
   'autorouter_setting.preference_weights': '{}',
   'autorouter_setting.continuation_task_change': 0.5,

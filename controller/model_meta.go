@@ -2,6 +2,7 @@ package controller
 
 import (
 	"net/http"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -31,14 +32,24 @@ func listModelsMeta(c *gin.Context, keyword, vendor string) {
 		return
 	}
 
+	channelID := 0
+	if rawChannelID := strings.TrimSpace(c.Query("channel_id")); rawChannelID != "" {
+		parsedID, err := strconv.Atoi(rawChannelID)
+		if err != nil || parsedID <= 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "Invalid channel ID"})
+			return
+		}
+		channelID = parsedID
+	}
+
 	pageInfo := common.GetPageQuery(c)
-	if squareState != "" && (pageInfo.GetPage() < 1 || pageInfo.GetPageSize() < 1) {
+	if (squareState != "" || channelID > 0) && (pageInfo.GetPage() < 1 || pageInfo.GetPageSize() < 1) {
 		c.JSON(http.StatusBadRequest, gin.H{"success": false, "message": "Invalid pagination"})
 		return
 	}
 	offset, limit := pageInfo.GetStartIdx(), pageInfo.GetPageSize()
-	if squareState != "" {
-		// Visibility depends on live channels and metadata rules. Filter the
+	if squareState != "" || channelID > 0 {
+		// Visibility and channel membership depend on live channels. Filter the
 		// enriched candidate set before counting and paginating the results.
 		offset, limit = 0, -1
 	}
@@ -51,16 +62,21 @@ func listModelsMeta(c *gin.Context, keyword, vendor string) {
 		common.ApiError(c, err)
 		return
 	}
-	if err := enrichModels(modelsMeta); err != nil {
+	configuredByModel, err := enrichModels(modelsMeta)
+	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
-	if squareState != "" {
+	if squareState != "" || channelID > 0 {
 		filtered := make([]*model.Model, 0, len(modelsMeta))
 		for _, metadata := range modelsMeta {
-			if metadata.SquareState == squareState {
-				filtered = append(filtered, metadata)
+			if squareState != "" && metadata.SquareState != squareState {
+				continue
 			}
+			if channelID > 0 && !slices.Contains(configuredByModel[metadata.ModelName], channelID) {
+				continue
+			}
+			filtered = append(filtered, metadata)
 		}
 		total = int64(len(filtered))
 		start := len(filtered)
@@ -96,7 +112,7 @@ func GetModelMeta(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	if err := enrichModels([]*model.Model{&m}); err != nil {
+	if _, err := enrichModels([]*model.Model{&m}); err != nil {
 		common.ApiError(c, err)
 		return
 	}
@@ -260,46 +276,33 @@ func BatchDeleteModelMeta(c *gin.Context) {
 
 // enrichModels keeps configured endpoints intact and derives connections from
 // enabled routes, including hidden or unpriced models absent from the catalog.
-// A rule row only counts the models it governs (MatchedModels), so its channel
-// and group numbers never overlap with an exact row for the same model.
-func enrichModels(models []*model.Model) error {
+func enrichModels(models []*model.Model) (map[string][]int, error) {
 	if len(models) == 0 {
-		return nil
+		return nil, nil
 	}
 	configured, err := model.GetConfiguredModelChannels()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	connections, err := model.GetModelConnections()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	for _, metadata := range models {
 		if metadata != nil {
 			metadata.HasMetadata = metadata.Id > 0
 		}
 	}
-	// 先算出每行真正管辖的模型（MatchedModels），下面所有渠道/分组统计都基于它。
 	if err := model.FillModelSquareStates(models, configured, connections); err != nil {
-		return err
+		return nil, err
 	}
 	for _, metadata := range models {
 		if metadata == nil {
 			continue
 		}
-		governedNames := metadata.MatchedModels
-		if metadata.NameRule == model.NameRuleExact {
-			governedNames = []string{metadata.ModelName}
-		}
-		governed := make(map[string]struct{}, len(governedNames))
-		for _, name := range governedNames {
-			governed[name] = struct{}{}
-		}
-		channelIDs := make(map[int]struct{})
-		for name := range governed {
-			for _, id := range configured[name] {
-				channelIDs[id] = struct{}{}
-			}
+		channelIDs := make(map[int]struct{}, len(configured[metadata.ModelName]))
+		for _, id := range configured[metadata.ModelName] {
+			channelIDs[id] = struct{}{}
 		}
 		metadata.ConfiguredChannelCount = len(channelIDs)
 
@@ -308,16 +311,15 @@ func enrichModels(models []*model.Model) error {
 		endpoints := make(map[string]bool)
 		quotas := make(map[int]bool)
 		for _, connection := range connections {
-			name := connection.Model
-			if _, ok := governed[name]; !ok {
+			if connection.Model != metadata.ModelName {
 				continue
 			}
 			groups[connection.Group] = true
 			channels[connection.ChannelId] = model.BoundChannel{ID: connection.ChannelId, Name: connection.ChannelName, Type: connection.ChannelType}
-			for _, endpoint := range model.GetModelSupportEndpointTypes(name) {
+			for _, endpoint := range model.GetModelSupportEndpointTypes(connection.Model) {
 				endpoints[string(endpoint)] = true
 			}
-			for _, quota := range model.GetModelQuotaTypes(name) {
+			for _, quota := range model.GetModelQuotaTypes(connection.Model) {
 				quotas[quota] = true
 			}
 		}
@@ -348,5 +350,5 @@ func enrichModels(models []*model.Model) error {
 		sort.Strings(metadata.SupportedEndpoints)
 		sort.Ints(metadata.QuotaTypes)
 	}
-	return nil
+	return configured, nil
 }

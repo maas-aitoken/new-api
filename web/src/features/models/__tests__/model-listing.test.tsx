@@ -138,6 +138,44 @@ async function renderList(
     if (url === '/api/models/7') {
       return { data: { success: true, data: metadata } }
     }
+    if (url === '/api/models/capability-targets') {
+      return {
+        data: {
+          success: true,
+          data: {
+            items: items.map((model) => ({
+              id: model.id,
+              model_name: model.model_name,
+              declaration_name: model.model_name,
+              name_rule: 0,
+              declared: true,
+              channels: (model.bound_channels ?? []).map((channel) => ({
+                id: channel.id,
+                name: channel.name,
+                type: channel.type,
+                configured: false,
+                cost_multiplier: 1,
+                upstream_model: model.model_name,
+                model_limit: {},
+                capacity_pool_id: 0,
+                capacity_pool_name: '',
+              })),
+            })),
+            total: items.length,
+            page: 1,
+            page_size: 20,
+          },
+        },
+      }
+    }
+    if (url === '/api/channel-model-capabilities/capacity') {
+      return {
+        data: {
+          success: true,
+          data: { items: [], shared: true, window_seconds: 60 },
+        },
+      }
+    }
     if (url === '/api/option/model_pricing') {
       return {
         data: {
@@ -251,12 +289,12 @@ it('requests channel models and distinguishes catalog policy from availability u
   )
   expect(trigger).toHaveFocus()
   await user.click(screen.getByRole('button', { name: 'catalog-only' }))
-  await user.click(screen.getByRole('tab', { name: 'Channels and groups' }))
+  for (const tab of ['Model metadata', 'Capabilities', 'Pricing']) {
+    expect(screen.getByRole('tab', { name: tab })).toBeVisible()
+  }
   expect(
-    screen.getByText(
-      'No channel is configured. This model will not appear in the model square.'
-    )
-  ).toBeVisible()
+    screen.queryByRole('tab', { name: 'Channels and groups' })
+  ).not.toBeInTheDocument()
 })
 
 it('keeps channel rows individually selectable and disables metadata mutations for mixed selection', async () => {
@@ -298,37 +336,36 @@ it('keeps channel rows individually selectable and disables metadata mutations f
   ).toBeEnabled()
 })
 
-it('lists models matched by a rule under that rule instead of as separate rows', async () => {
-  const rule: Model = {
+it('expands a model row into its serving-channel subtable with capability state and no matching rules', async () => {
+  const served: Model = {
     ...metadata,
     id: 12,
-    model_name: 'family-',
-    name_rule: 1,
-    matched_count: 2,
-    matched_models: ['family-a', 'family-b'],
-    configured_channel_count: 2,
+    model_name: 'family-a',
+    configured_channel_count: 1,
+    bound_channels: [{ id: 7, name: 'primary', type: 1 }],
     square_state: 'visible',
   }
-  await renderList([rule])
-  // 命中规则的具体模型不再单独成行，所以没有“缺元数据”行。
-  expect(screen.queryByText('Missing metadata')).not.toBeInTheDocument()
+  await renderList([served])
   expect(
-    screen.queryByRole('button', { name: 'family-a' })
+    screen.queryByRole('columnheader', { name: 'Match Type' })
   ).not.toBeInTheDocument()
 
   const user = userEvent.setup()
   const toggle = screen.getByRole('button', { name: 'Expand' })
   expect(toggle).toHaveAttribute('aria-expanded', 'false')
   await user.click(toggle)
-
   expect(toggle).toHaveAttribute('aria-expanded', 'true')
-  expect(screen.getByRole('button', { name: 'family-a' })).toBeVisible()
-  expect(screen.getByRole('button', { name: 'family-b' })).toBeVisible()
 
-  await user.click(screen.getByRole('button', { name: 'family-b' }))
-  expect(screen.getByRole('textbox', { name: 'Model Name *' })).toHaveValue(
-    'family-b'
-  )
+  expect(
+    await screen.findByText('#7 · primary')
+  ).toBeInTheDocument()
+  expect(screen.getByText('Same as model capabilities')).toBeVisible()
+  expect(
+    screen.getByRole('button', { name: 'Configure narrowing' })
+  ).toBeVisible()
+  // 行内只展示同模型级能力/有能力收窄，不直接铺差异项，也不再放费用倍率输入。
+  expect(screen.queryByLabelText('Multiplier')).not.toBeInTheDocument()
+  expect(screen.queryByText('Capability narrowed')).not.toBeInTheDocument()
 })
 
 it('keeps long model names and translated channel labels truncated inside their existing cells', async () => {
@@ -408,12 +445,10 @@ it('keeps prices and channel explanations readable in the mobile card and detail
   )
   const user = userEvent.setup()
   await user.click(screen.getByRole('button', { name: 'catalog-only' }))
-  await user.click(screen.getByRole('tab', { name: 'Channels and groups' }))
   expect(
-    screen.getByText(
-      'No channel is configured. This model will not appear in the model square.'
-    )
-  ).toBeVisible()
+    screen.queryByRole('tab', { name: 'Channels and groups' })
+  ).not.toBeInTheDocument()
+  expect(screen.getByRole('tab', { name: 'Capabilities' })).toBeVisible()
 })
 
 it('uses backend square states for success, warning, hidden, and partial rows including models without metadata', async () => {

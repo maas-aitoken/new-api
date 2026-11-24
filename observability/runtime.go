@@ -290,13 +290,23 @@ func (r *Runtime) Middleware() gin.HandlerFunc {
 		c.Request = c.Request.WithContext(ctx)
 		c.Next()
 		span.SetAttributes(attribute.Int("http.response.status_code", c.Writer.Status()))
-		if username := common.GetContextKeyString(c, constant.ContextKeyUserName); username != "" {
-			span.SetAttributes(attribute.String("user.id", username))
-		}
+		RecordRequestIdentity(c, span)
 		if c.Writer.Status() >= http.StatusBadRequest {
 			span.SetStatus(codes.Error, http.StatusText(c.Writer.Status()))
 		}
 		span.End()
+	}
+}
+
+// RecordRequestIdentity exports the account and internal token ID set by authentication.
+func RecordRequestIdentity(c *gin.Context, span trace.Span) {
+	username := common.GetContextKeyString(c, constant.ContextKeyUserName)
+	if username == "" {
+		return
+	}
+	span.SetAttributes(attribute.String("user.id", username))
+	if tokenID := common.GetContextKeyInt(c, constant.ContextKeyTokenId); tokenID > 0 {
+		span.SetAttributes(attribute.Int("new_api.token_id", tokenID))
 	}
 }
 

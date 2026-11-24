@@ -81,6 +81,8 @@ func runProgram(prog *vm.Program, requestRules []RequestRuleTrace, usedVars map[
 		"img_o":       params.ImgO,
 		"ai":          params.AI,
 		"ao":          params.AO,
+		"audio_sec":   params.AudioSec,
+		"video_sec":   params.VideoSec,
 		"tier": func(name string, value float64) float64 {
 			trace.MatchedTier = name
 			trace.Cost = value
@@ -90,6 +92,14 @@ func runProgram(prog *vm.Program, requestRules []RequestRuleTrace, usedVars map[
 			trace.BillingUnit = BillingUnitRequest
 			trace.FixedPrice = &amount
 			return amount * 1_000_000
+		},
+		// dur(seconds, usd_per_minute) 与 fixed() 同款内部 1e6 缩放：token 表达式
+		// 的输出统一除以 1e6 折美元，这里先乘回去，使时长项可与 token 项混用。
+		"dur": func(seconds, usdPerMinute float64) float64 {
+			if seconds < 0 {
+				seconds = 0
+			}
+			return seconds / 60 * usdPerMinute * 1_000_000
 		},
 		requestRuleTraceFunction: func(ruleIndex int, matched bool, multiplier float64) float64 {
 			if matched && ruleIndex >= 0 && ruleIndex < len(trace.RequestRules) {

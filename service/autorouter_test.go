@@ -3,13 +3,16 @@ package service
 import (
 	"context"
 	"errors"
+	"math"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
@@ -62,7 +65,7 @@ func fakeJev(t *testing.T, calls *atomic.Int32, delay time.Duration) *httptest.S
 			assert.Contains(t, criteria, preference)
 		}
 		taskType, difficulty, mode := "general.chat", "0", autorouter.PreferenceBalanced
-		probabilities, benefit := "", "0.1"
+		probabilities, benefit, taskChange := "", "0.1", "0.1"
 		switch payload.State["current_task"] {
 		case "hard":
 			taskType, difficulty = "code.build", "3"
@@ -74,6 +77,8 @@ func fakeJev(t *testing.T, calls *atomic.Int32, delay time.Duration) *httptest.S
 			taskType = autorouter.TaskTypeUnknown
 		case "still broken":
 			taskType, benefit = autorouter.TaskTypeUnknown, "0.8"
+		case "new":
+			taskType, taskChange = "general.chat", "1.0"
 		case "split":
 			// 概率最高的叶子是 general.chat，但只有 0.4；code 下的两个叶子加起来 0.6。
 			difficulty = "3"
@@ -94,7 +99,7 @@ func fakeJev(t *testing.T, calls *atomic.Int32, delay time.Duration) *httptest.S
 			"task_type":{"type":"choice","choice":"` + taskType + `","probabilities":{` + probabilities + `}},
 			"mode":{"type":"choice","choice":"` + mode + `","probabilities":{` + strings.Join(modeShares, ",") + `}},
 			"difficulty":{"type":"score","probabilities":{"` + difficulty + `":0.8}},
-			"task_change":{"type":"noul","noul":0.1},
+			"task_change":{"type":"noul","noul":` + taskChange + `},
 			"larger_model_benefit":{"type":"noul","noul":` + benefit + `}}}`))
 	}))
 	t.Cleanup(server.Close)
@@ -286,22 +291,182 @@ func TestResolveAutoModelOnlyPicksAvailableModels(t *testing.T) {
 	require.Error(t, err)
 }
 
-func TestResolveAutoModelRecomputesRouteFromCachedDecision(t *testing.T) {
+func TestResolveAutoModelKeepsTurnRouteUntilItIsUnavailable(t *testing.T) {
 	var calls atomic.Int32
 	useAutoRouterSetting(t, fakeJev(t, &calls, 0).URL, 1000)
 	body := `{"messages":[{"role":"user","content":"hard"}]}`
 
-	// 第一次只有兜底模型可用（比如这次请求带图，别的模型能力不满足）。
 	first, err := ResolveAutoModel(newAutoRouterContext(9411, body), candidatesFrom(func(model string) bool { return model == "general" }))
 	require.NoError(t, err)
 	assert.Equal(t, "general", first.ResolvedModel)
 
-	// 同一条指令的下一次请求所有模型都可用：不能被上一次的选择钉住，也不必再调 jev。
 	second, err := ResolveAutoModel(newAutoRouterContext(9411, body), allModelsAvailable)
 	require.NoError(t, err)
-	assert.Equal(t, "coder-xhigh", second.ResolvedModel)
+	assert.Equal(t, "general-xhigh", second.ResolvedModel, "更多模型可用时，本轮仍用已选定的模型，只按可用变体落到对应档位")
 	assert.Equal(t, autorouter.SourceCache, second.Source)
+
+	third, err := ResolveAutoModel(newAutoRouterContext(9411, body), candidatesFrom(func(model string) bool { return !strings.HasPrefix(model, "general") }))
+	require.NoError(t, err)
+	assert.Equal(t, "coder-xhigh", third.ResolvedModel, "已选定的模型不可用时，按缓存的判断重新选")
+	assert.Equal(t, autorouter.SourceCache, third.Source)
 	assert.Equal(t, int32(1), calls.Load())
+}
+
+func TestResolveAutoModelReusesRouteWithinCurrentTurn(t *testing.T) {
+	var calls atomic.Int32
+	useAutoRouterSetting(t, fakeJev(t, &calls, 0).URL, 1000)
+	setting := autorouter_setting.GetAutoRouterSetting()
+	setting.TaskModels = map[string][]string{
+		"code.build":   {"coder"},
+		"general.chat": {"chat", "general"},
+	}
+	setting.TaskScores = map[string]map[string]float64{
+		"code.build":   {"coder": 1},
+		"general.chat": {"chat": 0.9, "general": 0.95},
+	}
+	prices := map[string]float64{"chat": 10, "general": 1, "coder": 1}
+	candidates := func(allowed func(string) bool) AutoCandidates {
+		return AutoCandidates{
+			Serves:   func(name string, _ bool) bool { return allowed(name) },
+			Channels: func(string) []int { return nil },
+			Price: func(name string) (float64, bool) {
+				price, ok := prices[name]
+				return price, ok
+			},
+		}
+	}
+
+	_, err := ResolveAutoModel(newAutoRouterContext(9414, `{"messages":[{"role":"user","content":"hard"}]}`), candidates(func(name string) bool {
+		return name == "coder"
+	}))
+	require.NoError(t, err)
+
+	newTurn := `{"metadata":{"user_id":{"session_id":"sess-a"}},"messages":[
+		{"role":"user","content":"hard"},
+		{"role":"assistant","content":"done"},
+		{"role":"user","content":"new"}
+	]}`
+	first, err := ResolveAutoModel(newAutoRouterContext(9414, newTurn), candidates(func(name string) bool {
+		return name == "chat"
+	}))
+	require.NoError(t, err)
+	assert.Equal(t, "chat", first.ResolvedModel)
+
+	second, err := ResolveAutoModel(newAutoRouterContext(9414, newTurn), candidates(func(name string) bool {
+		return name == "chat" || name == "general" || name == "coder"
+	}))
+	require.NoError(t, err)
+	assert.Equal(t, "chat", second.ResolvedModel)
+	assert.Equal(t, autorouter.SourceCache, second.Source)
+	assert.Equal(t, int32(2), calls.Load())
+
+	otherSession, err := ResolveAutoModel(newAutoRouterContext(9414, strings.Replace(newTurn, "sess-a", "sess-b", 1)), candidates(func(name string) bool {
+		return name == "chat" || name == "general" || name == "coder"
+	}))
+	require.NoError(t, err)
+	assert.Equal(t, "general", otherSession.ResolvedModel, "另一个会话使用独立的路由缓存")
+	assert.Equal(t, int32(2), calls.Load(), "同一句话的判断仍可跨会话复用")
+}
+
+func TestResolveAutoModelKeepsSessionEffortOverrideAfterTurnReuse(t *testing.T) {
+	var calls atomic.Int32
+	useAutoRouterSetting(t, fakeJev(t, &calls, 0).URL, 1000)
+	session := "sess-effort"
+	hard := `{"client_metadata":{"session_id":"` + session + `"},"messages":[{"role":"user","content":"hard"}]}`
+	_, err := ResolveAutoModel(newAutoRouterContext(9415, hard), allModelsAvailable)
+	require.NoError(t, err)
+
+	serves := AutoCandidates{
+		Serves: func(name string, ignoreClientReasoning bool) bool {
+			if ignoreClientReasoning {
+				return name == "general"
+			}
+			return name == "coder" || name == "coder-xhigh"
+		},
+		Channels: func(string) []int { return nil },
+	}
+	unknown := `{"client_metadata":{"session_id":"` + session + `"},"messages":[
+		{"role":"user","content":"hard"},
+		{"role":"assistant","content":"done"},
+		{"role":"user","content":"ok"}
+	]}`
+	_, err = ResolveAutoModel(newAutoRouterContext(9415, unknown), serves)
+	require.NoError(t, err)
+	_, err = ResolveAutoModel(newAutoRouterContext(9415, unknown), serves)
+	require.NoError(t, err)
+
+	subAgent, err := ResolveAutoModel(newAutoRouterContext(9415, encryptedSubAgentBody(session)), serves)
+	require.NoError(t, err)
+	assert.Equal(t, "coder-xhigh", subAgent.ResolvedModel)
+	assert.False(t, subAgent.EffortOverride)
+}
+
+func TestResolveAutoRetryUpdatesSessionRoute(t *testing.T) {
+	var calls atomic.Int32
+	useAutoRouterSetting(t, fakeJev(t, &calls, 0).URL, 1000)
+	setting := autorouter_setting.GetAutoRouterSetting()
+	setting.DefaultModels = []string{"general"}
+	session := "sess-retry"
+	c := newAutoRouterContext(9416, `{"client_metadata":{"session_id":"`+session+`"},"messages":[{"role":"user","content":"hard"}]}`)
+	_, err := ResolveAutoModel(c, allModelsAvailable)
+	require.NoError(t, err)
+	assert.Equal(t, "coder-xhigh", GetAutoRouterResult(c).ResolvedModel)
+
+	ExcludeAutoModel(c, "coder")
+	retry, ok := ResolveAutoRetryModel(c, allModelsAvailable)
+	require.True(t, ok)
+	assert.Equal(t, "general-xhigh", retry.ResolvedModel)
+	RememberAutoRetrySuccess(c)
+
+	subAgent, err := ResolveAutoModel(newAutoRouterContext(9416, encryptedSubAgentBody(session)), allModelsAvailable)
+	require.NoError(t, err)
+	assert.Equal(t, "general-xhigh", subAgent.ResolvedModel, "无文本子 agent 应继承重试后的会话路由")
+}
+
+func TestResolveAutoRetryUpdatesInheritedSessionRoute(t *testing.T) {
+	var calls atomic.Int32
+	useAutoRouterSetting(t, fakeJev(t, &calls, 0).URL, 1000)
+	session := "sess-inherited-retry"
+	_, err := ResolveAutoModel(newAutoRouterContext(9417, `{"client_metadata":{"session_id":"`+session+`"},"messages":[{"role":"user","content":"hard"}]}`), allModelsAvailable)
+	require.NoError(t, err)
+
+	retryContext := newAutoRouterContext(9417, encryptedSubAgentBody(session))
+	inherited, err := ResolveAutoModel(retryContext, allModelsAvailable)
+	require.NoError(t, err)
+	assert.Equal(t, "coder-xhigh", inherited.ResolvedModel)
+	ExcludeAutoModel(retryContext, "coder")
+	retry, ok := ResolveAutoRetryModel(retryContext, allModelsAvailable)
+	require.True(t, ok)
+	assert.Equal(t, "general-medium", retry.ResolvedModel)
+	RememberAutoRetrySuccess(retryContext)
+
+	next, err := ResolveAutoModel(newAutoRouterContext(9417, encryptedSubAgentBody(session)), allModelsAvailable)
+	require.NoError(t, err)
+	assert.Equal(t, "general-medium", next.ResolvedModel, "后续无文本子 agent 应继承重试后的会话路由")
+}
+
+func TestResolveAutoRetryDoesNotOverwriteSessionRouteForAgent(t *testing.T) {
+	var calls atomic.Int32
+	useAutoRouterSetting(t, fakeJev(t, &calls, 0).URL, 1000)
+	session := "sess-agent-retry"
+	_, err := ResolveAutoModel(newAutoRouterContext(9418, `{"client_metadata":{"session_id":"`+session+`"},"messages":[{"role":"user","content":"hard"}]}`), allModelsAvailable)
+	require.NoError(t, err)
+
+	agent := `{"client_metadata":{"session_id":"` + session + `"},"messages":[
+		{"role":"user","content":"hard"},
+		{"role":"assistant","content":"done"},
+		{"role":"user","content":"Message Type: NEW_TASK\nTask name: /root/child\nSender: /root\nPayload: hard"}
+	]}`
+	retryContext := newAutoRouterContext(9418, agent)
+	_, err = ResolveAutoModel(retryContext, allModelsAvailable)
+	require.NoError(t, err)
+	ExcludeAutoModel(retryContext, "coder")
+	_, ok := ResolveAutoRetryModel(retryContext, allModelsAvailable)
+	require.True(t, ok)
+
+	next, err := ResolveAutoModel(newAutoRouterContext(9418, encryptedSubAgentBody(session)), allModelsAvailable)
+	require.NoError(t, err)
+	assert.Equal(t, "coder-xhigh", next.ResolvedModel, "带明文任务的子 agent 重试不能覆盖人类轮次的会话路由")
 }
 
 func TestResolveAutoModelSkipsJevWhenNothingIsRoutable(t *testing.T) {
@@ -438,7 +603,10 @@ func TestResolveAutoModelAdaptivePreferenceReadsTheWeightFromTheModeAnswer(t *te
 		saved := setting.PreferenceWeights
 		setting.PreferenceWeights = autorouter.PreferenceWeights{"capability": {Quality: 1, Cost: 0}, "balanced": {Quality: 0.97, Cost: 0.03}, "cost": {Quality: 0.95, Cost: 0.05}}
 		t.Cleanup(func() { setting.PreferenceWeights = saved })
-		second := resolve(t, 9635, autorouter.PreferenceAdaptive, "frugal")
+		c := newAutoRouterContext(9635, `{"metadata":{"user_id":{"session_id":"another"}},"messages":[{"role":"user","content":"frugal"}]}`)
+		common.SetContextKey(c, constant.ContextKeyTokenAutoPreference, autorouter.PreferenceAdaptive)
+		second, err := ResolveAutoModel(c, candidates)
+		require.NoError(t, err)
 		assert.Equal(t, before+1, calls.Load(), "命中判断缓存，不再调 jev")
 		assert.Equal(t, autorouter.SourceCache, second.Source)
 		assert.Equal(t, "opus-m-xhigh", second.ResolvedModel, "平台改了三档权重，同一个判断读出的权重跟着变")
@@ -666,7 +834,7 @@ func TestResolveAutoModelTrace(t *testing.T) {
 		second, err := ResolveAutoModel(newAutoRouterContext(9901, body), allModelsAvailable)
 		require.NoError(t, err)
 		assert.Equal(t, autorouter.JudgmentCache, second.Trace.Judgment)
-		assert.Equal(t, trace.Ladder, second.Trace.Ladder, "同一个判断、同样的可用集合，走出同样的榜单")
+		assert.Equal(t, []autorouter.LadderStep{{Profile: "code.build", Outcome: autorouter.OutcomeInherited, Model: "coder"}}, second.Trace.Ladder, "同一轮的后续请求沿用本轮已选的路由")
 	})
 
 	t.Run("a jev failure, then the failure marker", func(t *testing.T) {
@@ -1009,55 +1177,231 @@ func TestNewAutoRouteLogKeepsTheRequestParametersButNotTheConversation(t *testin
 	assert.Equal(t, `{"keep":1}`, oversized.RequestParams, "a field that does not fit is left out whole")
 }
 
-// 详情超过上限时依次去掉最占地方的部分：比较候选带、整个路由结果，最后只剩一个空对象。
-func TestEncodeAutoRouteDetailShrinksToFit(t *testing.T) {
-	band := make([]autorouter.Candidate, 2000)
-	probabilities := make(map[string]float64, 4000)
-	ladder := make([]autorouter.LadderStep, 1500)
-	for i := range band {
-		band[i] = autorouter.Candidate{Model: "model-" + strconv.Itoa(i), Score: 0.9, Price: 1}
-	}
-	for i := range 4000 {
-		probabilities["task-"+strconv.Itoa(i)] = 0.5
-	}
-	for i := range ladder {
-		ladder[i] = autorouter.LadderStep{Profile: "general", Outcome: autorouter.OutcomeNone}
-	}
-	build := func(pick *autorouter.Pick, decision *autorouter.Decision, steps []autorouter.LadderStep) *autorouter.Result {
-		return &autorouter.Result{
-			Route: autorouter.Route{Model: "coder"}, Pick: pick, Decision: decision,
-			Trace: &autorouter.Trace{Judgment: autorouter.JudgmentLive, Ladder: steps},
-		}
-	}
-	tests := []struct {
-		name       string
-		result     *autorouter.Result
-		wantResult bool
-		wantPick   bool
-		wantTrace  bool
-	}{
-		{"fits as is", build(&autorouter.Pick{Chosen: "coder", Band: band[:3]}, nil, nil), true, true, true},
-		{"the comparison band goes first", build(&autorouter.Pick{Chosen: "coder", Band: band}, nil, nil), true, false, true},
-		{"then the route result", build(nil, &autorouter.Decision{TaskTypeProbabilities: probabilities}, nil), false, false, true},
-		{"nothing fits", build(nil, nil, ladder), false, false, false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			encoded := encodeAutoRouteDetail(tt.result, errors.New("no model"))
+type autoRouteCollectionTruncationView struct {
+	Total              int      `json:"total"`
+	Kept               int      `json:"kept"`
+	OmittedProbability *float64 `json:"omitted_probability,omitempty"`
+}
 
-			assert.LessOrEqual(t, len(encoded), model.AutoRouteLogDetailMax)
-			var detail map[string]any
-			require.NoError(t, common.UnmarshalJsonStr(encoded, &detail))
-			assert.Equal(t, tt.wantResult, detail["result"] != nil, "result")
-			assert.Equal(t, tt.wantTrace, detail["trace"] != nil, "trace")
-			if tt.wantResult {
-				assert.Equal(t, tt.wantPick, detail["result"].(map[string]any)["pick"] != nil, "pick")
+type autoRouteDetailView struct {
+	Result    *autorouter.Result `json:"result"`
+	Trace     *autorouter.Trace  `json:"trace"`
+	Error     string             `json:"error"`
+	Truncated *struct {
+		Collections map[string]autoRouteCollectionTruncationView `json:"collections"`
+		Fields      []string                                     `json:"fields"`
+		Strings     []string                                     `json:"strings"`
+		Reason      string                                       `json:"reason"`
+	} `json:"truncated"`
+}
+
+// 详情超限只压缩日志副本：保留可核查的比较证据和省略说明，不能改变真实选路结果。
+func TestEncodeAutoRouteDetailShrinksToFit(t *testing.T) {
+	t.Run("a small detail stays complete", func(t *testing.T) {
+		result := &autorouter.Result{
+			Route: autorouter.Route{Model: "coder"},
+			Pick: &autorouter.Pick{Chosen: "coder", Band: []autorouter.Candidate{
+				{Model: "coder", Score: 0.9, Price: 1, Utility: 0.9, Probability: 1},
+			}},
+			Trace: &autorouter.Trace{Judgment: autorouter.JudgmentLive},
+		}
+
+		encoded := encodeAutoRouteDetail(result, nil)
+		var got autoRouteDetailView
+		require.NoError(t, common.UnmarshalJsonStr(encoded, &got))
+		assert.Nil(t, got.Truncated)
+		require.NotNil(t, got.Result)
+		require.NotNil(t, got.Result.Pick)
+		assert.Len(t, got.Result.Pick.Band, 1)
+	})
+
+	t.Run("the shipped 146 candidate comparison keeps its evidence", func(t *testing.T) {
+		policy := autorouter_setting.GetAutoRouterSetting().Policy(autorouter.PreferenceBalanced)
+		decision := &autorouter.Decision{TaskType: "data.business", Difficulty: 2}
+		available := func(string) bool { return true }
+		trace := &autorouter.Trace{}
+		route, _, ok, pick := autorouter.SelectRoute(decision, nil, policy, autorouter.Candidates{
+			Available: available, Overridable: available,
+			Price: func(string) (float64, bool) { return 1, true },
+			Costs: func(models []string, _ string, _ bool) (map[string]autorouter.Cost, *autorouter.PreviewOutcome) {
+				costs := make(map[string]autorouter.Cost, len(models))
+				for i, name := range models {
+					costs[name] = autorouter.Cost{Price: 1, Multiplier: 1, Channels: 2, Source: autorouter.CostSourceExpected, Capacity: float64(i%10+1) / 10, CapacityKnown: true}
+				}
+				return costs, nil
+			},
+			Random: func() float64 { return 0.5 },
+		}, trace)
+		require.True(t, ok)
+		require.NotNil(t, pick)
+		require.Len(t, pick.Band, 146)
+		result := &autorouter.Result{Route: route, ResolvedModel: route.Model, Decision: decision, Pick: pick, Trace: trace}
+		full, err := common.Marshal(autoRouteDetail{Result: result, Trace: trace})
+		require.NoError(t, err)
+		require.Greater(t, len(full), model.AutoRouteLogDetailMax)
+		beforeResult, err := common.Marshal(result)
+		require.NoError(t, err)
+		beforeTrace, err := common.Marshal(trace)
+		require.NoError(t, err)
+		originalBand := append([]autorouter.Candidate(nil), pick.Band...)
+
+		encoded := encodeAutoRouteDetail(result, nil)
+		assert.LessOrEqual(t, len(encoded), model.AutoRouteLogDetailMax)
+		var got autoRouteDetailView
+		require.NoError(t, common.UnmarshalJsonStr(encoded, &got))
+		require.NotNil(t, got.Result)
+		require.NotNil(t, got.Result.Pick, "超限时不能把整个比较过程删掉")
+		require.NotNil(t, got.Trace)
+		require.NotNil(t, got.Truncated)
+		assert.NotContains(t, encoded, `"requests":`, "新容量日志不再携带历史请求数")
+		kept := got.Result.Pick.Band
+		assert.Greater(t, len(kept), 16, "只在确有字节压力时省略，不能粗暴砍到固定小样本")
+		assert.Less(t, len(kept), len(originalBand))
+
+		keptModels := make(map[string]bool, len(kept))
+		originalIndexes := make(map[string]int, len(originalBand))
+		for i, candidate := range originalBand {
+			originalIndexes[candidate.Model] = i
+		}
+		previous := -1
+		for _, candidate := range kept {
+			keptModels[candidate.Model] = true
+			index, found := originalIndexes[candidate.Model]
+			require.True(t, found)
+			assert.Equal(t, originalBand[index].Capacity, candidate.Capacity, "压缩必须保留渠道容量得分")
+			assert.Greater(t, index, previous, "保留下来的候选必须维持原榜单顺序")
+			previous = index
+		}
+		highestUtility, lowestCost, firstCostMetadata := 0, 0, -1
+		for i, candidate := range originalBand {
+			if candidate.Utility > originalBand[highestUtility].Utility {
+				highestUtility = i
 			}
-			if tt.wantTrace {
-				assert.Equal(t, "no model", detail["error"])
+			cost := candidate.Price
+			if candidate.CostMultiplier > 0 {
+				cost = candidate.Cost
 			}
-		})
-	}
+			lowest := originalBand[lowestCost].Price
+			if originalBand[lowestCost].CostMultiplier > 0 {
+				lowest = originalBand[lowestCost].Cost
+			}
+			if cost < lowest {
+				lowestCost = i
+			}
+			if firstCostMetadata < 0 && candidate.CostMultiplier > 0 {
+				firstCostMetadata = i
+			}
+		}
+		assert.True(t, keptModels[pick.Chosen], "中选模型必须保留")
+		assert.True(t, keptModels[originalBand[0].Model])
+		assert.True(t, keptModels[originalBand[highestUtility].Model])
+		assert.True(t, keptModels[originalBand[lowestCost].Model])
+		assert.True(t, keptModels[originalBand[firstCostMetadata].Model])
+
+		truncation, found := got.Truncated.Collections["result.pick.band"]
+		require.True(t, found)
+		assert.Equal(t, len(originalBand), truncation.Total)
+		assert.Equal(t, len(kept), truncation.Kept)
+		require.NotNil(t, truncation.OmittedProbability)
+		keptProbability := 0.0
+		for _, candidate := range kept {
+			keptProbability += candidate.Probability
+		}
+		assert.InDelta(t, 1-keptProbability, *truncation.OmittedProbability, 1e-9)
+		afterResult, err := common.Marshal(result)
+		require.NoError(t, err)
+		afterTrace, err := common.Marshal(trace)
+		require.NoError(t, err)
+		assert.JSONEq(t, string(beforeResult), string(afterResult), "日志压缩不能修改真实选路结果")
+		assert.JSONEq(t, string(beforeTrace), string(afterTrace), "日志压缩不能修改真实留痕")
+	})
+
+	t.Run("huge collections and strings degrade with a readable core", func(t *testing.T) {
+		band := make([]autorouter.Candidate, 2000)
+		probabilities := make(map[string]float64, 4000)
+		ladder := make([]autorouter.LadderStep, 1500)
+		for i := range band {
+			band[i] = autorouter.Candidate{Model: "model-" + strconv.Itoa(i), Score: 0.9, Price: 1, Cost: 1, CostMultiplier: 1, Utility: float64(i), Probability: 0.0005}
+		}
+		band[len(band)-1].Utility = -1
+		for i := range 4000 {
+			probabilities["task-"+strconv.Itoa(i)] = 0.5
+		}
+		for i := range ladder {
+			ladder[i] = autorouter.LadderStep{Profile: "general", Outcome: autorouter.OutcomeNone}
+		}
+		ladder[750] = autorouter.LadderStep{Profile: "code.build", Outcome: autorouter.OutcomeCompared, Model: "model-1999"}
+		result := &autorouter.Result{
+			Route:    autorouter.Route{Model: "model-1999"},
+			Pick:     &autorouter.Pick{Chosen: "model-1999", Band: band},
+			Decision: &autorouter.Decision{TaskType: "task-3999", TaskTypeProbabilities: probabilities},
+			Trace:    &autorouter.Trace{Judgment: autorouter.JudgmentLive, Ladder: ladder},
+		}
+		longError := strings.Repeat("长", 30000)
+
+		encoded := encodeAutoRouteDetail(result, errors.New(longError))
+		assert.LessOrEqual(t, len(encoded), model.AutoRouteLogDetailMax)
+		assert.True(t, utf8.ValidString(encoded))
+		var got autoRouteDetailView
+		require.NoError(t, common.UnmarshalJsonStr(encoded, &got))
+		require.NotNil(t, got.Result)
+		require.NotNil(t, got.Trace)
+		require.NotNil(t, got.Result.Pick)
+		require.NotNil(t, got.Truncated)
+		assert.NotEmpty(t, got.Result.Pick.Band)
+		assert.Equal(t, "model-1999", got.Result.Pick.Band[len(got.Result.Pick.Band)-1].Model, "最低效用且位于末尾的中选模型也不能丢")
+		assert.Contains(t, got.Result.Decision.TaskTypeProbabilities, "task-3999", "实际选中的任务类型优先于概率表裁剪")
+		assert.NotEmpty(t, got.Trace.Ladder)
+		assert.Less(t, len(got.Error), len(longError))
+		assert.Contains(t, got.Truncated.Strings, "error")
+		assert.NotEqual(t, "{}", encoded)
+	})
+
+	t.Run("a marshal failure is explicit and does not invent a route error", func(t *testing.T) {
+		result := &autorouter.Result{
+			Route: autorouter.Route{Model: "coder"},
+			Pick:  &autorouter.Pick{Chosen: "coder", Band: []autorouter.Candidate{{Model: "coder", Utility: math.NaN()}}},
+			Trace: &autorouter.Trace{Judgment: autorouter.JudgmentLive},
+		}
+
+		encoded := encodeAutoRouteDetail(result, nil)
+		var got autoRouteDetailView
+		require.NoError(t, common.UnmarshalJsonStr(encoded, &got))
+		require.NotNil(t, got.Result)
+		require.NotNil(t, got.Trace)
+		require.NotNil(t, got.Truncated)
+		assert.Equal(t, "encoding_error", got.Truncated.Reason)
+		assert.Equal(t, []string{"result.pick"}, got.Truncated.Fields, "只报告实际存在且被裁掉的字段")
+		assert.Empty(t, got.Error)
+		assert.NotEqual(t, "{}", encoded)
+	})
+
+	t.Run("the final fallback reports only actual omissions", func(t *testing.T) {
+		detail := autoRouteDetail{
+			Error: strings.Repeat("x", 600),
+			Result: &autorouter.Result{Route: autorouter.Route{
+				Model: strings.Repeat("m", 300),
+			}},
+			Trace: &autorouter.Trace{
+				Judgment:     strings.Repeat("j", 100),
+				Unroutable:   &autorouter.Unroutable{},
+				Validity:     &autorouter.Validity{},
+				Mode:         &autorouter.ModeTrace{},
+				Continuation: &autorouter.Continuation{},
+				Effort:       &autorouter.EffortTrace{},
+			},
+			Truncated: &autoRouteTruncation{},
+		}
+
+		minimal := minimalAutoRouteDetail(detail)
+		assert.ElementsMatch(t, []string{
+			"trace.unroutable", "trace.validity", "trace.mode", "trace.continuation", "trace.effort",
+		}, minimal.Truncated.Fields)
+		assert.NotContains(t, minimal.Truncated.Fields, "trace.ladder")
+		assert.Contains(t, minimal.Truncated.Strings, "error")
+		assert.Contains(t, minimal.Truncated.Strings, "result.model")
+		assert.Contains(t, minimal.Truncated.Strings, "trace.judgment")
+	})
 }
 
 func TestAutoRouterListedOnlyWhenResolvable(t *testing.T) {
@@ -1070,4 +1414,47 @@ func TestAutoRouterListedOnlyWhenResolvable(t *testing.T) {
 
 	autorouter_setting.GetAutoRouterSetting().Enabled = false
 	assert.False(t, AutoRouterListed([]string{"chat"}))
+}
+
+// 重试按榜单条目排除失败的模型：名字自带 -max 这类后缀的模型和它的档位变体
+// 靠名字区分不开，条目没有这个歧义。
+func TestResolveAutoRetryModelExcludesFailedRankingEntries(t *testing.T) {
+	tests := []struct {
+		name    string
+		entries []string
+		serves  []string
+		want    []string
+	}{
+		{"a model named like an effort is tried once", []string{"qwen3.7-max"}, []string{"qwen3.7-max", "qwen3.7-max-xhigh"}, []string{"qwen3.7-max-xhigh"}},
+		{"a failed model does not exclude the model named after it", []string{"foo", "foo-max"}, []string{"foo", "foo-max"}, []string{"foo", "foo-max"}},
+		{"the model named after another is tried first", []string{"foo-max", "foo"}, []string{"foo", "foo-max"}, []string{"foo-max", "foo"}},
+		{"effort variants of one model are excluded together", []string{"coder", "other"}, []string{"coder-low", "coder-xhigh", "other"}, []string{"coder-xhigh", "other"}},
+	}
+	for i, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var calls atomic.Int32
+			useAutoRouterSetting(t, fakeJev(t, &calls, 0).URL, 1000)
+			setting := autorouter_setting.GetAutoRouterSetting()
+			setting.TaskModels = map[string][]string{"code.build": tt.entries}
+			setting.DefaultModels = tt.entries
+			candidates := candidatesFrom(func(name string) bool { return slices.Contains(tt.serves, name) })
+			// 路由缓存按令牌和指令文字取键且跨用例共享，每个子用例用自己的令牌，才不会读到别的榜单缓存的路由。
+			c := newAutoRouterContext(9931+i, `{"messages":[{"role":"user","content":"hard"}]}`)
+			common.SetContextKey(c, constant.ContextKeyAutoRouted, true)
+
+			first, err := ResolveAutoModel(c, candidates)
+			require.NoError(t, err)
+			attempts := []string{first.ResolvedModel}
+			// 榜单条目有限，每次重试排除一个，所以走完所有条目后一定停下；上限只防止测试自己挂死。
+			for range len(tt.entries) + 1 {
+				ExcludeAutoModel(c, attempts[len(attempts)-1])
+				next, found := ResolveAutoRetryModel(c, candidates)
+				if !found {
+					break
+				}
+				attempts = append(attempts, next.ResolvedModel)
+			}
+			assert.Equal(t, tt.want, attempts)
+		})
+	}
 }

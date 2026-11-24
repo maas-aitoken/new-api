@@ -3,7 +3,6 @@ package service
 import (
 	"math/rand/v2"
 	"slices"
-	"strings"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
@@ -15,8 +14,10 @@ import (
 const ginKeyAutoFailedModels = "auto_failed_models"
 
 // ResolveAutoRetryModel selects another model within the current request after
-// an auto-routed attempt failed. Failed models are excluded from every ranking,
-// including the previous-route and default fallbacks.
+// an auto-routed attempt failed. Failed models are removed from every ranking,
+// including the default fallback, by their ranking entry. Matching the names a
+// ranking entry resolves to cannot tell a model whose name ends in an effort,
+// such as qwen3.7-max, from an effort variant of another model.
 func ResolveAutoRetryModel(c *gin.Context, candidates AutoCandidates) (*autorouter.Result, bool) {
 	if !common.GetContextKeyBool(c, constant.ContextKeyAutoRouted) {
 		return nil, false
@@ -25,19 +26,17 @@ func ResolveAutoRetryModel(c *gin.Context, candidates AutoCandidates) (*autorout
 	if len(failed) == 0 {
 		return nil, false
 	}
-	excluded := func(name string) bool {
-		for _, effort := range autorouter.Efforts() {
-			name = strings.TrimSuffix(name, "-"+effort)
-		}
-		return slices.Contains(failed, name)
-	}
-	available := func(name string) bool {
-		return !excluded(name) && candidates.Serves(name, false)
-	}
-	overridable := func(name string) bool {
-		return !excluded(name) && candidates.Serves(name, true)
-	}
+	available := func(name string) bool { return candidates.Serves(name, false) }
+	overridable := func(name string) bool { return candidates.Serves(name, true) }
+	// Policy shares its ranking slices with the global setting, so filter copies.
 	policy := autorouter_setting.GetAutoRouterSetting().Policy(common.GetContextKeyString(c, constant.ContextKeyTokenAutoPreference))
+	hasFailed := func(entry string) bool { return slices.Contains(failed, entry) }
+	policy.DefaultModels = slices.DeleteFunc(slices.Clone(policy.DefaultModels), hasFailed)
+	taskModels := make(map[string][]string, len(policy.TaskModels))
+	for task, entries := range policy.TaskModels {
+		taskModels[task] = slices.DeleteFunc(slices.Clone(entries), hasFailed)
+	}
+	policy.TaskModels = taskModels
 	routing := autorouter.Candidates{
 		Available: available, Overridable: overridable, Price: candidates.Price,
 		Why: candidates.Why, Costs: candidates.Costs, Metrics: candidates.Metrics, Random: candidates.Random,

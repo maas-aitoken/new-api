@@ -31,6 +31,7 @@ import (
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting/autorouter_setting"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 
 	"github.com/gin-gonic/gin"
@@ -165,6 +166,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 	var llmSpan trace.Span
 	if otelRuntime != nil {
 		traceCtx, llmSpan = otelRuntime.StartLLMRequest(traceCtx, relayInfo, request)
+		observability.RecordRequestIdentity(c, llmSpan)
 		c.Request = c.Request.WithContext(traceCtx)
 		// The raw client body keeps unknown fields that DTO round-trips would
 		// drop; the client-format strip in RecordClientRequest removes the
@@ -244,6 +246,9 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 	}
 	relayInfo.RetryIndex = 0
 	relayInfo.LastError = nil
+	// retryParam is reset when an auto group runs out of channels, so the auto
+	// retry limit counts its own retries.
+	autoRetries := 0
 
 	for ; retryParam.GetRetry() <= common.RetryTimes || common.GetContextKeyBool(c, constant.ContextKeyAutoRouted); retryParam.IncreaseRetry() {
 		relayInfo.StreamStatus = nil
@@ -339,7 +344,6 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		autoModel := ""
 		if common.GetContextKeyBool(c, constant.ContextKeyAutoRouted) && autoRoute != nil {
 			autoModel = autoRoute.Route.Model
-			autorouter.BeginModelRequest(autoModel)
 		}
 
 		// The closure keeps the in-flight counter balanced even when the relay
@@ -450,12 +454,18 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		retryTimes := common.RetryTimes - retryParam.GetRetry()
 		if common.GetContextKeyBool(c, constant.ContextKeyAutoRouted) {
 			// The ordinary budget applies to channels of one model. Auto retries
-			// instead continue until every eligible model has had one attempt.
+			// instead continue until every eligible model has had one attempt or
+			// the auto retry limit is used up.
 			retryTimes = max(retryTimes, 1)
 		}
 		decision := service.DecideRelayRetry(c, newAPIError, retryTimes)
 		if common.GetContextKeyBool(c, constant.ContextKeyAutoRouted) && decision.Action == "retry" {
-			service.ExcludeAutoModel(c, relayInfo.OriginModelName)
+			if autoRetries >= autorouter_setting.GetAutoRouterSetting().MaxRetries {
+				decision = service.PolicyDecision{Action: "stop", Reason: "attempt_budget_exhausted", Source: "global"}
+			} else {
+				autoRetries++
+				service.ExcludeAutoModel(c, relayInfo.OriginModelName)
+			}
 		}
 		service.RecordPolicyFailure(c, channel.Id, newAPIError, decision)
 		processChannelError(c, *types.NewChannelError(channel.Id, channel.Type, channel.Name, channel.ChannelInfo.IsMultiKey, common.GetContextKeyString(c, constant.ContextKeyChannelKey), channel.GetAutoBan()), newAPIError, relayInfo)

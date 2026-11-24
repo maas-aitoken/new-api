@@ -23,6 +23,7 @@ func GetModelCapabilityTargets(c *gin.Context) {
 		channelID = 0
 	}
 	targets, total, err := model.GetCapabilityTargets(model.CapabilityTargetQuery{
+		Model:     c.Query("model"),
 		Keyword:   c.Query("keyword"),
 		ChannelID: channelID,
 		Offset:    pageInfo.GetStartIdx(),

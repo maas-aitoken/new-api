@@ -127,15 +127,19 @@ func OpenaiRealtimeHandler(c *gin.Context, info *relaycommon.RelayInfo) (*types.
 				if realtimeEvent.Type == dto.RealtimeEventTypeResponseDone {
 					realtimeUsage := realtimeEvent.Response.Usage
 					if realtimeUsage != nil {
-						usage.TotalTokens += realtimeUsage.TotalTokens
-						usage.InputTokens += realtimeUsage.InputTokens
-						usage.OutputTokens += realtimeUsage.OutputTokens
-						usage.InputTokenDetails.AudioTokens += realtimeUsage.InputTokenDetails.AudioTokens
-						usage.InputTokenDetails.CachedTokens += realtimeUsage.InputTokenDetails.CachedTokens
-						usage.InputTokenDetails.TextTokens += realtimeUsage.InputTokenDetails.TextTokens
-						usage.OutputTokenDetails.AudioTokens += realtimeUsage.OutputTokenDetails.AudioTokens
-						usage.OutputTokenDetails.TextTokens += realtimeUsage.OutputTokenDetails.TextTokens
-						err := accumulateUsage(usage, sumUsage)
+					usage.TotalTokens += realtimeUsage.TotalTokens
+					usage.InputTokens += realtimeUsage.InputTokens
+					usage.OutputTokens += realtimeUsage.OutputTokens
+					usage.InputTokenDetails.AudioTokens += realtimeUsage.InputTokenDetails.AudioTokens
+					usage.InputTokenDetails.CachedTokens += realtimeUsage.InputTokenDetails.CachedTokens
+					usage.InputTokenDetails.TextTokens += realtimeUsage.InputTokenDetails.TextTokens
+					usage.OutputTokenDetails.AudioTokens += realtimeUsage.OutputTokenDetails.AudioTokens
+					usage.OutputTokenDetails.TextTokens += realtimeUsage.OutputTokenDetails.TextTokens
+					// duration_details 与 token 同层，随段一起累计进 sumUsage
+					if realtimeUsage.DurationDetails != nil {
+						usage.DurationDetails = realtimeUsage.DurationDetails
+					}
+					err := accumulateUsage(usage, sumUsage)
 						if err != nil {
 							errChan <- fmt.Errorf("error consume usage: %v", err)
 							return
@@ -247,6 +251,20 @@ func accumulateUsage(usage *dto.RealtimeUsage, totalUsage *dto.RealtimeUsage) er
 	totalUsage.InputTokenDetails.AudioTokens += usage.InputTokenDetails.AudioTokens
 	totalUsage.OutputTokenDetails.TextTokens += usage.OutputTokenDetails.TextTokens
 	totalUsage.OutputTokenDetails.AudioTokens += usage.OutputTokenDetails.AudioTokens
+	// 火山 Realtime 在每轮 response.done（含 session.close 后那笔 total_tokens=0
+	// 的残余账）都带 usage.duration_details；两路计费时长随 token 一起累加，
+	// 供按时长计价的模型结算。负值视为上游异常，不累计。
+	if d := usage.DurationDetails; d != nil {
+		if totalUsage.DurationDetails == nil {
+			totalUsage.DurationDetails = &dto.RealtimeDurationDetails{}
+		}
+		if d.AudioDurationMS > 0 {
+			totalUsage.DurationDetails.AudioDurationMS += d.AudioDurationMS
+		}
+		if d.VisionDurationMS > 0 {
+			totalUsage.DurationDetails.VisionDurationMS += d.VisionDurationMS
+		}
+	}
 	// Realtime billing is settled once, from the accumulated usage, in
 	// relay/websocket.go. Do not debit wallet/token quota per response.done:
 	// that would be charged again by the final BillingSession settlement.

@@ -27,7 +27,7 @@ describe('legacy frontend route migration', () => {
       '/forbidden': '/403',
       '/console': '/dashboard',
       '/console/models': '/models',
-      '/console/deployment': '/models/deployments',
+      '/console/deployment': '/models/metadata',
       '/console/subscription': '/subscriptions',
       '/console/channel': '/channels',
       '/console/token': '/keys',

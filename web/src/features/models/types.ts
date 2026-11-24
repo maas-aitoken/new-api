@@ -203,6 +203,7 @@ export interface PrefillGroup {
 export interface GetModelsParams {
   square_state?: ModelSquareState
   include_channel_models?: boolean
+  channel_id?: number
   p?: number
   page_size?: number
   vendor?: string // vendor ID to filter by
@@ -216,6 +217,7 @@ export interface GetModelsParams {
 export interface SearchModelsParams {
   square_state?: ModelSquareState
   include_channel_models?: boolean
+  channel_id?: number
   keyword?: string
   vendor?: string // vendor ID to filter by
   status?: string // filter by status
@@ -280,7 +282,6 @@ export type MetadataSyncField =
   | 'tags'
   | 'vendor'
   | 'endpoints'
-  | 'name_rule'
   | 'status'
 export type MetadataSyncValues = {
   description: string
@@ -456,11 +457,7 @@ export type SyncSource = 'official'
 /**
  * Model tab type
  */
-export type ModelTabCategory =
-  | 'metadata'
-  | 'vendors'
-  | 'deployments'
-  | 'capabilities'
+export type ModelTabCategory = 'metadata' | 'vendors'
 
 /**
  * Deployment entity from API

@@ -43,6 +43,16 @@ type RealtimeUsage struct {
 	OutputTokens       int                `json:"output_tokens"`
 	InputTokenDetails  InputTokenDetails  `json:"input_token_details"`
 	OutputTokenDetails OutputTokenDetails `json:"output_token_details"`
+	// DurationDetails 是火山等上游在 usage 里附带的两路计费时长（毫秒），
+	// 语音/视频分别计价的实时模型（如 Doubao-Seed-Realtime）靠它按分钟结算。
+	DurationDetails *RealtimeDurationDetails `json:"duration_details,omitempty"`
+}
+
+// RealtimeDurationDetails 的字段对应豆包 Realtime 的
+// usage.duration_details.{audio_duration_ms, vision_duration_ms}；缺字段为零值。
+type RealtimeDurationDetails struct {
+	AudioDurationMS  int64 `json:"audio_duration_ms"`
+	VisionDurationMS int64 `json:"vision_duration_ms"`
 }
 
 type RealtimeSession struct {

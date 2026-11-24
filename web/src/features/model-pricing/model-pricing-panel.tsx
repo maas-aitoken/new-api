@@ -45,6 +45,7 @@ import {
   useSaveModelPricing,
   type ModelPricingEntry,
 } from './api'
+import { ChannelMultipliersSection } from './channel-multipliers-section'
 import {
   getSitePricingCurrency,
   isValidPricingCurrency,
@@ -159,6 +160,7 @@ export function ModelPricingPanel(props: {
 
   return (
     <div className='flex min-h-0 min-w-0 flex-1 flex-col gap-3'>
+      <ChannelMultipliersSection modelName={props.modelName} entry={entry} />
       <ModelPricingEditorPanel
         embedded
         ref={editor}

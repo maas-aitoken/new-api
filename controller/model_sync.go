@@ -291,6 +291,9 @@ func fetchMetadataCatalog(c *gin.Context, locale string) (metadataSyncSource, ma
 		if strings.TrimSpace(item.ModelName) == "" {
 			continue
 		}
+		if item.NameRule != model.NameRuleExact {
+			continue
+		}
 		endpoints := ""
 		if len(item.Endpoints) > 0 && string(item.Endpoints) != "null" {
 			if err := common.Unmarshal(item.Endpoints, &endpoints); err != nil {

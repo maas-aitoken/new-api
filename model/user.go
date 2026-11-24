@@ -1586,3 +1586,17 @@ func RootUserExists() bool {
 	}
 	return true
 }
+
+// ListRootUsersForUpdate locks active root accounts during role transitions.
+func ListRootUsersForUpdate(tx *gorm.DB) ([]User, error) {
+	var users []User
+	err := lockForUpdate(tx).Select("id").Where("role = ? AND status = ?", common.RoleRootUser, common.UserStatusEnabled).Order("id").Find(&users).Error
+	return users, err
+}
+
+// GetUserForUpdate locks a target account before changing its role.
+func GetUserForUpdate(tx *gorm.DB, id int) (User, error) {
+	var user User
+	err := lockForUpdate(tx).First(&user, id).Error
+	return user, err
+}

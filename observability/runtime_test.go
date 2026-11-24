@@ -1010,32 +1010,73 @@ func TestShouldTracePath(t *testing.T) {
 	require.False(t, shouldTracePath("/api/logs"))
 }
 
-func TestMiddlewareRecordsUsernameAsUserID(t *testing.T) {
-	exporter := tracetest.NewInMemoryExporter()
-	provider := trace.NewTracerProvider(trace.WithSpanProcessor(trace.NewSimpleSpanProcessor(exporter)))
-	runtime := &Runtime{
-		enabled:        true,
-		tracerProvider: provider,
-		tracer:         provider.Tracer("test"),
-		propagator:     propagationTraceContextForTest(),
+func TestMiddlewareRecordsAuthenticatedRequestIdentity(t *testing.T) {
+	const fixtureAPIKey = "fixture-secret-api-key"
+	for _, tc := range []struct {
+		name, username string
+		status, token  int
+		generation     bool
+	}{
+		{name: "model request", username: "alice", status: http.StatusOK, token: 42, generation: true},
+		{name: "rejected by routing after authentication", username: "alice", status: http.StatusServiceUnavailable, token: 42},
+		{name: "session user without API key", username: "alice", status: http.StatusOK},
+		{name: "rejected by authentication", status: http.StatusUnauthorized},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			exporter := tracetest.NewInMemoryExporter()
+			provider := trace.NewTracerProvider(trace.WithSpanProcessor(trace.NewSimpleSpanProcessor(exporter)))
+			runtime := &Runtime{
+				enabled:        true,
+				tracerProvider: provider,
+				tracer:         provider.Tracer("test"),
+				propagator:     propagationTraceContextForTest(),
+			}
+			t.Cleanup(func() { require.NoError(t, provider.Shutdown(context.Background())) })
+
+			engine := gin.New()
+			engine.Use(runtime.Middleware())
+			engine.POST("/v1/messages", func(c *gin.Context) {
+				if tc.username != "" {
+					rootcommon.SetContextKey(c, constant.ContextKeyUserName, tc.username)
+				}
+				if tc.token > 0 {
+					rootcommon.SetContextKey(c, constant.ContextKeyTokenId, tc.token)
+					rootcommon.SetContextKey(c, constant.ContextKeyTokenKey, fixtureAPIKey)
+				}
+				if tc.generation {
+					_, span := runtime.StartLLMRequest(c.Request.Context(), &common.RelayInfo{TokenId: tc.token}, nil)
+					RecordRequestIdentity(c, span)
+					span.End()
+				}
+				c.AbortWithStatus(tc.status)
+			})
+
+			recorder := httptest.NewRecorder()
+			request := httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+			request.Header.Set("Authorization", "Bearer "+fixtureAPIKey)
+			request.Header.Set("X-Token-Id", "999")
+			engine.ServeHTTP(recorder, request)
+			require.Equal(t, tc.status, recorder.Code)
+
+			spans := exporter.GetSpans()
+			if tc.generation {
+				require.Len(t, spans, 2)
+			} else {
+				require.Len(t, spans, 1)
+			}
+			for _, span := range spans {
+				require.Equal(t, tc.username, attributeValue(span.Attributes, "user.id").AsString())
+				token := attributeValue(span.Attributes, "new_api.token_id")
+				if tc.token > 0 {
+					require.Equal(t, attribute.INT64, token.Type())
+					require.EqualValues(t, tc.token, token.AsInt64())
+				} else {
+					require.Equal(t, attribute.INVALID, token.Type())
+				}
+				require.NotContains(t, fmt.Sprint(span.Attributes), fixtureAPIKey)
+			}
+		})
 	}
-	t.Cleanup(func() { require.NoError(t, provider.Shutdown(context.Background())) })
-
-	engine := gin.New()
-	engine.Use(runtime.Middleware())
-	engine.GET("/v1/models", func(c *gin.Context) {
-		c.Set(string(constant.ContextKeyUserName), "alice")
-		c.Status(http.StatusOK)
-	})
-
-	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
-	engine.ServeHTTP(recorder, request)
-	require.Equal(t, http.StatusOK, recorder.Code)
-
-	spans := exporter.GetSpans()
-	require.Len(t, spans, 1)
-	require.Equal(t, "alice", attributeValue(spans[0].Attributes, "user.id").AsString())
 }
 
 func TestParseHeaders(t *testing.T) {

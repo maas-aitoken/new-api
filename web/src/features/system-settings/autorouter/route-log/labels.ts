@@ -18,13 +18,16 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import type { TFunction } from 'i18next'
 
+import type { RoutePresentationSchema } from './presentation'
 import type { RoutePreviewOutcome, RouteResult } from './types'
 
 export type RouteTone = 'success' | 'warning' | 'danger' | 'info' | 'neutral'
 
 /** Leaderboard-style scores and probabilities keep four decimals. */
 export function formatScore(value?: number | null): string {
-  return value == null ? '-' : value.toFixed(4)
+  return typeof value === 'number' && Number.isFinite(value)
+    ? value.toFixed(4)
+    : '-'
 }
 
 export function outcomeLabel(t: TFunction, outcome: string): string {
@@ -213,9 +216,15 @@ export function decisionErrorLabel(t: TFunction, error: string): string {
   }
 }
 
-export function ladderOutcomeLabel(t: TFunction, outcome: string): string {
+export function ladderOutcomeLabel(
+  t: TFunction,
+  outcome: string,
+  schema: RoutePresentationSchema = 'current'
+): string {
   switch (outcome) {
     case 'compared':
+      if (schema === 'legacy') return t('Picked by quality and price')
+      if (schema === 'partial') return t('Compared models')
       return t('Picked by quality, cost, capacity and success')
     case 'first_available':
       return t('First servable model in list order')

@@ -137,7 +137,8 @@ export function transformFormDataToModelPayload(
       formData.context_length === '' ? 0 : Number(formData.context_length),
     parameter_count: formData.parameter_count,
     release_date: formData.release_date,
-    name_rule: formData.name_rule,
+    // 模型条目一律为完全匹配（name_rule = 0）
+    name_rule: 0,
     status: formData.status ? 1 : 0,
     sync_official: formData.sync_official ? 1 : 0,
     enable_groups: formData.enable_groups,

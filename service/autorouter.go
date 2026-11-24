@@ -37,16 +37,18 @@ const (
 
 // autoRouterEntry 按键的用途存不同的字段：
 //   - d: 键只存 jev 的判断（Decision），或"刚失败过"的标记（Failed）。
-//     同一条指令的后续请求不再调 jev，但路由每次按各自的可用集合重新算，
-//     所以一次带图请求因为能力不满足换了模型，不会影响之后的纯文本请求。
-//   - r: 和 s: 键存最近一次算出的路由（Route），供下一条指令"沿用上一轮模型"，
-//     以及没有可读文字的子 agent 继承会话路由。s: 键还记着这条路由的档位是否由
-//     jev 判断定下（EffortOverride），子 agent 继承时据此决定能不能覆盖客户端的推理字段。
+//   - r: 键由令牌、会话和当前指令组成，存这条指令最近一轮的路由（Route），
+//     同一轮的后续请求直接复用它，下一条指令"沿用上一轮模型"时也读它；
+//     Previous 用来确认缓存是否属于当前轮次。
+//   - s: 键存会话最近一次算出的路由，供没有可读文字的子 agent 继承；还记着这条路由
+//     的档位是否由 jev 判断定下（EffortOverride），子 agent 继承时据此决定能不能覆盖
+//     客户端的推理字段。
 type autoRouterEntry struct {
 	Route          autorouter.Route     `json:"route"`
 	Decision       *autorouter.Decision `json:"decision,omitempty"`
 	Failed         bool                 `json:"failed,omitempty"`
 	EffortOverride bool                 `json:"effort_override,omitempty"`
+	Previous       string               `json:"previous,omitempty"`
 }
 
 var (
@@ -157,13 +159,20 @@ type AutoCandidates struct {
 // rememberAutoRoute records the route the next instruction and its sub-agents inherit.
 // The caller decides whether the route is initial or actually answered successfully.
 func rememberAutoRoute(c *gin.Context, instruction autorouter.Instruction, result *autorouter.Result) {
-	if result == nil || instruction.Auxiliary || instruction.Text == "" {
+	if result == nil || instruction.Auxiliary {
 		return
 	}
 	cache := getAutoRouterCache()
 	tokenID := common.GetContextKeyInt(c, constant.ContextKeyTokenId)
 	ttl := time.Duration(autorouter_setting.GetAutoRouterSetting().CacheTTLSeconds) * time.Second
-	_ = cache.SetWithTTL(autoRouterCacheKey("r", tokenID, instruction.Text), autoRouterEntry{Route: result.Route}, ttl)
+	if instruction.Text != "" {
+		_ = cache.SetWithTTL(autoRouterCacheKey("r", tokenID, instruction.Session, instruction.Text), autoRouterEntry{
+			Route:          result.Route,
+			Decision:       result.Decision,
+			EffortOverride: result.EffortOverride,
+			Previous:       instruction.Previous,
+		}, ttl)
+	}
 	if instruction.Session != "" && !instruction.Agent {
 		_ = cache.SetWithTTL(autoRouterCacheKey("s", tokenID, instruction.Session), autoRouterEntry{Route: result.Route, EffortOverride: result.EffortOverride}, ttl)
 	}
@@ -233,7 +242,8 @@ func ResolveAutoModel(c *gin.Context, candidates AutoCandidates) (*autorouter.Re
 		trace.Judgment = autorouter.JudgmentAuxiliary
 	case instruction.Text == "" && instruction.Session != "":
 		trace.Judgment = autorouter.JudgmentSession
-		if entry, found, _ := cache.Get(autoRouterCacheKey("s", tokenID, instruction.Session)); found {
+		sessionKey := autoRouterCacheKey("s", tokenID, instruction.Session)
+		if entry, found, _ := cache.Get(sessionKey); found {
 			serves := available
 			if entry.EffortOverride {
 				serves = overridable
@@ -253,18 +263,34 @@ func ResolveAutoModel(c *gin.Context, candidates AutoCandidates) (*autorouter.Re
 			}
 		}
 		decisionKey := autoRouterCacheKey("d", tokenID, autorouter.QuestionsVersion, state["current_task"], state["previous_task"])
+		routeKey := autoRouterCacheKey("r", tokenID, instruction.Session, instruction.Text)
 
 		var previous *autorouter.Route
 		if instruction.Previous != "" {
-			if entry, found, _ := cache.Get(autoRouterCacheKey("r", tokenID, instruction.Previous)); found {
+			if entry, found, _ := cache.Get(autoRouterCacheKey("r", tokenID, instruction.Session, instruction.Previous)); found {
 				previous = &entry.Route
 			}
 		}
 		routeInput["previous_route"] = previous
 
+		// 本轮已经选定的模型仍可用就直接复用。没有判断的兜底路由不复用，jev 恢复后能重新分类。
+		var current *autoRouterEntry
+		if entry, found, _ := cache.Get(routeKey); found && entry.Previous == instruction.Previous && entry.Decision != nil {
+			serves := available
+			if entry.EffortOverride {
+				serves = overridable
+			}
+			if autorouter.ModelAvailable(entry.Route.Model, serves) {
+				current = &entry
+			}
+		}
+
 		var decision *autorouter.Decision
 		fromCache := false
-		if entry, found, _ := cache.Get(decisionKey); found && (entry.Decision != nil || entry.Failed) {
+		if current != nil {
+			decision = current.Decision
+			trace.Judgment = autorouter.JudgmentCache
+		} else if entry, found, _ := cache.Get(decisionKey); found && (entry.Decision != nil || entry.Failed) {
 			decision, fromCache = entry.Decision, entry.Decision != nil
 			trace.Judgment = autorouter.JudgmentCache
 			if entry.Failed {
@@ -311,7 +337,6 @@ func ResolveAutoModel(c *gin.Context, candidates AutoCandidates) (*autorouter.Re
 			otelRuntime.FinishObservation(jevSpan, jev)
 		}
 
-		// 路由每次按本次请求自己的可用集合重新算，缓存里只有 jev 的判断。
 		var inherited bool
 		result.Decision = decision
 		// 调度器的 workload 在选路前就定下来：比价时的调度器预览和选定后的正式调度用同一个值，
@@ -320,15 +345,23 @@ func ResolveAutoModel(c *gin.Context, candidates AutoCandidates) (*autorouter.Re
 			common.GetContextKeyString(c, constant.ContextKeySchedulerWorkload) == "" {
 			common.SetContextKey(c, constant.ContextKeySchedulerWorkload, decision.TaskType)
 		}
-		result.Route, inherited, ok, result.Pick = autorouter.SelectRoute(decision, previous, policy, routing, trace)
-		result.EffortOverride = !inherited
-		switch {
-		case !inherited && fromCache:
+		if current != nil {
+			result.Route = current.Route
+			result.EffortOverride = current.EffortOverride
 			result.Source = autorouter.SourceCache
-		case !inherited:
-			result.Source = autorouter.SourceJev
-		case previous != nil && result.Route == *previous:
-			result.Source = autorouter.SourceInherit
+			trace.Ladder = append(trace.Ladder, autorouter.LadderStep{Profile: current.Route.Profile, Outcome: autorouter.OutcomeInherited, Model: current.Route.Model})
+			ok = true
+		} else {
+			result.Route, inherited, ok, result.Pick = autorouter.SelectRoute(decision, previous, policy, routing, trace)
+			result.EffortOverride = !inherited
+			switch {
+			case !inherited && fromCache:
+				result.Source = autorouter.SourceCache
+			case !inherited:
+				result.Source = autorouter.SourceJev
+			case previous != nil && result.Route == *previous:
+				result.Source = autorouter.SourceInherit
+			}
 		}
 		// 兜底路由也记下来，下一条指令才能沿用同一个模型，agent 循环不会来回换模型。
 		if ok {

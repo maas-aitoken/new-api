@@ -56,7 +56,6 @@ const FIELD_LABELS: Record<MetadataSyncField, string> = {
   tags: 'Tags',
   vendor: 'Vendor',
   endpoints: 'Custom endpoints',
-  name_rule: 'Match Type',
   status: 'Model square visibility',
 }
 const REASON_LABELS = {
@@ -282,11 +281,6 @@ export function SyncWizardDialog(props: {
       return next
     })
   const impact = (field: MetadataSyncField) => {
-    if (field === 'name_rule') {
-      return t(
-        'Changes which model names inherit this metadata. Prices are not inherited.'
-      )
-    }
     if (field === 'status') {
       return t(
         'Changes visibility in the model square. Channel status and existing API access are unchanged.'
@@ -302,12 +296,6 @@ export function SyncWizardDialog(props: {
   const display = (field: MetadataSyncField, value: string | number) => {
     if (field === 'status') {
       return value === 1 ? t('Shown') : t('Not shown')
-    }
-    if (field === 'name_rule') {
-      return (
-        [t('Exact'), t('Prefix'), t('Contains'), t('Suffix')][Number(value)] ??
-        String(value)
-      )
     }
     return String(value || '—')
   }
