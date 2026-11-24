@@ -377,6 +377,12 @@ func migrateDB() error {
 		&TaskPlugin{},
 		&Model{},
 		&Vendor{},
+		&Supplier{},
+		&SupplierChannel{},
+		&SupplierBill{},
+		&SupplierBillAdjustment{},
+		&SupplierBillAllocation{},
+		&SupplierOperationLog{},
 		&PrefillGroup{},
 		&Setup{},
 		&TwoFA{},
@@ -402,6 +408,11 @@ func migrateDB() error {
 	)
 	if err != nil {
 		return err
+	}
+	if DB.Migrator().HasIndex(&Supplier{}, "uk_supplier_name_deleted") {
+		if err := DB.Migrator().DropIndex(&Supplier{}, "uk_supplier_name_deleted"); err != nil {
+			return err
+		}
 	}
 	if err := InitializeUserAuthVersions(); err != nil {
 		return err
@@ -462,6 +473,12 @@ func migrateDBFast() error {
 		{&Task{}, "Task"},
 		{&Model{}, "Model"},
 		{&Vendor{}, "Vendor"},
+		{&Supplier{}, "Supplier"},
+		{&SupplierChannel{}, "SupplierChannel"},
+		{&SupplierBill{}, "SupplierBill"},
+		{&SupplierBillAdjustment{}, "SupplierBillAdjustment"},
+		{&SupplierBillAllocation{}, "SupplierBillAllocation"},
+		{&SupplierOperationLog{}, "SupplierOperationLog"},
 		{&PrefillGroup{}, "PrefillGroup"},
 		{&Setup{}, "Setup"},
 		{&TwoFA{}, "TwoFA"},
@@ -502,6 +519,11 @@ func migrateDBFast() error {
 	// Check for any errors
 	for err := range errChan {
 		if err != nil {
+			return err
+		}
+	}
+	if DB.Migrator().HasIndex(&Supplier{}, "uk_supplier_name_deleted") {
+		if err := DB.Migrator().DropIndex(&Supplier{}, "uk_supplier_name_deleted"); err != nil {
 			return err
 		}
 	}

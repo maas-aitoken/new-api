@@ -478,6 +478,31 @@ func SetApiRouter(router *gin.Engine) {
 			vendorRoute.DELETE("/:id", controller.DeleteVendorMeta)
 		}
 
+		supplierRoute := apiRouter.Group("/suppliers")
+		supplierRoute.Use(middleware.AdminAuth())
+		{
+			handlePermissionRoute(supplierRoute, http.MethodGet, "/", authz.SupplierRead, controller.GetSuppliers)
+			handlePermissionRoute(supplierRoute, http.MethodGet, "/search", authz.SupplierRead, controller.GetSuppliers)
+			handlePermissionRoute(supplierRoute, http.MethodGet, "/settlements", authz.SupplierRead, controller.GetSupplierSettlements)
+			handlePermissionRoute(supplierRoute, http.MethodGet, "/:id", authz.SupplierRead, controller.GetSupplier)
+			handlePermissionRoute(supplierRoute, http.MethodPost, "/", authz.SupplierWrite, controller.CreateSupplier)
+			handlePermissionRoute(supplierRoute, http.MethodPut, "/", authz.SupplierWrite, controller.UpdateSupplier)
+			handlePermissionRoute(supplierRoute, http.MethodDelete, "/:id", authz.SupplierWrite, controller.DeleteSupplier)
+			handlePermissionRoute(supplierRoute, http.MethodPatch, "/:id/status", authz.SupplierWrite, controller.UpdateSupplierStatus)
+			handlePermissionRoute(supplierRoute, http.MethodGet, "/:id/channels", authz.SupplierRead, middleware.RequirePermission(authz.ChannelRead), controller.GetSupplierChannels)
+			handlePermissionRoute(supplierRoute, http.MethodPost, "/:id/channels", authz.SupplierWrite, middleware.RequirePermission(authz.ChannelRead), controller.AddSupplierChannels)
+			handlePermissionRoute(supplierRoute, http.MethodDelete, "/:id/channels/:channel_id", authz.SupplierWrite, middleware.RequirePermission(authz.ChannelRead), controller.RemoveSupplierChannel)
+			handlePermissionRoute(supplierRoute, http.MethodGet, "/:id/monitoring", authz.SupplierRead, middleware.RequirePermission(authz.ChannelRead), controller.GetSupplierMonitoring)
+			handlePermissionRoute(supplierRoute, http.MethodGet, "/:id/operations", authz.SupplierRead, controller.GetSupplierOperations)
+			handlePermissionRoute(supplierRoute, http.MethodGet, "/:id/bills", authz.SupplierRead, controller.GetSupplierBill)
+			handlePermissionRoute(supplierRoute, http.MethodGet, "/:id/bills/detail", authz.SupplierRead, controller.GetSupplierBillDetail)
+			handlePermissionRoute(supplierRoute, http.MethodGet, "/:id/bills/:bill_id/allocations", authz.SupplierRead, controller.GetSupplierAllocations)
+			handlePermissionRoute(supplierRoute, http.MethodPost, "/:id/bills", authz.SupplierWrite, controller.SaveSupplierBill)
+			handlePermissionRoute(supplierRoute, http.MethodPost, "/:id/bills/adjustments", authz.SupplierWrite, controller.AddSupplierAdjustment)
+			handlePermissionRoute(supplierRoute, http.MethodDelete, "/:id/bills/adjustments/:adjustment_id", authz.SupplierWrite, controller.DeleteSupplierAdjustment)
+			handlePermissionRoute(supplierRoute, http.MethodPost, "/:id/bills/:bill_id/confirm", authz.SupplierSettle, controller.ConfirmSupplierBill)
+		}
+
 		modelsRoute := apiRouter.Group("/models")
 		modelsRoute.Use(middleware.AdminAuth())
 		{
