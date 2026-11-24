@@ -29,6 +29,10 @@ func ComputeTieredQuotaWithRequest(snap *BillingSnapshot, params TokenParams, re
 	if snap.TaskUsageBilling && UsesFixedPricingByHash(snap.ExprString, snap.ExprHash) {
 		return TieredResult{}, fmt.Errorf("fixed pricing is not supported for task usage expressions")
 	}
+	// 任务表达式按原始美元结算（无 /1e6），dur() 的内部 1e6 缩放会放大一百万倍。
+	if snap.TaskUsageBilling && UsesDurPricingByHash(snap.ExprString, snap.ExprHash) {
+		return TieredResult{}, fmt.Errorf("dur() is not supported for task usage expressions")
+	}
 	cost, trace, err := RunExprByHashWithRequest(snap.ExprString, snap.ExprHash, params, request)
 	if err != nil {
 		return TieredResult{}, err

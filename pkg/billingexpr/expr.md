@@ -48,6 +48,18 @@ Powered by [expr-lang/expr](https://github.com/expr-lang/expr). Expressions are 
 | `img_o` | 图片输出 token 数 |
 | `ao` | 音频输出 token 数 |
 
+**Realtime 时长变量（可选）：**
+
+| 变量 | 含义 |
+|------|------|
+| `audio_sec` | realtime 连接的语音计费秒数（火山 `usage.duration_details.audio_duration_ms` 折秒，跨轮累加） |
+| `video_sec` | realtime 连接的视频计费秒数（火山 `vision_duration_ms` 折秒，跨轮累加） |
+
+这两个变量只对 Realtime（`/v1/realtime`）入口有值，普通聊天请求恒为 0；
+它们不是 token，**不参与 `p`/`c` 的自动排除**。数值在结算前各自饱和到
+连接墙钟时长 + 5 秒容差（负值归零），防止上游异常大数放大扣费。配套的
+计价写法见 [`dur()`](#realtime-时长计价dur)。
+
 #### `p` 和 `c` 的自动排除机制
 
 `p` 和 `c` 是"兜底变量"——它们代表**所有没有被表达式单独定价的 token**。系统会根据表达式实际使用了哪些变量，自动从 `p` / `c` 中减去对应的子类别 token，避免重复计费。
@@ -182,6 +194,7 @@ OpenAI 已于 2026-05-12 下线 DALL·E 2/3；其校验、默认值和倍率保�
 | `abs` | `abs(x) → float64` | Absolute value |
 | `ceil` | `ceil(x) → float64` | Ceiling |
 | `floor` | `floor(x) → float64` | Floor |
+| `dur` | `dur(seconds, usd_per_minute) → float64` | Realtime 时长计价，见下文专节 |
 
 ### Expression Examples
 
@@ -204,7 +217,39 @@ tier("base", p * 2 + c * 8 + img * 2.5)
 
 # Multimodal with audio
 tier("base", p * 0.43 + c * 3.06 + img * 0.78 + ai * 3.81 + ao * 15.11)
+
+# Realtime duration pricing (voice $0.0278/min ≈ ¥0.2, video $0.0556/min ≈ ¥0.4)
+tier("base", dur(audio_sec, 0.0278) + dur(video_sec, 0.0556))
 ```
+
+### Realtime 时长计价：`dur()`
+
+`dur(seconds, usd_per_minute)` 把通话秒数按每分钟美元价折算成费用，
+专供 Realtime 模型按时长计价（火山 Doubao-Seed-Realtime 的 0.2/0.4 元每分钟
+即用此表达）。`seconds` 通常是 `audio_sec` / `video_sec`，也可以是任意数值
+表达式；`usd_per_minute` 必须是**非负有限的数字字面量**（编译期校验）。
+
+它与 `fixed()` 采用相同的内部 1e6 缩放：token 表达式的输出统一除以
+1e6 折美元，`dur()` 先乘回 1e6，因此**时长项可以和 token 项直接混用**，
+各自携带自己的量纲：
+
+```
+# 分钟价 + token 细分混合：ao * 15 仍是 $/1M tokens 口径，dur 项自带缩放
+tier("base", dur(audio_sec, 0.0278) + dur(video_sec, 0.0556) + ao * 15)
+```
+
+约束与行为：
+
+- **仅 Realtime 入口有值**：普通聊天请求 `audio_sec`/`video_sec` 恒为 0，
+  引用它们的表达式在非 realtime 入口计费为零，不要给聊天模型配置 `dur()`。
+- **任务用量表达式禁止 `dur()`**：任务表达式按原始美元结算（无 /1e6），
+  `dur()` 的内部缩放会放大一百万倍，结算与保存侧都会拒绝。
+- **饱和**：结算前两路秒数各自截断到连接墙钟 + 5 秒容差，负值归零，
+  截断记审计日志（billing 安全不变量：上游可控数量不得无限放大扣费）。
+- **预扣下限**：Realtime 连接建立时拿不到实际时长，表达式引用了
+  `audio_sec`/`video_sec` 的模型按 60 秒兜底预扣，结算按
+  `usage.duration_details` 实际值多退少补。
+- 消费日志在 `other` 记录 `audio_seconds` / `video_seconds` 供对账。
 
 ### Fixed Request Prices
 

@@ -186,7 +186,33 @@ func PostWssConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, mod
 		PromptTokensDetails:    usage.InputTokenDetails,
 		CompletionTokenDetails: usage.OutputTokenDetails,
 	}
-	tieredOk, tieredQuota, tieredRes := TryTieredSettle(relayInfo, BuildTieredTokenParams(tieredUsage, false, tieredUsedVars))
+	tieredParams := BuildTieredTokenParams(tieredUsage, false, tieredUsedVars)
+	// 时长计价：上游报的两路计费毫秒折秒后喂给表达式。两路各自饱和到
+	// 连接墙钟 + 5s 容差（billing 安全不变量：上游可控数量不得无限放大扣费），
+	// 负值视为上游异常归零，截断时记审计日志。
+	wallSec := time.Since(relayInfo.StartTime).Seconds() + 5
+	audioSec, videoSec := 0.0, 0.0
+	if d := usage.DurationDetails; d != nil {
+		clampDuration := func(ms int64, name string) float64 {
+			if ms <= 0 {
+				if ms < 0 {
+					logger.LogWarn(ctx, "realtime %s duration is negative (%d ms), treating as 0", name, ms)
+				}
+				return 0
+			}
+			sec := float64(ms) / 1000
+			if sec > wallSec {
+				logger.LogWarn(ctx, "realtime %s duration %.3fs exceeds connection wall clock %.3fs, clamping", name, sec, wallSec)
+				return wallSec
+			}
+			return sec
+		}
+		audioSec = clampDuration(d.AudioDurationMS, "audio")
+		videoSec = clampDuration(d.VisionDurationMS, "vision")
+	}
+	tieredParams.AudioSec = audioSec
+	tieredParams.VideoSec = videoSec
+	tieredOk, tieredQuota, tieredRes := TryTieredSettle(relayInfo, tieredParams)
 	if tieredOk {
 		tieredResult = tieredRes
 	}
@@ -250,7 +276,7 @@ func PostWssConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, mod
 	}
 
 	// record all the consume log even if quota is 0
-	if totalTokens == 0 {
+	if totalTokens == 0 && audioSec <= 0 && videoSec <= 0 {
 		// in this case, must be some error happened
 		// we cannot just return, because we may have to return the pre-consumed quota
 		quota = 0
@@ -271,6 +297,13 @@ func PostWssConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, mod
 	logContent = append(logContent, extraContent...)
 	other := GenerateWssOtherInfo(ctx, relayInfo, usage, modelRatio, groupRatio,
 		completionRatio.InexactFloat64(), audioRatio.InexactFloat64(), audioCompletionRatio.InexactFloat64(), modelPrice, relayInfo.PriceData.GroupRatioInfo.GroupSpecialRatio)
+	// 时长计费模型的日志带上两路计费秒数，便于对账（token 模型不带）
+	if audioSec > 0 {
+		other.SetPublic("audio_seconds", audioSec)
+	}
+	if videoSec > 0 {
+		other.SetPublic("video_seconds", videoSec)
+	}
 	RecordChannelBillingMultiplier(ctx, relayInfo, other)
 	if tieredResult != nil {
 		InjectTieredBillingInfo(other, relayInfo, tieredResult)

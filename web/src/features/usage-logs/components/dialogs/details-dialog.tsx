@@ -306,9 +306,12 @@ function BillingBreakdown(props: {
       other.audio_completion_ratio != null &&
       other.audio_completion_ratio !== 1
     ) {
+      // 实际扣款里输出音频 = 基础价 × audio_ratio × audio_completion_ratio，
+      // 显示必须带上 audio_ratio，否则会报出一个偏低的单价
+      const audioRatioForOutput = other.audio_ratio ?? 1
       rows.push({
         label: t('Audio output'),
-        value: `${fmtPrice(baseInputUSD * other.audio_completion_ratio)}/M`,
+        value: `${fmtPrice(baseInputUSD * audioRatioForOutput * other.audio_completion_ratio)}/M`,
       })
     }
 
@@ -1179,6 +1182,20 @@ export function DetailsDialog(props: DetailsDialogProps) {
               <DetailRow
                 label={t('Text Output')}
                 value={formatTokens(other.text_output)}
+                mono
+              />
+            )}
+            {other.audio_seconds != null && other.audio_seconds > 0 && (
+              <DetailRow
+                label={t('Audio Duration')}
+                value={`${other.audio_seconds.toFixed(1)}s`}
+                mono
+              />
+            )}
+            {other.video_seconds != null && other.video_seconds > 0 && (
+              <DetailRow
+                label={t('Video Duration')}
+                value={`${other.video_seconds.toFixed(1)}s`}
                 mono
               />
             )}

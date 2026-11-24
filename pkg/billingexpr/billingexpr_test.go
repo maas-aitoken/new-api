@@ -1196,3 +1196,69 @@ func TestFrontendSimulationContract(t *testing.T) {
 		})
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Realtime duration pricing: dur(seconds, usd_per_minute)
+// ---------------------------------------------------------------------------
+
+func TestRealtimeDurationPricing(t *testing.T) {
+	const expression = `tier("base", dur(audio_sec, 0.0278) + dur(video_sec, 0.0556))`
+	// 6s 语音 + 4s 视频 → (6/60×0.0278 + 4/60×0.0556) 美元；dur 内部 ×1e6
+	expectedUSD := 6.0/60*0.0278 + 4.0/60*0.0556
+
+	cost, trace, err := billingexpr.RunExpr(expression, billingexpr.TokenParams{AudioSec: 6, VideoSec: 4})
+	require.NoError(t, err)
+	assert.InDelta(t, expectedUSD*1e6, cost, 1e-9)
+	assert.Equal(t, "base", trace.MatchedTier)
+	assert.Equal(t, billingexpr.BillingUnitToken, trace.BillingUnit)
+
+	// 结算换算与 token 表达式同一条路：/1e6 × QuotaPerUnit × GroupRatio
+	snap := &billingexpr.BillingSnapshot{ExprString: expression, ExprHash: billingexpr.ExprHashString(expression), GroupRatio: 1, QuotaPerUnit: 500000}
+	result, err := billingexpr.ComputeTieredQuota(snap, billingexpr.TokenParams{AudioSec: 6, VideoSec: 4})
+	require.NoError(t, err)
+	assert.Equal(t, int(math.Round(expectedUSD*500000)), result.ActualQuotaAfterGroup)
+
+	// 零时长不扣费
+	result, err = billingexpr.ComputeTieredQuota(snap, billingexpr.TokenParams{})
+	require.NoError(t, err)
+	assert.Zero(t, result.ActualQuotaAfterGroup)
+
+	// 运行期负秒数钳为 0（结算侧另有墙钟饱和，这里锁引擎防御）
+	cost, _, err = billingexpr.RunExpr(expression, billingexpr.TokenParams{AudioSec: -5, VideoSec: 4})
+	require.NoError(t, err)
+	assert.InDelta(t, 4.0/60*0.0556*1e6, cost, 1e-9)
+
+	// 任务用量表达式按原始美元结算，dur 的 1e6 缩放会放大一百万倍，必须拒绝
+	snap.TaskUsageBilling = true
+	_, err = billingexpr.ComputeTieredQuota(snap, billingexpr.TokenParams{AudioSec: 60})
+	require.ErrorContains(t, err, "task usage")
+
+	// 与 token 项混用：token 项保持 $/1M 口径，dur 项自带缩放，求和后除一次 1e6 仍正确
+	const mixed = `tier("base", p * 2.5 + dur(audio_sec, 0.0278))`
+	cost, _, err = billingexpr.RunExpr(mixed, billingexpr.TokenParams{P: 1000, AudioSec: 60})
+	require.NoError(t, err)
+	assert.InDelta(t, 1000*2.5+0.0278*1e6, cost, 1e-6)
+}
+
+func TestDurValidation(t *testing.T) {
+	assert.True(t, billingexpr.UsesDurPricing(`tier("base", dur(audio_sec, 0.0278))`))
+	assert.False(t, billingexpr.UsesDurPricing(`tier("base", p * 2.5)`))
+
+	for _, tc := range []struct{ name, expression, err string }{
+		{"unit price must be a literal variable", `tier("base", dur(audio_sec, p))`, "numeric literal"},
+		{"negative unit price", `tier("base", dur(audio_sec, -0.01))`, "non-negative"},
+		{"non numeric unit price", `tier("base", dur(audio_sec, "0.02"))`, "numeric literal"},
+		{"wrong arity", `tier("base", dur(audio_sec))`, "exactly 2"},
+		{"wrong arity three", `tier("base", dur(audio_sec, 1, 2))`, "exactly 2"},
+		{"rejected in unselected branch too", `len <= 100 ? tier("a", p) : tier("b", dur(audio_sec, -1))`, "non-negative"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, _, err := billingexpr.RunExpr(tc.expression, billingexpr.TokenParams{P: 10, Len: 10})
+			require.ErrorContains(t, err, tc.err)
+		})
+	}
+
+	// 合法表达式：单价 0 也允许（显式免费）
+	_, _, err := billingexpr.RunExpr(`tier("free", dur(audio_sec, 0))`, billingexpr.TokenParams{AudioSec: 60})
+	require.NoError(t, err)
+}
