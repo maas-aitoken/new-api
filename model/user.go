@@ -128,6 +128,7 @@ type User struct {
 	AuthVersion              int64                      `json:"-" gorm:"type:bigint;not null;default:1;column:auth_version"`
 	QuotaTierAutoAssign      bool                       `json:"-" gorm:"column:quota_tier_auto_assign"`
 	AdminPermissions         map[string]map[string]bool `json:"admin_permissions,omitempty" gorm:"-:all"`
+	KeyCount                 int                        `json:"key_count" gorm:"-"`
 }
 
 func (user *User) ToBaseUser() *UserBase {
@@ -416,6 +417,49 @@ func GetMaxUserId() int {
 	return user.Id
 }
 
+// countTokensByUsers 统计给定用户各自名下的 Token 数量，返回 user_id -> count。
+func countTokensByUsers(userIds []int) (map[int]int, error) {
+	counts := make(map[int]int, len(userIds))
+	if len(userIds) == 0 {
+		return counts, nil
+	}
+	var rows []struct {
+		UserId int
+		Cnt    int
+	}
+	// tokens 表没有软删，直接按 user_id 聚合即可。
+	err := DB.Table("tokens").
+		Select("user_id, COUNT(*) AS cnt").
+		Where("user_id IN ?", userIds).
+		Group("user_id").
+		Scan(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+	for _, r := range rows {
+		counts[r.UserId] = r.Cnt
+	}
+	return counts, nil
+}
+
+func attachKeyCounts(users []*User) {
+	if len(users) == 0 {
+		return
+	}
+	ids := make([]int, 0, len(users))
+	for _, u := range users {
+		ids = append(ids, u.Id)
+	}
+	counts, err := countTokensByUsers(ids)
+	if err != nil {
+		common.SysLog(common.LogText("failed to count tokens for user list: %s", err.Error()))
+		return
+	}
+	for _, u := range users {
+		u.KeyCount = counts[u.Id]
+	}
+}
+
 func GetAllUsers(pageInfo *common.PageInfo, sortOptions ...UserSortOptions) (users []*User, total int64, err error) {
 	// Start transaction
 	tx := DB.Begin()
@@ -448,6 +492,7 @@ func GetAllUsers(pageInfo *common.PageInfo, sortOptions ...UserSortOptions) (use
 		return nil, 0, err
 	}
 
+	attachKeyCounts(users)
 	return users, total, nil
 }
 
@@ -517,6 +562,7 @@ func SearchUsers(keyword string, group string, role *int, status *int, startIdx 
 		return nil, 0, err
 	}
 
+	attachKeyCounts(users)
 	return users, total, nil
 }
 

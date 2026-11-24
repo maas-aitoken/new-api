@@ -99,7 +99,12 @@ func refreshResourcePoolUsage(provider string) (*ResourcePoolResult, error) {
 			return nil, err
 		}
 		resourcePoolCache.Lock()
-		if startedAt.After(resourcePoolCache.invalidatedAt[provider]) {
+		// Keep the poll when it started at or after the last invalidation: such a
+		// poll already reflects the new source config. A strict After() would drop
+		// a poll that began in the same clock tick as the invalidation (common
+		// when a config change is immediately followed by a read), leaving the
+		// cache permanently empty and re-polling on every request.
+		if !startedAt.Before(resourcePoolCache.invalidatedAt[provider]) {
 			resourcePoolCache.entries[provider] = resourcePoolCacheEntry{result: result, fetchedAt: startedAt}
 		}
 		resourcePoolCache.Unlock()
