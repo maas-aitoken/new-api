@@ -195,6 +195,8 @@ export interface LogOtherData {
   audio_output?: number
   text_input?: number
   text_output?: number
+  audio_seconds?: number
+  video_seconds?: number
   cache_tokens?: number
   image_cache_tokens?: number
   billing_tokens?: Record<string, number>
