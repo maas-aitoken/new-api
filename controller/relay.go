@@ -166,6 +166,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 	var llmSpan trace.Span
 	if otelRuntime != nil {
 		traceCtx, llmSpan = otelRuntime.StartLLMRequest(traceCtx, relayInfo, request)
+		observability.RecordRequestIdentity(c, llmSpan)
 		c.Request = c.Request.WithContext(traceCtx)
 		// The raw client body keeps unknown fields that DTO round-trips would
 		// drop; the client-format strip in RecordClientRequest removes the
