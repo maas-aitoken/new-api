@@ -51,7 +51,7 @@ const (
 
 // adminUserManageActions are the ManageUser actions that change a user's
 // status or role. Quota adjustments are not gated and deletion has its own scope.
-var adminUserManageActions = []string{"disable", "enable", "promote", "demote"}
+var adminUserManageActions = []string{"disable", "enable", "promote", "promote_root", "demote", "demote_root"}
 
 var (
 	ErrVerificationFailed         = errors.New("Verification failed. Please try again.")
