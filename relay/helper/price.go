@@ -34,6 +34,10 @@ func modelPriceNotConfiguredError(c *gin.Context, modelName string, userId int) 
 	return errors.New(i18n.T(c, key, map[string]any{"Model": modelName}))
 }
 
+// realtimeDurationPreConsumeSeconds 是 realtime 时长计价模型的预扣下限：
+// 连接建立时按 60 秒通话预留，结算按 usage.duration_details 实际时长多退少补。
+const realtimeDurationPreConsumeSeconds = 60
+
 // HandleGroupRatio checks for "auto_group" in the context and updates the group ratio and relayInfo.UsingGroup if present
 func HandleGroupRatio(ctx *gin.Context, relayInfo *relaycommon.RelayInfo) hosttypes.GroupRatioInfo {
 	groupRatioInfo := hosttypes.GroupRatioInfo{
@@ -394,11 +398,19 @@ func modelPriceHelperTiered(c *gin.Context, info *relaycommon.RelayInfo, billing
 		}
 	}
 
-	rawCost, trace, err := billingexpr.RunExprByHashWithRequest(exprStr, exprHash, billingexpr.TokenParams{
+	estimateParams := billingexpr.TokenParams{
 		P:   float64(promptTokens),
 		C:   0,
 		Len: float64(promptTokens),
-	}, requestInput)
+	}
+	// Realtime 时长计价的预扣下限：连接建立时拿不到实际通话时长，表达式里
+	// 引用 audio_sec/video_sec 的 realtime 模型按 60 秒兜底预扣，结算再按
+	// 实际时长多退少补；否则零预扣会让零余额用户白打到 10 分钟超时。
+	if info.RelayFormat == types.RelayFormatOpenAIRealtime && (usedVars["audio_sec"] || usedVars["video_sec"]) {
+		estimateParams.AudioSec = realtimeDurationPreConsumeSeconds
+		estimateParams.VideoSec = realtimeDurationPreConsumeSeconds
+	}
+	rawCost, trace, err := billingexpr.RunExprByHashWithRequest(exprStr, exprHash, estimateParams, requestInput)
 	if err != nil {
 		return hosttypes.PriceData{}, fmt.Errorf("model %s tiered expr run failed: %w", billingModelName, err)
 	}
