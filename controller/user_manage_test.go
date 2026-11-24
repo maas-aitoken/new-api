@@ -255,9 +255,9 @@ func TestManageUserPromoteRootRequiresDistinctProofAndRevokesSessions(t *testing
 			var audit model.AuditLog
 			require.NoError(t, model.LOG_DB.Where("action = ?", "user.manage").Last(&audit).Error)
 			require.NotNil(t, audit.Other.Op)
-			assert.Equal(t, "promote_root", audit.Other.Op.Params["action"])
-			assert.EqualValues(t, role, audit.Other.Op.Params["previous_role"])
-			assert.EqualValues(t, common.RoleRootUser, audit.Other.Op.Params["new_role"])
+			assert.JSONEq(t, `"promote_root"`, string(audit.Other.Op.Params["action"]))
+			assert.JSONEq(t, fmt.Sprint(role), string(audit.Other.Op.Params["previous_role"]))
+			assert.JSONEq(t, fmt.Sprint(common.RoleRootUser), string(audit.Other.Op.Params["new_role"]))
 		})
 	}
 }
