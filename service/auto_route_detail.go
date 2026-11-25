@@ -145,7 +145,6 @@ func cloneAutoRouteDetail(detail autoRouteDetail) autoRouteDetail {
 		if detail.Result.Decision != nil {
 			decision := *detail.Result.Decision
 			decision.TaskTypeProbabilities = maps.Clone(decision.TaskTypeProbabilities)
-			decision.ModeProbabilities = maps.Clone(decision.ModeProbabilities)
 			result.Decision = &decision
 		}
 		if detail.Result.Jev != nil {
@@ -161,12 +160,6 @@ func cloneAutoRouteDetail(detail autoRouteDetail) autoRouteDetail {
 			validity := *detail.Trace.Validity
 			validity.Profiles = slices.Clone(validity.Profiles)
 			trace.Validity = &validity
-		}
-		if detail.Trace.Mode != nil {
-			mode := *detail.Trace.Mode
-			mode.Shares = maps.Clone(mode.Shares)
-			mode.Tiers = maps.Clone(mode.Tiers)
-			trace.Mode = &mode
 		}
 		if detail.Trace.Continuation != nil {
 			continuation := *detail.Trace.Continuation
@@ -346,14 +339,9 @@ func compactAutoRouteCollections(detail *autoRouteDetail, level int) {
 			priority = append(priority, detail.Trace.Validity.Profiles...)
 		}
 		decision.TaskTypeProbabilities = compactAutoRouteProbabilityMap(decision.TaskTypeProbabilities, limits.probabilities, priority, "result.decision.task_type_probabilities", detail.Truncated)
-		decision.ModeProbabilities = compactAutoRoutePreferences(decision.ModeProbabilities, "result.decision.mode_probabilities", detail.Truncated)
 	}
 	if detail.Trace == nil {
 		return
-	}
-	if detail.Trace.Mode != nil {
-		detail.Trace.Mode.Shares = compactAutoRoutePreferences(detail.Trace.Mode.Shares, "trace.mode.shares", detail.Truncated)
-		detail.Trace.Mode.Tiers = compactAutoRoutePreferences(detail.Trace.Mode.Tiers, "trace.mode.tiers", detail.Truncated)
 	}
 	compactAutoRouteLadder(detail, limits)
 	if detail.Trace.Unroutable != nil {
@@ -409,20 +397,6 @@ func compactAutoRouteProbabilityMap(values map[string]float64, limit int, priori
 	for key, value := range values {
 		if selected[key] {
 			compacted[key] = value
-		}
-	}
-	truncated.recordCollection(path, len(values), len(compacted))
-	return compacted
-}
-
-func compactAutoRoutePreferences[V any](values map[string]V, path string, truncated *autoRouteTruncation) map[string]V {
-	if values == nil {
-		return nil
-	}
-	compacted := make(map[string]V, min(len(values), len(autorouter.Preferences)))
-	for _, preference := range autorouter.Preferences {
-		if value, found := values[preference]; found {
-			compacted[preference] = value
 		}
 	}
 	truncated.recordCollection(path, len(values), len(compacted))
@@ -533,9 +507,6 @@ func truncateAutoRouteDetailStrings(detail *autoRouteDetail) {
 				truncate(&trace.Validity.Profiles[i], "trace.validity.profiles", 256)
 			}
 		}
-		if trace.Mode != nil {
-			truncate(&trace.Mode.Reason, "trace.mode.reason", 128)
-		}
 		if trace.Continuation != nil {
 			truncate(&trace.Continuation.Previous, "trace.continuation.previous", 256)
 		}
@@ -625,7 +596,6 @@ func minimalAutoRouteDetail(detail autoRouteDetail) autoRouteDetail {
 		}{
 			{"trace.unroutable", trace.Unroutable != nil},
 			{"trace.validity", trace.Validity != nil},
-			{"trace.mode", trace.Mode != nil},
 			{"trace.continuation", trace.Continuation != nil},
 			{"trace.effort", trace.Effort != nil},
 			{"trace.ladder", len(trace.Ladder) > 0},
@@ -655,10 +625,6 @@ func encodeAutoRouteDetailEncodingError(detail autoRouteDetail) string {
 		}
 	}
 	if working.Trace != nil {
-		if working.Trace.Mode != nil {
-			working.Truncated.markField("trace.mode")
-			working.Trace.Mode = nil
-		}
 		if working.Trace.Continuation != nil {
 			working.Truncated.markField("trace.continuation")
 			working.Trace.Continuation = nil

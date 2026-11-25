@@ -64,35 +64,39 @@ beforeEach(() => {
   vi.spyOn(api, 'put').mockResolvedValue({ data: { success: true } })
 })
 
-test('choosing to decide per request writes only the default preference', async () => {
+test('choosing another preference writes only the default preference', async () => {
   const user = userEvent.setup()
   renderSection()
 
   await user.click(defaultPreferenceSelect())
-  await user.click(
-    await screen.findByRole('option', { name: 'Decide per request' })
-  )
-  expect(
-    screen.getByText(
-      'Judges each request on whether it stresses result quality or cost, then reads the weights for that request from the three preferences below.'
-    )
-  ).toBeVisible()
+  await user.click(await screen.findByRole('option', { name: 'Cost first' }))
   await user.click(screen.getByRole('button', { name: 'Save Changes' }))
 
   await waitFor(() => expect(api.put).toHaveBeenCalledTimes(1))
   expect(api.put).toHaveBeenCalledWith('/api/option/', {
     key: 'autorouter_setting.default_preference',
-    value: 'adaptive',
+    value: 'cost',
   })
 })
 
-test('a stored adaptive default is shown as chosen', () => {
-  renderSection('adaptive')
+test('deciding per request is no longer offered as the default preference', async () => {
+  const user = userEvent.setup()
+  renderSection()
 
-  expect(defaultPreferenceSelect()).toHaveTextContent('Decide per request')
+  await user.click(defaultPreferenceSelect())
+  expect(await screen.findAllByRole('option')).toHaveLength(3)
+  expect(
+    screen.queryByRole('option', { name: 'Decide per request' })
+  ).not.toBeInTheDocument()
 })
 
-test.each(['balanced', 'adaptive'])(
+test('a stored adaptive default is shown as balanced, the preference the server applies', () => {
+  renderSection('adaptive')
+
+  expect(defaultPreferenceSelect()).toHaveTextContent('Balanced')
+})
+
+test.each(['balanced', 'cost'])(
   'with %s as the default the four weights are edited for exactly the three weighted preferences',
   async (defaultPreference) => {
     const user = userEvent.setup()
@@ -191,7 +195,7 @@ test('a weight above one is rejected before anything is saved', async () => {
 
 test('saving with nothing changed writes nothing', async () => {
   const user = userEvent.setup()
-  renderSection('adaptive')
+  renderSection('cost')
 
   await user.click(screen.getByRole('button', { name: 'Save Changes' }))
 

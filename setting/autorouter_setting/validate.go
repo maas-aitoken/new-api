@@ -63,7 +63,7 @@ func ValidateOption(key, value string) error {
 			}
 		}
 	case "default_preference":
-		if !slices.Contains(autorouter.SelectablePreferences, value) {
+		if !slices.Contains(autorouter.Preferences, value) {
 			return common.NewMessage("Unknown preference {{preference}}", map[string]any{"preference": value})
 		}
 	case "route_log_mode":

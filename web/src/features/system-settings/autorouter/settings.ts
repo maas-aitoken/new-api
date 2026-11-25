@@ -19,10 +19,7 @@ For commercial licensing, please contact support@quantumnous.com
 import type { TFunction } from 'i18next'
 import * as z from 'zod'
 
-import {
-  AUTO_PREFERENCES,
-  type SELECTABLE_AUTO_PREFERENCES,
-} from '@/features/keys/lib'
+import { AUTO_PREFERENCES } from '@/features/keys/lib'
 
 import type { UpdateOptionRequest } from '../types'
 
@@ -63,9 +60,6 @@ export type RoutingWeights = {
   success: number
 }
 export type PreferenceWeights = Record<AutoPreference, RoutingWeights>
-/** What the platform default can be: a weighted preference, or deciding per request. */
-export type SelectableAutoPreference =
-  (typeof SELECTABLE_AUTO_PREFERENCES)[number]
 
 /** Reasoning efforts a route can carry, weakest first. */
 export const AUTO_ROUTER_EFFORTS: readonly string[] = [

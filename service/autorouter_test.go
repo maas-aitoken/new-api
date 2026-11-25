@@ -35,13 +35,12 @@ const (
 )
 
 // fakeJev answers by the current task: "hard" is a very difficult coding task,
-// "careful" and "frugal" the same task from a user who stresses capability or
-// cost, "ok" is unclassifiable, "still broken" is unclassifiable too but would
+// "ok" is unclassifiable, "still broken" is unclassifiable too but would
 // gain from a larger model, "split" spreads the task type over several leaves
 // so that the most probable one stays well below half, anything else is a
-// simple question. Every answer continues the previous task and leans balanced
-// unless the task says otherwise. It expects the key and model that
-// useAutoRouterSetting configures, and that every request asks the mode question.
+// simple question. Every answer continues the previous task unless the task
+// says otherwise. It expects the key and model that useAutoRouterSetting
+// configures, and that no request asks the retired mode question.
 func fakeJev(t *testing.T, calls *atomic.Int32, delay time.Duration) *httptest.Server {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
@@ -57,22 +56,12 @@ func fakeJev(t *testing.T, calls *atomic.Int32, delay time.Duration) *httptest.S
 		require.NoError(t, common.DecodeJson(r.Body, &payload))
 		assert.Equal(t, "Bearer "+testJevAPIKey, r.Header.Get("Authorization"))
 		assert.Equal(t, testJevModel, payload.Model)
-		asked := payload.Questions["mode"]
-		assert.Equal(t, "choice", asked.Type, "不论令牌用哪种偏好，每次都问 mode")
-		criteria, _ := asked.Criteria.(map[string]any)
-		assert.Len(t, criteria, len(autorouter.Preferences))
-		for _, preference := range autorouter.Preferences {
-			assert.Contains(t, criteria, preference)
-		}
-		taskType, difficulty, mode := "general.chat", "0", autorouter.PreferenceBalanced
+		assert.NotContains(t, payload.Questions, "mode", "jev 不再判断 mode")
+		taskType, difficulty := "general.chat", "0"
 		probabilities, benefit, taskChange := "", "0.1", "0.1"
 		switch payload.State["current_task"] {
 		case "hard":
 			taskType, difficulty = "code.build", "3"
-		case "careful":
-			taskType, difficulty, mode = "code.build", "3", autorouter.PreferenceCapability
-		case "frugal":
-			taskType, difficulty, mode = "code.build", "3", autorouter.PreferenceCost
 		case "ok":
 			taskType = autorouter.TaskTypeUnknown
 		case "still broken":
@@ -87,17 +76,8 @@ func fakeJev(t *testing.T, calls *atomic.Int32, delay time.Duration) *httptest.S
 		if probabilities == "" {
 			probabilities = `"` + taskType + `":0.9`
 		}
-		var modeShares []string
-		for _, preference := range autorouter.Preferences {
-			share := "0.05"
-			if preference == mode {
-				share = "0.9"
-			}
-			modeShares = append(modeShares, `"`+preference+`":`+share)
-		}
 		_, _ = w.Write([]byte(`{"answers":{
 			"task_type":{"type":"choice","choice":"` + taskType + `","probabilities":{` + probabilities + `}},
-			"mode":{"type":"choice","choice":"` + mode + `","probabilities":{` + strings.Join(modeShares, ",") + `}},
 			"difficulty":{"type":"score","probabilities":{"` + difficulty + `":0.8}},
 			"task_change":{"type":"noul","noul":` + taskChange + `},
 			"larger_model_benefit":{"type":"noul","noul":` + benefit + `}}}`))
@@ -543,81 +523,6 @@ func TestResolveAutoModelPicksByQualityAndPrice(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, "opus-m-xhigh", result.ResolvedModel)
 		assert.Nil(t, result.Pick)
-	})
-}
-
-// 自适应偏好：令牌不定档位，每次请求按 jev 的 mode 判断从三档权重里读出本次的成本权重。
-func TestResolveAutoModelAdaptivePreferenceReadsTheWeightFromTheModeAnswer(t *testing.T) {
-	var calls atomic.Int32
-	useAutoRouterSetting(t, fakeJev(t, &calls, 0).URL, 1000)
-	setting := autorouter_setting.GetAutoRouterSetting()
-	setting.TaskModels = map[string][]string{"code.build": {"opus-m", "sonnet-m", "haiku-m"}}
-	setting.TaskScores = map[string]map[string]float64{"code.build": {"opus-m": 0.97, "sonnet-m": 0.95, "haiku-m": 0.89}}
-	prices := map[string]float64{"opus-m": 20, "sonnet-m": 8, "haiku-m": 2}
-	candidates := candidatesFrom(func(string) bool { return true })
-	candidates.Price = func(model string) (float64, bool) {
-		price, ok := prices[model]
-		return price, ok
-	}
-	resolve := func(t *testing.T, tokenID int, preference, instruction string) *autorouter.Result {
-		c := newAutoRouterContext(tokenID, `{"messages":[{"role":"user","content":"`+instruction+`"}]}`)
-		if preference != "" {
-			common.SetContextKey(c, constant.ContextKeyTokenAutoPreference, preference)
-		}
-		result, err := ResolveAutoModel(c, candidates)
-		require.NoError(t, err)
-		return result
-	}
-
-	t.Run("the stronger the user stresses capability, the higher the model it picks", func(t *testing.T) {
-		for i, tt := range []struct {
-			instruction string
-			wantModel   string
-			wantWeight  float64
-		}{
-			{"careful", "sonnet-m-xhigh", 0.0105},
-			{"hard", "haiku-m-xhigh", 0.07},
-			{"frugal", "haiku-m-xhigh", 0.2655},
-		} {
-			result := resolve(t, 9631+i, autorouter.PreferenceAdaptive, tt.instruction)
-			assert.Equal(t, tt.wantModel, result.ResolvedModel, tt.instruction)
-			assert.Equal(t, autorouter.PreferenceAdaptive, result.Preference)
-			require.NotNil(t, result.Pick, tt.instruction)
-			assert.InDelta(t, tt.wantWeight, result.Pick.Dimensions.Cost, 1e-9, tt.instruction)
-			require.NotNil(t, result.Trace.Mode, tt.instruction)
-			assert.InDelta(t, tt.wantWeight, result.Trace.Mode.Weight, 1e-9, tt.instruction)
-			assert.Empty(t, result.Trace.Mode.Reason)
-		}
-	})
-	t.Run("a fixed preference still asks the mode question but ignores the answer", func(t *testing.T) {
-		result := resolve(t, 9634, autorouter.PreferenceCapability, "frugal")
-		assert.Equal(t, "sonnet-m-xhigh", result.ResolvedModel)
-		assert.Nil(t, result.Trace.Mode)
-	})
-	t.Run("the weight is read again from the tiers when the judgment comes from the cache", func(t *testing.T) {
-		before := calls.Load()
-		first := resolve(t, 9635, autorouter.PreferenceAdaptive, "frugal")
-		assert.Equal(t, "haiku-m-xhigh", first.ResolvedModel)
-		assert.Equal(t, before+1, calls.Load())
-
-		saved := setting.PreferenceWeights
-		setting.PreferenceWeights = autorouter.PreferenceWeights{"capability": {Quality: 1, Cost: 0}, "balanced": {Quality: 0.97, Cost: 0.03}, "cost": {Quality: 0.95, Cost: 0.05}}
-		t.Cleanup(func() { setting.PreferenceWeights = saved })
-		c := newAutoRouterContext(9635, `{"metadata":{"user_id":{"session_id":"another"}},"messages":[{"role":"user","content":"frugal"}]}`)
-		common.SetContextKey(c, constant.ContextKeyTokenAutoPreference, autorouter.PreferenceAdaptive)
-		second, err := ResolveAutoModel(c, candidates)
-		require.NoError(t, err)
-		assert.Equal(t, before+1, calls.Load(), "命中判断缓存，不再调 jev")
-		assert.Equal(t, autorouter.SourceCache, second.Source)
-		assert.Equal(t, "haiku-m-xhigh", second.ResolvedModel, "平台改了三档权重，同一个判断读出的权重跟着变")
-		assert.Equal(t, autorouter.PreferenceWeights{"capability": {Quality: 1, Cost: 0}, "balanced": {Quality: 0.97, Cost: 0.03}, "cost": {Quality: 0.95, Cost: 0.05}}, second.Trace.Mode.Tiers)
-	})
-	t.Run("a request that is never judged takes the balanced weight", func(t *testing.T) {
-		result := resolve(t, 9636, autorouter.PreferenceAdaptive, "[SUGGESTION MODE: next prompt]")
-		assert.Equal(t, autorouter.JudgmentAuxiliary, result.Trace.Judgment)
-		require.NotNil(t, result.Trace.Mode)
-		assert.Equal(t, autorouter.ModeNoAnswer, result.Trace.Mode.Reason)
-		assert.Equal(t, 0.07, result.Trace.Mode.Weight)
 	})
 }
 
@@ -1380,7 +1285,6 @@ func TestEncodeAutoRouteDetailShrinksToFit(t *testing.T) {
 				Judgment:     strings.Repeat("j", 100),
 				Unroutable:   &autorouter.Unroutable{},
 				Validity:     &autorouter.Validity{},
-				Mode:         &autorouter.ModeTrace{},
 				Continuation: &autorouter.Continuation{},
 				Effort:       &autorouter.EffortTrace{},
 			},
@@ -1389,7 +1293,7 @@ func TestEncodeAutoRouteDetailShrinksToFit(t *testing.T) {
 
 		minimal := minimalAutoRouteDetail(detail)
 		assert.ElementsMatch(t, []string{
-			"trace.unroutable", "trace.validity", "trace.mode", "trace.continuation", "trace.effort",
+			"trace.unroutable", "trace.validity", "trace.continuation", "trace.effort",
 		}, minimal.Truncated.Fields)
 		assert.NotContains(t, minimal.Truncated.Fields, "trace.ladder")
 		assert.Contains(t, minimal.Truncated.Strings, "error")

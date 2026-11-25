@@ -12,15 +12,10 @@ const (
 	PreferenceCapability = "capability"
 	PreferenceBalanced   = "balanced"
 	PreferenceCost       = "cost"
-	// PreferenceAdaptive 没有固定权重：每次请求按 jev 的 mode 判断，再用三档权重折算出本次的权重。
-	PreferenceAdaptive = "adaptive"
 )
 
-// Preferences 按从重能力到重成本的顺序列出有固定权重的偏好，preference_weights 只接受它们。
+// Preferences 按从重能力到重成本的顺序列出偏好，令牌、平台默认偏好和 preference_weights 只接受它们。
 var Preferences = []string{PreferenceCapability, PreferenceBalanced, PreferenceCost}
-
-// SelectablePreferences 是令牌和平台默认偏好可以选的全部取值：固定权重的三档加自适应。
-var SelectablePreferences = append(slices.Clone(Preferences), PreferenceAdaptive)
 
 // PreferenceWeights holds each fixed preference's configured scoring strengths.
 type PreferenceWeights map[string]DimensionWeights
@@ -48,93 +43,6 @@ func (w DimensionWeights) Normalized() DimensionWeights {
 		w.Success /= total
 	}
 	return w
-}
-
-// Of 返回一个偏好的权重。自适应偏好或不认识的偏好没有固定权重，按均衡档处理，
-// 自适应在没有可用的 mode 判断时正是这样兜底。
-
-func (t PreferenceWeights) Of(preference string) DimensionWeights {
-	weights, ok := t[preference]
-	if !ok {
-		weights = t[PreferenceBalanced]
-	}
-	return weights
-}
-
-// Blend 把 mode 问题给三个偏好的概率折算成本次请求的完整策略。
-//
-// 三个偏好按从重能力到重成本排成位置 0、1、2，先对位置求期望，再沿三档策略连成的折线分别取四维权重和温度。
-// 沿三档策略的折线取值，默认成本权重（0、0.2、0.4）等距时与直接对位置求期望相同；
-// 保留折线是为了自定义三档策略间距不均时，仍按偏好位置取值。
-// 这样取值有三个性质：判断完全确定时就是该档的策略；对称的不确定（各占三分之一，或一半能力一半成本）
-// 落在均衡档；概率从能力移向成本时成本权重不会变小。
-//
-// 概率先按三个偏好的总和归一，缺的算 0。有负数、非有限数，或总和不为正时没有可用的答案，
-// 取均衡档的权重，Reason 写明。
-func (t PreferenceWeights) Blend(probabilities map[string]float64) ModeTrace {
-	balanced := t.Of(PreferenceBalanced)
-	unjudged := ModeTrace{Reason: ModeNoAnswer, Position: 1, Weight: balanced.Cost, Weights: balanced, Tiers: t}
-	total := 0.0
-	for _, preference := range Preferences {
-		probability := probabilities[preference]
-		if probability < 0 || math.IsNaN(probability) {
-			return unjudged
-		}
-		total += probability
-	}
-	// 总和溢出成无穷时份额都会变成 0，不能当成“确定的能力优先”。
-	if total <= 0 || math.IsInf(total, 0) {
-		return unjudged
-	}
-
-	shares := make(map[string]float64, len(Preferences))
-	position := 0.0
-	for rank, preference := range Preferences {
-		shares[preference] = probabilities[preference] / total
-		position += float64(rank) * shares[preference]
-	}
-	lower, upper := t.Of(PreferenceCapability), t.Of(PreferenceBalanced)
-	fraction := position
-	if position > 1 {
-		lower, upper = t.Of(PreferenceBalanced), t.Of(PreferenceCost)
-		fraction--
-	}
-	weights := DimensionWeights{}
-	for dimension := range 5 {
-		lowerValue, upperValue := dimensionValue(lower, dimension), dimensionValue(upper, dimension)
-		weights = setDimensionValue(weights, dimension, lowerValue+fraction*(upperValue-lowerValue))
-	}
-	return ModeTrace{Shares: shares, Position: position, Weight: weights.Cost, Weights: weights, Tiers: t}
-}
-
-func dimensionValue(weights DimensionWeights, dimension int) float64 {
-	switch dimension {
-	case 0:
-		return weights.Quality
-	case 1:
-		return weights.Cost
-	case 2:
-		return weights.Capacity
-	case 3:
-		return weights.Success
-	}
-	return weights.Temperature
-}
-
-func setDimensionValue(weights DimensionWeights, dimension int, value float64) DimensionWeights {
-	switch dimension {
-	case 0:
-		weights.Quality = value
-	case 1:
-		weights.Cost = value
-	case 2:
-		weights.Capacity = value
-	case 3:
-		weights.Success = value
-	default:
-		weights.Temperature = value
-	}
-	return weights
 }
 
 // Candidates 回答一个候选模型在当前请求下的可用性和价格，由分发中间件提供。

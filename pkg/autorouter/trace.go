@@ -42,11 +42,6 @@ const (
 	DecisionInvalidTaskType = "invalid_task_type" // jev answered a task type it was not offered
 )
 
-// Why an adaptive request has no judged weight.
-const (
-	ModeNoAnswer = "no_answer" // no decision, or the decision carries no usable mode answer
-)
-
 // What one ranking tried.
 const (
 	OutcomeCompared       = "compared"        // picked by quality and price
@@ -68,32 +63,9 @@ type Trace struct {
 	Judgment     string        `json:"judgment"`
 	Unroutable   *Unroutable   `json:"unroutable,omitempty"`
 	Validity     *Validity     `json:"validity,omitempty"`
-	Mode         *ModeTrace    `json:"mode,omitempty"`
 	Continuation *Continuation `json:"continuation,omitempty"`
 	Effort       *EffortTrace  `json:"effort,omitempty"`
 	Ladder       []LadderStep  `json:"ladder,omitempty"`
-}
-
-// ModeTrace is how an adaptive request got its four-dimensional policy. It is set
-// only for an adaptive request, and the policy matters only to a request that ran
-// a model comparison: one that kept the previous model never used it.
-type ModeTrace struct {
-	// Reason is empty when the weight was judged, ModeNoAnswer when it fell back to
-	// the balanced weight.
-	Reason string `json:"reason,omitempty"`
-	// Shares is each preference's share of the judged probability.
-	Shares map[string]float64 `json:"shares,omitempty"`
-	// Position is the expected position on the capability (0), balanced (1), cost (2) scale.
-	Position float64 `json:"position"`
-	// Weight is the normalized cost weight this request used.
-	Weight float64 `json:"weight"`
-	// CostScale is the fixed cost tolerance used by the deterministic utility
-	// formula after the interpolated strengths are normalized.
-	CostScale float64 `json:"cost_scale,omitempty"`
-	// Weights are the normalized four dimensions and the independent temperature.
-	Weights DimensionWeights `json:"weights"`
-	// Tiers are the platform's raw configured strengths, before interpolation and normalization.
-	Tiers PreferenceWeights `json:"tiers"`
 }
 
 // RequestTrace holds what the instruction looked like, never its text.

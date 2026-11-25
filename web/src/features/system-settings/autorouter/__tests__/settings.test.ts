@@ -64,7 +64,7 @@ describe('parsePreferenceWeights', () => {
     ).toEqual(DEFAULT_PREFERENCE_WEIGHTS)
   })
 
-  test('adaptive has no weights of its own, so a stored one is ignored and never written back', () => {
+  test('a stored adaptive entry is not a preference, so it is ignored and never written back', () => {
     const weights = parsePreferenceWeights(
       '{"adaptive":{"cost":0.5},"cost":{"cost":0.2}}'
     )

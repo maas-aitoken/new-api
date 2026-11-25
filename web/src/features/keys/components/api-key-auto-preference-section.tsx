@@ -85,13 +85,6 @@ export function ApiKeyAutoPreferenceSection(
         'Prefers much cheaper models and accepts a weaker one to save money.'
       ),
     },
-    {
-      value: 'adaptive',
-      label: t('Decide per request'),
-      description: t(
-        'Judges each request on whether it stresses result quality or cost, and weighs capability against price to match.'
-      ),
-    },
   ]
 
   return (

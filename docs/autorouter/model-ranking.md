@@ -102,7 +102,7 @@ Artificial Analysis 免费接口只返回指数，不含单项 benchmark 分数�
 - **不用语言类榜单**：中文、英文等分榜按提问语言切分，测的不是任务能力，任何画像都不使用。
 - **数学、逻辑题不单列**：互联网公司场景占比低，由 `general` 一级画像中的 `lb.reasoning` 覆盖。
 - **difficulty、task_change、larger_model_benefit 三个问题不变。**
-- **新增 `mode` 问题（问题集版本 v6）**：判断用户更看重结果质量与可靠（`capability`）、没有明显倾向（`balanced`），还是要省钱省时间（`cost`），返回三项的概率。判据只看用户这条消息本身，任务的难易不是依据，难度已经由 `difficulty` 管。每次调 jev 都问，不论令牌用哪种偏好，这样判断缓存里的每一条都带这个答案，令牌中途换成自适应偏好也不会拿到缺答案的缓存。问题集变了，缓存的判断随版本号失效一次。
+- **不再问 `mode`（问题集版本 v7）**：v6 曾加过 `mode` 问题，让 jev 判断用户更看重质量还是成本，供自适应偏好插值权重。质量与成本的取舍应由任务难度决定，而不是另一道判断题，所以 v7 去掉了这道题和自适应偏好。问题集变了，缓存的判断随版本号失效一次。
 
 ## 5. 候选模型与名称匹配
 
@@ -189,10 +189,6 @@ jev 的回答分三种：
 | `cost` 成本优先 | 0.2 | 0.4 | 0.5 | 0.2 | 0.2 |
 
 令牌没设偏好（或值不认识）时用平台的 `default_preference`，出厂是 `balanced`；它也不认识时用 `balanced`。这个偏好只决定 auto 选哪个模型，和 Scheduler 的路由倾向互不相干。比价时会看候选会落到哪个渠道，Scheduler 只负责给比较成本提供渠道费用倍率。
-
-**自适应偏好**：令牌和 `default_preference` 还可以选 `adaptive`。它没有固定策略，每个请求用 jev 的 `mode` 判断，在三档配置之间插值后得到本次质量尺度、成本容忍度、容量惩罚和成功率惩罚。`preference_weights` 只有三个固定偏好键，写 `adaptive` 会被拒绝。
-
-三档记为位置 0（`capability`）、1（`balanced`）、2（`cost`），先把 `mode` 给三项的概率归一，对位置求期望，再沿相邻两档插值。没有可用的 `mode` 答案时使用均衡档。缓存的判断会按当前平台配置重新折算。
 
 **候选**：列表里同时满足下面三条的模型。
 
@@ -344,7 +340,6 @@ Success_i = (Successes + 4) / (Samples + 4)
 - 判断从哪来：现调了 jev、命中判断缓存、jev 刚失败过（60 秒内不重试）、jev 调用失败、会话继承、后台辅助请求、没有可分类的指令，或者根本没有模型能服务。
 - 判断合不合法：合法时按哪些榜单选（`unknown` 没有榜单）；不合法或没有判断时的原因（jev 没答、答案没有难度、任务类型不在给定选项里）。
 - 有上一轮路由时，是否延续，以及任务变化值对阈值。
-- 自适应偏好的请求：三个偏好各占的概率、期望位置、本次用的策略强度和成本容忍度，以及当时平台设的三档策略；没有可用判断时写明回退到均衡档。抽屉里只在这次真的做了四维比较时才显示这一步，沿用上一轮模型或按榜单顺序取第一个的请求没用到这套策略。
 - 难度怎么变成档位：难度对应的档位、是否被上一轮的档位抬高、是否因大模型收益再提了一档。
 - 各榜单依次试了什么，每一级的结果（四维比较选出、按列表顺序取第一个、没有可用的、沿用上一轮），以及榜单里分数够高却没被选中的模型各自的原因：令牌的模型白名单不允许、分组里没启用、没有启用的渠道、没有配价格、渠道能力不满足请求、按次计费没法比价、被客户端自己的推理设置排除、Scheduler 此刻没有能接它的渠道（强制模式下预览给出的）。每个榜单最多记 8 个，其余只计数。
 - 没有任何模型能服务时，按原因汇总所有榜单里的模型个数，并各列几个例子。
@@ -382,8 +377,8 @@ Success_i = (Successes + 4) / (Samples + 4)
 | `autorouter_setting.task_models` | 内置榜单 | 画像名 → 模型列表 |
 | `autorouter_setting.task_scores` | 内置榜单 | 画像名 → 模型 → 榜单分，第 7.3 节比较用；与 `task_models` 一起生成、一起刷新 |
 | `autorouter_setting.default_models` | 内置榜单 | 默认模型列表 |
-| `autorouter_setting.default_preference` | `balanced` | 令牌没设 auto 偏好时用的偏好：`capability`、`balanced`、`cost`、`adaptive`；不认识的值按 `balanced` |
-| `autorouter_setting.preference_weights` | 第 7.3 节三档默认强度 | 第 7.3 节三个固定偏好的效用公式参数；保存原始四维强度和兼容字段温度，选路时归一化四维强度并映射成本容忍度；JSON 里没写的偏好和维度用内置值，四维全零回退该档默认强度；直接写库的负数和 NaN 按 0，大于 1 按 1；只接受这三个键，`adaptive` 没有自己的策略，写进来会被拒绝，自适应请求从三档策略折算强度 |
+| `autorouter_setting.default_preference` | `balanced` | 令牌没设 auto 偏好时用的偏好：`capability`、`balanced`、`cost`；不认识的值（包括已经下线的 `adaptive`）按 `balanced` |
+| `autorouter_setting.preference_weights` | 第 7.3 节三档默认强度 | 第 7.3 节三个固定偏好的效用公式参数；保存原始四维强度和兼容字段温度，选路时归一化四维强度并映射成本容忍度；JSON 里没写的偏好和维度用内置值，四维全零回退该档默认强度；直接写库的负数和 NaN 按 0，大于 1 按 1；只接受这三个键 |
 | `autorouter_setting.rank_sources` | 内置榜单 | 各来源快照日期、生成时间、`taxonomy_version`；手工编辑保存后多一项 `edited_at`，刷新和恢复内置会连同改动一起换掉 |
 | `autorouter_setting.jev_endpoint`、`jev_model`、`jev_api_key` | 空 | jev 的地址、模型和密钥；为空时分别回退到环境变量 `JEV_ENDPOINT`、`JEV_MODEL`、`JEV_API_KEY`。写入前服务端校验：地址必须是 http/https，密钥和模型不能含空白或换行 |
 | `autorouter_setting.artificial_analysis_api_key`、`design_arena_api_key`、`openrouter_api_key` | 空 | 三个榜单来源的 key；为空时回退到下面同名的环境变量 |
@@ -418,10 +413,9 @@ Success_i = (Successes + 4) / (Samples + 4)
 | `setting/autorouter_setting/` | 新的内置 `task_models.json`；`taxonomy_version` 校验；`task_scores` 从内置 `evidence` 播种，随 `task_models` 一起按版本退回内置；`default_preference`、`preference_weights`，`Policy(preference)` 按令牌的偏好取完整策略 |
 | `model/token.go`、`model/token_cache.go`、`controller/token.go`、`middleware/auth.go` | 令牌新增 `auto_preference` 列（可空，空为平台默认），随令牌创建/更新接口读写，更新时不传则保留原值，不认识的值返回错误；Redis 令牌缓存脚本多存一个字段；鉴权后放进请求上下文 |
 | `web/src/features/keys/` | 令牌表单新增“Auto 模型偏好”下拉，独立于“路由倾向”；审计日志的变更字段多一个标签 |
-| `pkg/autorouter/jev.go`、`select.go`、`trace.go`、`policy.go` | 自适应偏好：jev 多问一个 `mode`，`QuestionsVersion` 升到 v6；`Decision.ModeProbabilities`；`PreferenceAdaptive` 和只含三个固定偏好的 `Preferences` 之外的 `SelectablePreferences`；`PreferenceWeights.Blend` 按第 7.3 节折算效用公式强度；`SelectRoute` 在自适应偏好下用折算的策略覆盖 `Policy.DimensionWeights`，并把过程记进 `trace.mode` |
-| `setting/autorouter_setting/`、`controller/token.go` | `Policy()` 同时带出三档策略（`Policy.Tiers`），`default_preference` 和令牌的 `auto_preference` 接受 `adaptive`，`preference_weights` 只接受三个固定偏好 |
-| `web/src/features/system-settings/autorouter/`、`web/src/features/keys/` | 令牌表单和平台默认偏好多一项“按请求判断”（`SELECTABLE_AUTO_PREFERENCES`）；“偏好与成本”页按固定三档编辑效用公式强度，选路过程抽屉展示自适应请求的策略 |
-| `pkg/autorouter/jevexp/` | 汇总里多一行 `mode`：各偏好被选为最可能的次数、有多少条没有可用答案、期望位置的平均值，用来在切换令牌之前看真实流量里 `mode` 的分布 |
+| `pkg/autorouter/jev.go`、`select.go`、`trace.go`、`policy.go`、`jevexp/` | 去掉自适应偏好：jev 不再问 `mode`，`QuestionsVersion` 升到 v7；删除 `Decision.ModeProbabilities`、`PreferenceAdaptive`、`SelectablePreferences`、`PreferenceWeights.Blend`、`Policy.Tiers` 和 `trace.mode`；`jevexp` 汇总不再统计 `mode` |
+| `setting/autorouter_setting/`、`controller/token.go` | `default_preference` 和令牌的 `auto_preference` 只接受三个固定偏好，写 `adaptive` 返回错误；库里已存的 `adaptive` 不迁移，运行时按不认识的值处理：令牌退到平台默认，平台默认退到 `balanced` |
+| `web/src/features/system-settings/autorouter/`、`web/src/features/keys/` | 令牌表单和平台默认偏好去掉“按请求判断”；已存为 `adaptive` 的令牌显示为“跟随平台设置”，平台默认显示为“均衡”。选路过程抽屉仍能显示旧日志里的自适应策略 |
 | `controller/system_task_handlers.go` | 刷新任务的启用条件改为检查 `ARTIFICIAL_ANALYSIS_API_KEY`，以及 `DESIGN_ARENA_API_KEY` 或 `OPENROUTER_API_KEY`；刷新时同时写 `task_scores` |
 | `middleware/distributor.go`、`relay/helper/price.go` | 候选按“模型 + 渠道”判定可用；`RoutingPricer` 按用户侧价格给候选报价，只读价格配置，不写 `PriceData`、不碰额度 |
 | `service/autorouter.go`、`service/log_info_generate.go` | 调用 jev 前先检查有没有可用模型；比较过程写进 `admin_info.auto_router` |
@@ -453,9 +447,6 @@ Success_i = (Successes + 4) / (Samples + 4)
 - **选路不再随机探索**：候选按统一效用分降序排列，第一名确定选中。容量和成功率变化会直接改变效用并触发首选换位。
 - **容量取决于渠道上限**：配置了 RPM、TPM 或并发上限时才有对应的余量信号。硬可用性由渠道过滤和调度预览确定。
 - **偏好只管选哪个模型**：思考强度由难度、上一轮的档位和大模型收益决定（第 7.2 节），不随偏好变；Scheduler 的路由倾向也与它无关。对话中途换偏好，要到下一个新任务才生效（同任务延续沿用上一次的模型）。
-- **`mode` 的线索很少**：送去判断的只有用户最近两句话，“省钱”“这是线上事故要稳”这类线索只能出自这两句话的措辞，多数请求没有，`mode` 会集中在 `balanced`，自适应偏好对普通流量的影响因此很小，值不值得开主要看三项判据怎么写。先看真实分布再把令牌切过去：选路日志默认模式 `decisions` 记下每次现调 jev 的请求，里面的 `decision.mode_probabilities` 就是 `mode` 的原始答案；有 Langfuse 导出时也可以用 `jevexp` 离线汇总。
-- **`mode` 的返回格式只在测试桩上验证过**：`mode` 是 choice 题，和 `task_type` 一样应该返回各选项的概率，但真实 jev 对这道新题是否如此还没有验证。只返回 `choice` 而没有概率时，三项都按 0 读，等于没有可用答案，自适应偏好退回均衡档，不会出错。
-- **自适应偏好每次都多问一题**：每次调 jev 多一个问题，延迟增加多少未测，上线后看选路日志的 `jev_latency_ms`。升到 v6 时已缓存的判断失效一次，之后每个仍活跃的（令牌，指令）多调一次 jev。
 - **单指标画像的分数偏薄**：`general.browser`、`general.research` 只有一个指标；`general.design`、`general.search`、`general.writing` 在 2026-10-28 的快照里因 `da.slides`、`lma.search`、`lma.document` 停更，实际只剩一到两个有效指标。用很小的分差换很大的价差，依据比多指标画像弱。
 - **提档受模型声明的档位限制**：期望档位按模型渠道声明的档位收敛，声明里最高只到 `high` 的模型，期望档位提到 `xhigh` 也按 `high` 发出。提档只改思考强度，不换更强的模型。
 - **OpenAI / Codex 渠道还受网关的推理强度上限限制**：系统设置（模型 → 推理强度策略，`global.gpt_request_policy.reasoning_policy`）设了上限时，转发层把请求体里高于上限的档位降到上限，计费和消费日志按降后的档位记，所以不会超过上限。auto 定档时不看这个上限：期望档位是 `max` 时，走 OpenAI / Codex 渠道实际按 `xhigh` 发出，选路日志里"实际发送的推理强度"记的是 auto 写进请求体的档位，不含这一步。

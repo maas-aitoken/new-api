@@ -41,11 +41,8 @@ type Policy struct {
 	TaskScores map[string]map[string]float64
 	// Preference names the capability/cost balance chosen by this request's key.
 	Preference string
-	// Tiers are the platform's configured strengths of the three fixed preferences.
-	// An adaptive request replaces DimensionWeights with strengths interpolated from them.
-	Tiers PreferenceWeights
-	// DimensionWeights holds the configured strengths; pickModels normalizes the four
-	// dimensions and leaves Temperature independent.
+	// DimensionWeights holds the preference's configured strengths; pickModels
+	// normalizes the four dimensions and leaves Temperature independent.
 	DimensionWeights DimensionWeights
 }
 
@@ -125,19 +122,6 @@ func validateDecision(decision *Decision) (profiles []string, validity Validity)
 func SelectRoute(decision *Decision, previous *Route, policy Policy, candidates Candidates, trace *Trace) (route Route, inherited, ok bool, pick *Pick) {
 	if trace == nil {
 		trace = &Trace{}
-	}
-	if policy.Preference == PreferenceAdaptive {
-		// mode 问题与任务类型无关：任务类型只决定走哪个榜单，unknown 或没有合法判断时成本倾向照样可用。
-		var probabilities map[string]float64
-		if decision != nil {
-			probabilities = decision.ModeProbabilities
-		}
-		mode := policy.Tiers.Blend(probabilities)
-		policy.DimensionWeights = mode.Weights
-		mode.Weights = mode.Weights.Normalized()
-		mode.Weight = mode.Weights.Cost
-		mode.CostScale = costScale(mode.Weights.Cost)
-		trace.Mode = &mode
 	}
 	available, overridable := candidates.Available, candidates.Overridable
 	profiles, validity := validateDecision(decision)

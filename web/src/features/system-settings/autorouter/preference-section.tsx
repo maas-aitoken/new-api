@@ -26,7 +26,7 @@ import * as z from 'zod'
 
 import { Form } from '@/components/ui/form'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { SELECTABLE_AUTO_PREFERENCES } from '@/features/keys/lib'
+import { AUTO_PREFERENCES } from '@/features/keys/lib'
 
 import {
   SettingsForm,
@@ -50,7 +50,7 @@ import type { AutoRouterSettings } from './types'
 
 function createSchema(t: TFunction) {
   return z.object({
-    default_preference: z.enum(SELECTABLE_AUTO_PREFERENCES),
+    default_preference: z.enum(AUTO_PREFERENCES),
     weights: z.object({
       capability: z.object({
         quality: fractionBetween(t),
@@ -118,9 +118,8 @@ export function PreferenceSection(props: PreferenceSectionProps) {
     const stored = props.settings['autorouter_setting.default_preference']
     return {
       default_preference:
-        SELECTABLE_AUTO_PREFERENCES.find(
-          (preference) => preference === stored
-        ) ?? 'balanced',
+        AUTO_PREFERENCES.find((preference) => preference === stored) ??
+        'balanced',
       weights: parsePreferenceWeights(
         props.settings['autorouter_setting.preference_weights']
       ),
@@ -149,14 +148,6 @@ export function PreferenceSection(props: PreferenceSectionProps) {
       label: t('Cost first'),
     },
   ]
-  const options = [
-    ...tiers,
-    {
-      value: 'adaptive',
-      label: t('Decide per request'),
-    },
-  ]
-  const selected = form.watch('default_preference')
 
   const onSubmit = async (values: PreferenceValues) => {
     const updates = changedOptions(
@@ -189,14 +180,7 @@ export function PreferenceSection(props: PreferenceSectionProps) {
             control={form.control}
             name='default_preference'
             label={t('Default preference for keys without one')}
-            description={
-              selected === 'adaptive'
-                ? t(
-                    'Judges each request on whether it stresses result quality or cost, then reads the weights for that request from the three preferences below.'
-                  )
-                : undefined
-            }
-            options={options}
+            options={tiers}
           />
 
           <Tabs defaultValue='balanced' data-settings-form-span='full'>

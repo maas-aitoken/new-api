@@ -110,9 +110,8 @@ func TestPolicyResolvesPreferenceAndWeight(t *testing.T) {
 		{"a weight above one is capped", "cost", "", autorouter.PreferenceWeights{"cost": {Quality: 1, Cost: 7}}, "cost", 1},
 		{"NaN becomes zero", "cost", "", autorouter.PreferenceWeights{"cost": {Quality: 1, Cost: math.NaN()}}, "cost", 0},
 		{"infinity is capped", "cost", "", autorouter.PreferenceWeights{"cost": {Quality: 1, Cost: math.Inf(1)}}, "cost", 1},
-		{"an adaptive key starts from the balanced weight", "adaptive", "cost", nil, "adaptive", 0.2},
-		{"a key without one follows an adaptive platform default", "", "adaptive", nil, "adaptive", 0.2},
-		{"the balanced weight the admin set is where an adaptive request starts", "adaptive", "", autorouter.PreferenceWeights{"balanced": {Quality: 0.88, Cost: 0.12}}, "adaptive", 0.12},
+		{"a key still stored as the retired adaptive preference uses the platform default", "adaptive", "cost", nil, "cost", 0.4},
+		{"a platform default still stored as adaptive falls to balanced", "", "adaptive", nil, "balanced", 0.2},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -122,29 +121,6 @@ func TestPolicyResolvesPreferenceAndWeight(t *testing.T) {
 			assert.Equal(t, tt.wantWeight, policy.DimensionWeights.Cost)
 		})
 	}
-}
-
-// 自适应请求从三档权重里读本次的权重，三档都要按同样的规则限幅，
-// 选项里写了 adaptive 这个键也不能当成一档。
-func TestPolicyCarriesTheTierWeightsAnAdaptiveRequestReads(t *testing.T) {
-	setting := GetAutoRouterSetting()
-	saved := *setting
-	t.Cleanup(func() { *setting = saved })
-
-	setting.PreferenceWeights = autorouter.PreferenceWeights{
-		"capability": {Quality: -1, Cost: -1, Capacity: 2, Success: math.NaN(), Temperature: 0.2},
-		"cost":       {Quality: 1, Cost: 7, Capacity: 0.4, Success: 0.5, Temperature: 0.6},
-		"adaptive":   {Cost: 0.5},
-	}
-	policy := setting.Policy("adaptive")
-	assert.Equal(t, autorouter.DimensionWeights{Quality: 0, Capacity: 1, Temperature: 0.2}, policy.Tiers["capability"])
-	assert.Equal(t, autorouter.DimensionWeights{Quality: 1, Cost: 1, Capacity: 0.4, Success: 0.5, Temperature: 0.6}, policy.Tiers["cost"])
-	assert.InDelta(t, 0.4, policy.Tiers["balanced"].Quality, 1e-9)
-	assert.Equal(t, 0.2, policy.Tiers["balanced"].Cost)
-	assert.Equal(t, 0.2, policy.Tiers["balanced"].Capacity)
-	assert.Equal(t, 0.2, policy.Tiers["balanced"].Success)
-	assert.Equal(t, 0.12, policy.Tiers["balanced"].Temperature)
-	assert.Equal(t, DefaultPreferenceWeights[autorouter.PreferenceBalanced], policy.DimensionWeights)
 }
 
 func TestPolicyAllZeroDimensionsFallBackToTheBuiltInTier(t *testing.T) {
@@ -438,7 +414,7 @@ func TestValidateOption(t *testing.T) {
 		{"autorouter_setting.difficulty_efforts", `["low","extreme"]`, false},
 		{"autorouter_setting.difficulty_efforts", `low`, false},
 		{"autorouter_setting.default_preference", "cost", true},
-		{"autorouter_setting.default_preference", "adaptive", true},
+		{"autorouter_setting.default_preference", "adaptive", false},
 		{"autorouter_setting.default_preference", "cheap", false},
 		{"autorouter_setting.preference_weights", `{"balanced":{"quality":0.8,"cost":0.1,"capacity":0.2,"success":0.3,"temperature":0}}`, true},
 		{"autorouter_setting.preference_weights", `{"balanced":{"quality":2}}`, false},
