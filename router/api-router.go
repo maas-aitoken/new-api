@@ -478,6 +478,34 @@ func SetApiRouter(router *gin.Engine) {
 			vendorRoute.DELETE("/:id", controller.DeleteVendorMeta)
 		}
 
+		// Supplier management is an admin-only console feature, gated purely by the
+		// admin role like System settings; it is not a per-user configurable Casbin
+		// resource. Access tokens cannot call these routes (see access_token_routes).
+		supplierRoute := apiRouter.Group("/suppliers")
+		supplierRoute.Use(middleware.AdminAuth())
+		{
+			supplierRoute.GET("/", controller.GetSuppliers)
+			supplierRoute.GET("/search", controller.GetSuppliers)
+			supplierRoute.GET("/settlements", controller.GetSupplierSettlements)
+			supplierRoute.GET("/:id", controller.GetSupplier)
+			supplierRoute.POST("/", controller.CreateSupplier)
+			supplierRoute.PUT("/", controller.UpdateSupplier)
+			supplierRoute.DELETE("/:id", controller.DeleteSupplier)
+			supplierRoute.PATCH("/:id/status", controller.UpdateSupplierStatus)
+			supplierRoute.GET("/:id/channels", controller.GetSupplierChannels)
+			supplierRoute.POST("/:id/channels", controller.AddSupplierChannels)
+			supplierRoute.DELETE("/:id/channels/:channel_id", controller.RemoveSupplierChannel)
+			supplierRoute.GET("/:id/monitoring", controller.GetSupplierMonitoring)
+			supplierRoute.GET("/:id/operations", controller.GetSupplierOperations)
+			supplierRoute.GET("/:id/bills", controller.GetSupplierBill)
+			supplierRoute.GET("/:id/bills/detail", controller.GetSupplierBillDetail)
+			supplierRoute.GET("/:id/bills/:bill_id/allocations", controller.GetSupplierAllocations)
+			supplierRoute.POST("/:id/bills", controller.SaveSupplierBill)
+			supplierRoute.POST("/:id/bills/adjustments", controller.AddSupplierAdjustment)
+			supplierRoute.DELETE("/:id/bills/adjustments/:adjustment_id", controller.DeleteSupplierAdjustment)
+			supplierRoute.POST("/:id/bills/:bill_id/confirm", controller.ConfirmSupplierBill)
+		}
+
 		modelsRoute := apiRouter.Group("/models")
 		modelsRoute.Use(middleware.AdminAuth())
 		{

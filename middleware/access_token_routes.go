@@ -265,6 +265,28 @@ var accessTokenRouteRules = map[string]accessTokenRouteRule{
 	"PATCH /api/token/admin/:id/rate-limit": accessTokenSessionRule,
 	"DELETE /api/token/admin/:id":           accessTokenSessionRule,
 
+	// router/api-router.go: /api/suppliers — admin-only console feature, no token access.
+	"GET /api/suppliers/":                                        accessTokenSessionRule,
+	"GET /api/suppliers/search":                                  accessTokenSessionRule,
+	"GET /api/suppliers/settlements":                             accessTokenSessionRule,
+	"GET /api/suppliers/:id":                                     accessTokenSessionRule,
+	"POST /api/suppliers/":                                       accessTokenSessionRule,
+	"PUT /api/suppliers/":                                        accessTokenSessionRule,
+	"DELETE /api/suppliers/:id":                                  accessTokenSessionRule,
+	"PATCH /api/suppliers/:id/status":                            accessTokenSessionRule,
+	"GET /api/suppliers/:id/channels":                            accessTokenSessionRule,
+	"POST /api/suppliers/:id/channels":                           accessTokenSessionRule,
+	"DELETE /api/suppliers/:id/channels/:channel_id":             accessTokenSessionRule,
+	"GET /api/suppliers/:id/monitoring":                          accessTokenSessionRule,
+	"GET /api/suppliers/:id/operations":                          accessTokenSessionRule,
+	"GET /api/suppliers/:id/bills":                               accessTokenSessionRule,
+	"GET /api/suppliers/:id/bills/detail":                        accessTokenSessionRule,
+	"GET /api/suppliers/:id/bills/:bill_id/allocations":          accessTokenSessionRule,
+	"POST /api/suppliers/:id/bills":                              accessTokenSessionRule,
+	"POST /api/suppliers/:id/bills/adjustments":                  accessTokenSessionRule,
+	"DELETE /api/suppliers/:id/bills/adjustments/:adjustment_id": accessTokenSessionRule,
+	"POST /api/suppliers/:id/bills/:bill_id/confirm":             accessTokenSessionRule,
+
 	// router/api-router.go: /api/redemption
 	"GET /api/redemption/":           accessTokenScopeRule("redemption:read"),
 	"GET /api/redemption/search":     accessTokenScopeRule("redemption:read"),
