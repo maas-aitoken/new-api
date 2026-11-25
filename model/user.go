@@ -417,7 +417,8 @@ func GetMaxUserId() int {
 	return user.Id
 }
 
-// countTokensByUsers 统计给定用户各自名下的 Token 数量，返回 user_id -> count。
+// countTokensByUsers 统计给定用户各自名下的 Token 数量
+// 返回 user -> count
 func countTokensByUsers(userIds []int) (map[int]int, error) {
 	counts := make(map[int]int, len(userIds))
 	if len(userIds) == 0 {
