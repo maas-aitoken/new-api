@@ -67,6 +67,14 @@ func TestClassifyClientCancelledWins(t *testing.T) {
 				Err: fmt.Errorf("relay aborted: %w", context.Canceled),
 			},
 		},
+		{
+			name: "structured cancellation outranks synthetic 500",
+			in: ClassifyInput{
+				HTTPStatus:      500,
+				InternalErrCode: "client_cancelled",
+				Err:             errors.New("client request cancelled"),
+			},
+		},
 	}
 
 	for _, tc := range cases {

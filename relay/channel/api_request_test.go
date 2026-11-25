@@ -4,9 +4,11 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	kittypes "github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -23,6 +25,53 @@ func TestNewTaskAPIRequestInheritsClientCancellation(t *testing.T) {
 	cancel()
 
 	require.ErrorIs(t, upstream.Context().Err(), context.Canceled)
+}
+
+func TestDoRequestBindsIncomingCancellationWithoutOTel(t *testing.T) {
+	var upstreamCalls atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamCalls.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	requestContext, cancel := context.WithCancel(context.Background())
+	cancel()
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", http.NoBody).WithContext(requestContext)
+	req, err := http.NewRequest(http.MethodPost, upstream.URL, http.NoBody)
+	require.NoError(t, err)
+
+	resp, err := doRequest(c, req, &relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{}})
+	if resp != nil {
+		require.NoError(t, resp.Body.Close())
+	}
+	require.Error(t, err)
+	require.ErrorIs(t, err, context.Canceled)
+	assert.Zero(t, upstreamCalls.Load(), "an already-cancelled caller must not reach the upstream")
+}
+
+func TestDoRequestClassifiesClientCancellation(t *testing.T) {
+	requestContext, cancel := context.WithCancel(context.Background())
+	cancel()
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", http.NoBody).WithContext(requestContext)
+	req, err := http.NewRequestWithContext(requestContext, http.MethodPost, "https://private.example/v1/chat?token=secret", http.NoBody)
+	require.NoError(t, err)
+
+	resp, err := doRequest(c, req, &relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{}})
+	require.Nil(t, resp)
+	require.Error(t, err)
+	var apiErr *kittypes.NewAPIError
+	require.ErrorAs(t, err, &apiErr)
+	assert.Equal(t, kittypes.ErrorCode("client_cancelled"), apiErr.GetErrorCode())
+	assert.Equal(t, 499, apiErr.StatusCode)
+	assert.Equal(t, "client request cancelled", apiErr.Error())
+	assert.True(t, kittypes.IsSkipRetryError(apiErr))
+	assert.False(t, kittypes.IsRecordErrorLog(apiErr))
+	require.ErrorIs(t, apiErr, context.Canceled)
+	assert.NotContains(t, apiErr.Error(), "private.example")
+	assert.NotContains(t, apiErr.Error(), "secret")
 }
 
 func TestProcessHeaderOverride_ChannelTestSkipsPassthroughRules(t *testing.T) {

@@ -71,8 +71,9 @@ type ClassifyInput struct {
 // It remains available when attempt telemetry is disabled, for routing metrics.
 //
 // client_cancelled is derived only from authoritative signals that fire during
-// the failure itself: the stream scanner's client_gone end reason, or a
-// context.Captured error propagated through the relay error. It is NOT derived
+// the failure itself: the stream scanner's client_gone end reason, the relay's
+// structured cancellation code, or a context.Canceled error propagated through
+// the relay error. It is NOT derived
 // from c.Request.Context().Err() at Finish time: that context is already done
 // for any normally-completed request by the time Finish runs, so it would
 // mislabel every success as a client cancellation.
@@ -84,7 +85,7 @@ type ClassifyInput struct {
 // where latency is rewarded. stream_interrupted is checked next because it can
 // carry HTTP 200 and would otherwise be invisible to a status-code-only view.
 func Classify(in ClassifyInput) string {
-	if in.StreamEndReason == streamEndClientGone || errors.Is(in.Err, context.Canceled) {
+	if in.StreamEndReason == streamEndClientGone || in.InternalErrCode == "client_cancelled" || errors.Is(in.Err, context.Canceled) {
 		return OutcomeClientCancelled
 	}
 

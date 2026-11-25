@@ -89,12 +89,33 @@ func TestRelayAutoRetriesNextModelBeyondChannelRetryBudget(t *testing.T) {
 	require.NoError(t, ratio_setting.UpdateCompletionRatioByJSONString(`{"failed-model":1,"available-model":1,"last-model":1}`))
 	require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(`{"default":1}`))
 	var requests []string
+	var onRequest func(string)
+	var onStream func()
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, readErr := io.ReadAll(r.Body)
 		assert.NoError(t, readErr)
 		requests = append(requests, string(body))
-		var requestModel struct{ Model string }
+		var requestModel struct {
+			Model  string `json:"model"`
+			Stream bool   `json:"stream"`
+		}
 		assert.NoError(t, common.Unmarshal(body, &requestModel))
+		if onRequest != nil {
+			onRequest(requestModel.Model)
+		}
+		if requestModel.Stream {
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = io.WriteString(w, "data: {\"id\":\"chunk\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"failed-model\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"partial\"},\"finish_reason\":null}]}\n\n")
+			http.NewResponseController(w).Flush()
+			if onStream != nil {
+				onStream()
+			}
+			select {
+			case <-r.Context().Done():
+			case <-time.After(5 * time.Second):
+			}
+			return
+		}
 		if requestModel.Model != "last-model" {
 			w.WriteHeader(http.StatusTooManyRequests)
 			return
@@ -171,6 +192,72 @@ func TestRelayAutoRetriesNextModelBeyondChannelRetryBudget(t *testing.T) {
 			assert.Contains(t, requests[i], `"model":"`+want+`"`)
 		}
 	}
+
+	t.Run("client cancellation stops subsequent auto retries", func(t *testing.T) {
+		requests = nil
+		autoSetting.DefaultModels = []string{"failed-model", "available-model", "last-model"}
+		autoSetting.MaxRetries = 5
+		requestContext, cancel := context.WithCancel(context.Background())
+		onRequest = func(model string) {
+			if model == "failed-model" {
+				cancel()
+			}
+		}
+		defer func() { onRequest = nil }()
+		response = httptest.NewRecorder()
+		request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"auto","messages":[{"role":"user","content":"cancel after first attempt"}]}`)).WithContext(requestContext)
+		request.Header.Set("Content-Type", "application/json")
+		router.ServeHTTP(response, request)
+		assert.Len(t, requests, 1, "a cancelled caller must not be retried through the remaining auto models")
+	})
+
+	t.Run("already cancelled client starts no upstream attempt", func(t *testing.T) {
+		requests = nil
+		onRequest = nil
+		autoSetting.DefaultModels = []string{"failed-model", "available-model", "last-model"}
+		autoSetting.MaxRetries = 5
+		requestContext, cancel := context.WithCancel(context.Background())
+		cancel()
+		response = httptest.NewRecorder()
+		request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"auto","messages":[{"role":"user","content":"already cancelled"}]}`)).WithContext(requestContext)
+		request.Header.Set("Content-Type", "application/json")
+		router.ServeHTTP(response, request)
+		assert.Empty(t, requests, "an already-cancelled caller must not reach any upstream")
+		assert.Equal(t, 499, response.Code)
+	})
+
+	t.Run("cancelled stream does not reset channel failure streak", func(t *testing.T) {
+		previousMonitor := *operation_setting.GetMonitorSetting()
+		previousStreamingTimeout := constant.StreamingTimeout
+		constant.StreamingTimeout = 30
+		t.Cleanup(func() {
+			*operation_setting.GetMonitorSetting() = previousMonitor
+			constant.StreamingTimeout = previousStreamingTimeout
+		})
+		monitor := operation_setting.GetMonitorSetting()
+		monitor.ChannelModelCircuitBreakerEnabled = true
+		monitor.ChannelErrorThreshold = 0
+		monitor.ChannelErrorConsecutiveThreshold = 2
+		monitor.ChannelErrorStatusCodes = "400-599"
+		service.ClearChannelModelFailureCounters(1, "failed-model")
+		t.Cleanup(func() { service.ClearChannelModelFailureCounters(1, "failed-model") })
+		assert.False(t, service.RecordChannelModelFailure(1, "failed-model"), "fixture starts with one consecutive failure")
+
+		requests = nil
+		onRequest = nil
+		autoSetting.DefaultModels = []string{"failed-model"}
+		autoSetting.MaxRetries = 0
+		requestContext, cancel := context.WithCancel(context.Background())
+		onStream = cancel
+		defer func() { onStream = nil }()
+		response = httptest.NewRecorder()
+		request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"auto","stream":true,"messages":[{"role":"user","content":"cancel during stream"}]}`)).WithContext(requestContext)
+		request.Header.Set("Content-Type", "application/json")
+		router.ServeHTTP(response, request)
+
+		assert.True(t, service.RecordChannelModelFailure(1, "failed-model"),
+			"the pre-existing failure must remain consecutive after a client-cancelled stream")
+	})
 }
 
 func TestRelayAutoRetryRefreshesModelScopedRequestState(t *testing.T) {

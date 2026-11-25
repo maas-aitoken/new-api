@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -211,6 +212,12 @@ func TestDecideRelayRetryReasons(t *testing.T) {
 		{name: "always skipped status", err: upstream(http.StatusGatewayTimeout), retries: 1, want: PolicyDecision{Action: "stop", Reason: "system_retry_exclusion", Source: "system"}},
 		{name: "success status never retries", err: upstream(http.StatusOK), retries: 1, want: PolicyDecision{Action: "stop", Reason: "system_retry_exclusion", Source: "system"}},
 		{name: "skip retry error", err: types.NewErrorWithStatusCode(errors.New("local"), types.ErrorCodeInvalidRequest, http.StatusBadRequest, types.ErrOptionWithSkipRetry()), retries: 1, want: PolicyDecision{Action: "stop", Reason: "non_retryable_error", Source: "system"}},
+		{name: "client context cancelled", err: upstream(http.StatusInternalServerError), retries: 3, setup: func(c *gin.Context) {
+			requestContext, cancel := context.WithCancel(context.Background())
+			cancel()
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil).WithContext(requestContext)
+		}, want: PolicyDecision{Action: "stop", Reason: "client_cancelled", Source: "client"}},
+		{name: "structured client cancellation", err: types.NewErrorWithStatusCode(errors.New("client request cancelled"), types.ErrorCode("client_cancelled"), 499), retries: 3, want: PolicyDecision{Action: "stop", Reason: "client_cancelled", Source: "client"}},
 		{name: "channel error retries without budget", err: types.NewError(errors.New("no key"), types.ErrorCodeChannelNoAvailableKey), retries: 0, want: PolicyDecision{Action: "retry", Reason: "channel_error", Source: "system"}},
 		{name: "single attempt pin", err: upstream(http.StatusTooManyRequests), retries: 1, setup: func(c *gin.Context) {
 			GetChannelConstraints(c).AddPin(dto.ChannelPin{ChannelId: 1, Source: dto.PinSourceToken, Rank: dto.PinRankToken, RetryMode: dto.PinRetrySingleAttempt})
@@ -231,6 +238,62 @@ func TestDecideRelayRetryReasons(t *testing.T) {
 			assert.Equal(t, tc.want.Action == "retry", ShouldRetryRelayError(c, tc.err, tc.retries))
 		})
 	}
+}
+
+func TestClientCancellationIsNeutralForChannelHealth(t *testing.T) {
+	previousRedis, previousErrorLog := common.RedisEnabled, constant.ErrorLogEnabled
+	previousMonitor := *operation_setting.GetMonitorSetting()
+	t.Cleanup(func() {
+		common.RedisEnabled, constant.ErrorLogEnabled = previousRedis, previousErrorLog
+		*operation_setting.GetMonitorSetting() = previousMonitor
+	})
+	common.RedisEnabled, constant.ErrorLogEnabled = false, false
+	monitor := operation_setting.GetMonitorSetting()
+	monitor.ChannelModelCircuitBreakerEnabled = true
+	monitor.ChannelErrorThreshold = 10
+	monitor.ChannelErrorConsecutiveThreshold = 10
+	monitor.ChannelErrorStatusCodes = "400-599"
+
+	key := channelModelFailureKey{channelID: 73, modelName: "test-model"}
+	channelFailureStates.Lock()
+	previousState, hadPreviousState := channelFailureStates.values[key]
+	channelFailureStates.values[key] = channelFailureState{failureTimes: []time.Time{time.Now()}, consecutiveCount: 2}
+	channelFailureStates.Unlock()
+	t.Cleanup(func() {
+		channelFailureStates.Lock()
+		if hadPreviousState {
+			channelFailureStates.values[key] = previousState
+		} else {
+			delete(channelFailureStates.values, key)
+		}
+		channelFailureStates.Unlock()
+	})
+
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Set("original_model", key.modelName)
+	channelErr := types.ChannelError{ChannelId: key.channelID, ChannelName: "cancel-test", AutoBan: true}
+	ProcessChannelError(c, channelErr, types.NewErrorWithStatusCode(context.Canceled, types.ErrorCode("client_cancelled"), 499), nil)
+	ProcessChannelError(c, channelErr, types.NewErrorWithStatusCode(context.Canceled, types.ErrorCodeDoRequestFailed, http.StatusInternalServerError), nil)
+
+	channelFailureStates.Lock()
+	state := channelFailureStates.values[key]
+	channelFailureStates.Unlock()
+	assert.Len(t, state.failureTimes, 1, "client cancellation must not increment provider failures")
+	assert.Equal(t, 2, state.consecutiveCount, "client cancellation must not reset or advance the failure streak")
+}
+
+func TestRecordPolicyFailureAttributesClientCancellation(t *testing.T) {
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	apiErr := types.NewErrorWithStatusCode(context.Canceled, types.ErrorCode("client_cancelled"), 499)
+	decision := PolicyDecision{Action: "stop", Reason: "client_cancelled", Source: "client"}
+	RecordPolicyFailure(c, 73, apiErr, decision)
+
+	events := RequestPolicy(c).Events()
+	require.GreaterOrEqual(t, len(events), 2)
+	failure := events[len(events)-2]
+	assert.Equal(t, "client", failure.ErrorSource)
+	assert.Equal(t, "client_cancelled", failure.Decision.Reason)
+	assert.Equal(t, decision, events[len(events)-1].Decision)
 }
 
 // 上游拒答时重试只在开关打开时生效；拒答是 400，靠状态码规则重试不了。
