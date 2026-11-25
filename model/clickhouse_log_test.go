@@ -10,7 +10,9 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 	"gorm.io/gorm/schema"
+	"gorm.io/gorm/utils/tests"
 )
 
 func TestIsClickHouseDSN(t *testing.T) {
@@ -68,36 +70,38 @@ func TestChooseDBRejectsClickHouseForMainDatabase(t *testing.T) {
 	assert.Contains(t, err.Error(), "does not support ClickHouse")
 }
 
-func TestClickHouseLogTTLExpression(t *testing.T) {
-	assert.Equal(t, "", clickHouseLogTTLExpression(0))
-	assert.Equal(t, "", clickHouseLogTTLExpression(-5))
-	assert.Equal(t, "toDateTime(created_at) + INTERVAL 30 DAY DELETE", clickHouseLogTTLExpression(30))
-}
+func TestClickHouseMigrationDoesNotChangeTTL(t *testing.T) {
+	previousDB := LOG_DB
+	t.Cleanup(func() { LOG_DB = previousDB })
 
-func TestClickHouseLogTTLClause(t *testing.T) {
-	assert.Equal(t, "", clickHouseLogTTLClause(0))
-	assert.Equal(t, "\nTTL toDateTime(created_at) + INTERVAL 7 DAY DELETE", clickHouseLogTTLClause(7))
+	t.Setenv("LOG_SQL_CLICKHOUSE_TTL_DAYS", "7")
+	recorder := &migrationSQLRecorder{}
+	db, err := gorm.Open(tests.DummyDialector{}, &gorm.Config{DryRun: true, Logger: recorder})
+	require.NoError(t, err)
+	LOG_DB = db
+
+	require.NoError(t, migrateClickHouseLogDB())
+	statements := recorder.schemaMutations()
+	require.NotEmpty(t, statements)
+	for _, statement := range statements {
+		assert.NotContains(t, strings.ToUpper(statement), "TTL")
+	}
+	allStatements := strings.Join(statements, "\n")
+	assert.Contains(t, allStatements, "ADD COLUMN IF NOT EXISTS fast_mode")
+	assert.Contains(t, allStatements, "ADD COLUMN IF NOT EXISTS auto_routed")
+	assert.Contains(t, allStatements, "ADD COLUMN IF NOT EXISTS iself_email")
+	assert.Contains(t, allStatements, "ADD COLUMN IF NOT EXISTS request_params")
 }
 
 func TestClickHouseLogCreateTableSQL(t *testing.T) {
-	withoutTTL := clickHouseLogCreateTableSQL(0)
-	assert.Contains(t, withoutTTL, "CREATE TABLE IF NOT EXISTS logs")
-	assert.Contains(t, withoutTTL, "ENGINE = MergeTree()")
-	assert.Contains(t, withoutTTL, "PARTITION BY toYYYYMM(toDateTime(created_at))")
-	assert.Contains(t, withoutTTL, "ORDER BY (created_at, request_id)")
-	assert.Contains(t, withoutTTL, "fast_mode UInt8 DEFAULT 0")
-	assert.Contains(t, withoutTTL, "auto_routed UInt8 DEFAULT 0")
-	assert.NotContains(t, withoutTTL, "TTL ")
-
-	withTTL := clickHouseLogCreateTableSQL(30)
-	assert.Contains(t, withTTL, "ORDER BY (created_at, request_id)")
-	assert.Contains(t, withTTL, "TTL toDateTime(created_at) + INTERVAL 30 DAY DELETE")
-}
-
-func TestClickHouseCreateTableHasTTL(t *testing.T) {
-	assert.True(t, clickHouseCreateTableHasTTL("CREATE TABLE logs (...)\nTTL toDateTime(created_at) + INTERVAL 30 DAY DELETE"))
-	assert.True(t, clickHouseCreateTableHasTTL("CREATE TABLE logs (...) TTL toDateTime(created_at)"))
-	assert.False(t, clickHouseCreateTableHasTTL("CREATE TABLE logs (...)\nORDER BY (created_at, request_id)"))
+	ddl := clickHouseLogCreateTableSQL()
+	assert.Contains(t, ddl, "CREATE TABLE IF NOT EXISTS logs")
+	assert.Contains(t, ddl, "ENGINE = MergeTree()")
+	assert.Contains(t, ddl, "PARTITION BY toYYYYMM(toDateTime(created_at))")
+	assert.Contains(t, ddl, "ORDER BY (created_at, request_id)")
+	assert.Contains(t, ddl, "fast_mode UInt8 DEFAULT 0")
+	assert.Contains(t, ddl, "auto_routed UInt8 DEFAULT 0")
+	assert.NotContains(t, ddl, "TTL ")
 }
 
 func TestClickHouseLogOrder(t *testing.T) {
@@ -151,7 +155,7 @@ func TestClickHouseTelemetryCreateTableSQLCoversEveryColumn(t *testing.T) {
 		name   string
 		table  string
 		entity any
-		ddl    func(ttlDays int) string
+		ddl    func() string
 	}{
 		{"capability gate events", "capability_gate_events", &CapabilityGateEvent{}, clickHouseCapabilityGateEventCreateTableSQL},
 		{"auto route logs", "auto_route_logs", &AutoRouteLog{}, clickHouseAutoRouteLogCreateTableSQL},
@@ -161,10 +165,9 @@ func TestClickHouseTelemetryCreateTableSQLCoversEveryColumn(t *testing.T) {
 			parsed, err := schema.Parse(tt.entity, &sync.Map{}, schema.NamingStrategy{})
 			require.NoError(t, err)
 
-			ddl := tt.ddl(30)
+			ddl := tt.ddl()
 			assert.Contains(t, ddl, "CREATE TABLE IF NOT EXISTS "+tt.table)
-			assert.Contains(t, ddl, "TTL toDateTime(created_at) + INTERVAL 30 DAY DELETE")
-			assert.NotContains(t, tt.ddl(0), "TTL ")
+			assert.NotContains(t, ddl, "TTL ")
 			for _, field := range parsed.Fields {
 				assert.Regexp(t, "(?m)^\\s*`?"+field.DBName+"`? ", ddl, "column %s is missing from the ClickHouse DDL", field.DBName)
 			}

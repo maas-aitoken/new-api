@@ -369,7 +369,7 @@ Success_i = (Successes + 4) / (Samples + 4)
 
 日志写在日志库里（`LOG_SQL_DSN` 为空时与主库同库），由异步 writer 批量写入，不在请求路径上：队列写满时丢弃并计数，不会拖慢选路；写入失败只记日志。队列容量、每批条数、最长等待毫秒数、清理时每块删除的行数用 `AUTO_ROUTE_LOG_BUFFER_SIZE`（默认 4096）、`AUTO_ROUTE_LOG_BATCH_SIZE`（200）、`AUTO_ROUTE_LOG_FLUSH_MS`（2000）、`AUTO_ROUTE_LOG_CLEANUP_CHUNK`（1000）调整，范围见 `.env.example`。每行的完整过程（`detail`）不超过 32KB，超出时依次去掉比较候选带、整个路由结果。
 
-保留期是 `autorouter_setting.route_log_retention_days`（默认 7，范围 1-365）。非 ClickHouse 日志库由系统任务 `auto_route_log_cleanup` 每小时分块删除过期行；ClickHouse 日志库靠建表 TTL（`LOG_SQL_CLICKHOUSE_TTL_DAYS`）过期，不走这个任务，也不受保留天数影响。
+保留期是 `autorouter_setting.route_log_retention_days`（默认 7，范围 1-365）。非 ClickHouse 日志库由系统任务 `auto_route_log_cleanup` 每小时分块删除过期行；ClickHouse 日志库通过表 TTL 控制过期，应用建表和启动迁移不会创建、修改或删除 TTL，数据库优化与代码发版可独立进行；这里不走这个清理任务，也不受保留天数影响。
 
 读取接口：`GET /api/auto-route-logs/`（分页，按请求 id、用户、模型、结果、判断来源、任务类型和时间筛选，列表不带 `detail`）和 `GET /api/auto-route-logs/:request_id`（单条，带解码后的 `detail`；没有这条日志时 `data` 为 `null`，不是错误）。都需要管理员，访问令牌需要 `log:read`。
 
