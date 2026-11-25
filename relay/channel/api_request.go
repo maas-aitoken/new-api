@@ -1,6 +1,7 @@
 package channel
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -505,9 +506,9 @@ func doRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http
 	}
 
 	attemptCtx := c.Request.Context()
+	req = req.WithContext(attemptCtx)
 	otelRuntime := observability.FromContext(attemptCtx)
 	if otelRuntime != nil {
-		req = req.WithContext(attemptCtx)
 		otelRuntime.Inject(attemptCtx, req)
 	}
 	upstreamStart := time.Now()
@@ -515,7 +516,15 @@ func doRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http
 	resp, err := relayClient.Do(req)
 	attemptlog.NoteUpstream(c, upstreamStart, resp)
 	if err != nil {
-		logger.LogError(c, common2.LogText("do request failed: %s", err.Error()))
+		logMessage := common2.LocalLogPreview(common2.MaskSensitiveInfo(err.Error(), common2.UpstreamAddresses(c)...))
+		if errors.Is(err, context.Canceled) || (attemptCtx.Err() != nil && errors.Is(err, context.DeadlineExceeded)) {
+			logger.LogInfo(c, common2.LogText("client request cancelled: %s", logMessage))
+			return nil, types.NewErrorWithStatusCode(err, types.ErrorCodeClientCancelled, 499,
+				types.ErrOptionWithHideErrMsg("client request cancelled"),
+				types.ErrOptionWithSkipRetry(),
+				types.ErrOptionWithNoRecordErrorLog())
+		}
+		logger.LogError(c, common2.LogText("do request failed: %s", logMessage))
 		return nil, types.NewError(err, types.ErrorCodeDoRequestFailed, types.ErrOptionWithHideErrMsg("upstream error: do request failed"))
 	}
 	if resp == nil {

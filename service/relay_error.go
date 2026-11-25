@@ -1,6 +1,8 @@
 package service
 
 import (
+	"context"
+	"errors"
 	"sync/atomic"
 	"time"
 
@@ -21,6 +23,13 @@ import (
 func DecideRelayRetry(c *gin.Context, err *types.NewAPIError, retryTimes int) PolicyDecision {
 	if err == nil {
 		return PolicyDecision{Action: "stop", Reason: "request_completed", Source: "system"}
+	}
+	clientCancelled := err.GetErrorCode() == types.ErrorCodeClientCancelled || errors.Is(err, context.Canceled)
+	if !clientCancelled && c != nil && c.Request != nil {
+		clientCancelled = c.Request.Context().Err() != nil
+	}
+	if clientCancelled {
+		return PolicyDecision{Action: "stop", Reason: "client_cancelled", Source: "client"}
 	}
 	// 客户端已经收到响应正文时不能再重试：下一次尝试会接着写进同一个响应，
 	// Claude 客户端会收到第二个 message_start，OpenAI 客户端会把两次回答拼成一段。
@@ -97,6 +106,10 @@ func RefusalRetryApplies(c *gin.Context) bool {
 
 func ProcessChannelError(c *gin.Context, channelError types.ChannelError, err *types.NewAPIError, relayInfo *relaycommon.RelayInfo) {
 	if err == nil {
+		return
+	}
+	// 调用方取消既不是渠道故障，也不是渠道恢复信号：失败计数和连续失败序列都保持不变。
+	if err.GetErrorCode() == types.ErrorCodeClientCancelled || errors.Is(err, context.Canceled) {
 		return
 	}
 	upstreamURLs := common.UpstreamAddresses(c)

@@ -216,6 +216,14 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		defer stopKeepAlive()
 	}
 
+	// 调用方在进入中继前就已离开时，不再做预扣、选路或上游调用。
+	if requestErr := c.Request.Context().Err(); requestErr != nil {
+		newAPIError = types.NewErrorWithStatusCode(requestErr, types.ErrorCodeClientCancelled, 499,
+			types.ErrOptionWithHideErrMsg("client request cancelled"),
+			types.ErrOptionWithSkipRetry(),
+			types.ErrOptionWithNoRecordErrorLog())
+		return
+	}
 	if newAPIError = relay.PrepareRequestBilling(c, relayInfo); newAPIError != nil {
 		return
 	}
@@ -251,6 +259,17 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 	autoRetries := 0
 
 	for ; retryParam.GetRetry() <= common.RetryTimes || common.GetContextKeyBool(c, constant.ContextKeyAutoRouted); retryParam.IncreaseRetry() {
+		// 取消可能发生在预扣之后或两次尝试之间。已有错误保留给最终退款和日志；
+		// 尚无错误时补上取消错误，确保预扣按失败请求退回。
+		if requestErr := c.Request.Context().Err(); requestErr != nil {
+			if newAPIError == nil {
+				newAPIError = types.NewErrorWithStatusCode(requestErr, types.ErrorCodeClientCancelled, 499,
+					types.ErrOptionWithHideErrMsg("client request cancelled"),
+					types.ErrOptionWithSkipRetry(),
+					types.ErrOptionWithNoRecordErrorLog())
+			}
+			break
+		}
 		relayInfo.StreamStatus = nil
 		relayInfo.PerformanceBusinessRejection = false
 		// 拒答原因按尝试记：上一次被改判的拒答不能带进这次成功的消费日志。
@@ -427,7 +446,9 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			if retryParam.GetRetry() > 0 {
 				service.RememberAutoRetrySuccess(c)
 			}
-			service.ResetChannelModelFailureConsecutive(channel.Id, relayInfo.OriginModelName)
+			if outcome != attemptlog.OutcomeClientCancelled {
+				service.ResetChannelModelFailureConsecutive(channel.Id, relayInfo.OriginModelName)
+			}
 			service.MarkRequestPolicySuccess(c, relayInfo.StreamStatus)
 			relayInfo.LastError = nil
 			// 「仅 auto」下锁定模型的请求拒答照原样透传（200、照常计费）；补一条错误日志留痕。

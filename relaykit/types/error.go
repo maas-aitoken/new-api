@@ -65,6 +65,7 @@ const (
 	ErrorCodeConvertRequestFailed  ErrorCode = "convert_request_failed"
 	ErrorCodeAccessDenied          ErrorCode = "access_denied"
 	ErrorCodeRateLimitTokenRPM     ErrorCode = "rate_limit:token_rpm"
+	ErrorCodeClientCancelled       ErrorCode = "client_cancelled"
 
 	// request error
 	ErrorCodeBadRequestBody ErrorCode = "bad_request_body"
@@ -93,7 +94,10 @@ const (
 )
 
 type NewAPIError struct {
+	// Err carries the public message. cause retains the original error for
+	// errors.Is/errors.As when the public message is deliberately hidden.
 	Err                error
+	cause              error
 	RelayError         any
 	skipRetry          bool
 	recordErrorLog     *bool
@@ -128,6 +132,9 @@ func (e *NewAPIError) SetMappedStatusCode(code int) {
 func (e *NewAPIError) Unwrap() error {
 	if e == nil {
 		return nil
+	}
+	if e.cause != nil {
+		return e.cause
 	}
 	return e.Err
 }
@@ -430,8 +437,8 @@ func ErrOptionWithStatusCode(statusCode int) NewAPIErrorOptions {
 
 func ErrOptionWithHideErrMsg(replaceStr string) NewAPIErrorOptions {
 	return func(e *NewAPIError) {
-		if kitutil.Debug.Load() {
-			fmt.Printf("ErrOptionWithHideErrMsg: %s, origin error: %s", replaceStr, e.Err)
+		if e.cause == nil {
+			e.cause = e.Err
 		}
 		e.Err = errors.New(replaceStr)
 	}
