@@ -1,8 +1,10 @@
 package autorouter
 
 import (
+	"cmp"
 	"math"
 	"slices"
+	"strings"
 )
 
 // 偏好决定一次选模型愿意为价格让出多少榜单分，各偏好的权重由平台设置。
@@ -23,13 +25,15 @@ var SelectablePreferences = append(slices.Clone(Preferences), PreferenceAdaptive
 // PreferenceWeights holds each fixed preference's configured scoring strengths.
 type PreferenceWeights map[string]DimensionWeights
 
-// DimensionWeights weights the four [0,1] dimensions. Temperature controls
-// softmax spread; zero selects the highest utility deterministically.
+// DimensionWeights stores the preference strengths used to derive the
+// deterministic utility formula. Temperature is retained for compatibility.
 type DimensionWeights struct {
-	Quality     float64 `json:"quality"`
-	Cost        float64 `json:"cost"`
-	Capacity    float64 `json:"capacity"`
-	Success     float64 `json:"success"`
+	Quality  float64 `json:"quality"`
+	Cost     float64 `json:"cost"`
+	Capacity float64 `json:"capacity"`
+	Success  float64 `json:"success"`
+	// Temperature is retained for settings and old route logs. Model selection
+	// is deterministic and does not use it.
 	Temperature float64 `json:"temperature"`
 }
 
@@ -153,9 +157,6 @@ type Candidates struct {
 	Costs func(models []string, effort string, ignoreClientReasoning bool) (costs map[string]Cost, preview *PreviewOutcome)
 	// Metrics returns shared sliding-window model traffic. Nil means no live signal.
 	Metrics func(models []string) map[string]MetricSample
-	// Random returns a value in [0, 1). Nil uses the highest weighted score, for
-	// deterministic callers and tests; production uses it for softmax sampling.
-	Random func() float64
 }
 
 // Cost 是一个候选模型的比较成本。只要有这一项，Price 就以它为准。
@@ -205,18 +206,20 @@ type Candidate struct {
 	Score float64 `json:"score"`
 	Price float64 `json:"price"`
 	// CostMultiplier preserves the channel's price multiplier in the compared cost.
-	CostMultiplier float64 `json:"cost_multiplier,omitempty"`
-	Cost           float64 `json:"cost,omitempty"`
-	ChannelID      int     `json:"channel_id,omitempty"`
-	Channels       int     `json:"channels,omitempty"`
-	CostSource     string  `json:"cost_source,omitempty"`
-	Preview        string  `json:"preview,omitempty"`
-	CostScore      float64 `json:"cost_score"`
-	Capacity       float64 `json:"capacity"`
-	Success        float64 `json:"success"`
-	Samples        int64   `json:"samples"`
-	Utility        float64 `json:"utility"`
-	Probability    float64 `json:"probability"`
+	CostMultiplier  float64 `json:"cost_multiplier,omitempty"`
+	Cost            float64 `json:"cost,omitempty"`
+	ChannelID       int     `json:"channel_id,omitempty"`
+	Channels        int     `json:"channels,omitempty"`
+	CostSource      string  `json:"cost_source,omitempty"`
+	Preview         string  `json:"preview,omitempty"`
+	CostPenalty     float64 `json:"cost_penalty"`
+	CapacityPenalty float64 `json:"capacity_penalty,omitempty"`
+	SuccessPenalty  float64 `json:"success_penalty,omitempty"`
+	Capacity        float64 `json:"capacity"`
+	Success         float64 `json:"success"`
+	Samples         int64   `json:"samples"`
+	Utility         float64 `json:"utility"`
+	Probability     float64 `json:"probability,omitempty"`
 }
 
 // compared 是这个候选参与比较的价格：估算过倍率时是平台成本，否则是用户价。
@@ -227,11 +230,15 @@ func (c Candidate) compared() float64 {
 	return c.Price
 }
 
-// Pick is the scored comparison and sampled choice among all servable models.
+// Pick is the scored comparison and deterministic choice among all servable models.
 type Pick struct {
-	Chosen     string           `json:"chosen"`
-	Band       []Candidate      `json:"band"`
-	Dimensions DimensionWeights `json:"dimensions"`
+	Chosen          string           `json:"chosen"`
+	Band            []Candidate      `json:"band"`
+	Dimensions      DimensionWeights `json:"dimensions"`
+	QualityScale    float64          `json:"quality_scale"`
+	CostScale       float64          `json:"cost_scale"`
+	CapacityPenalty float64          `json:"capacity_penalty"`
+	SuccessPenalty  float64          `json:"success_penalty"`
 	// Preview 是这次比较问调度器预览的结果；没配调度器、或没有估算比较成本时为 nil。
 	Preview *PreviewOutcome `json:"preview,omitempty"`
 
@@ -249,15 +256,51 @@ func (p *Pick) skip(model string, score float64, reason string) {
 	p.skipped = append(p.skipped, Skipped{Model: model, Score: score, Reason: reason})
 }
 
-// pickModels scores every servable, scored model and samples by softmax. Live
-// traffic never excludes a model: complete unavailability remains the hard gate.
-func pickModels(models []string, scores map[string]float64, weights DimensionWeights, overridable func(string) bool, price func(string) (float64, bool), costs func([]string) (map[string]Cost, *PreviewOutcome), metrics func([]string) map[string]MetricSample, random func() float64, why func(string) string) (Pick, bool) {
+const (
+	defaultCostScale       = 8.5
+	capabilityCostScale    = 40
+	costFirstCostScale     = 0.5
+	costLogPenaltyWeight   = 0.02
+	defaultCapacityPenalty = 0.04 * math.Ln2 / 0.25
+	defaultSuccessPenalty  = 0.04 * math.Ln2 / 0.10
+	defaultRuntimeWeight   = 0.2
+)
+
+// costScale maps the configured cost strength to a fixed price tolerance. The
+// logarithmic interpolation keeps the tolerance between the built-in anchors
+// of 40, 8.5, and 0.5 dollars per million tokens.
+func costScale(costWeight float64) float64 {
+	costWeight = min(max(costWeight, 0), 0.4)
+	if costWeight <= 0.2 {
+		fraction := costWeight / 0.2
+		return math.Exp(math.Log(capabilityCostScale) + fraction*(math.Log(defaultCostScale)-math.Log(capabilityCostScale)))
+	}
+	fraction := (costWeight - 0.2) / 0.2
+	return math.Exp(math.Log(defaultCostScale) + fraction*(math.Log(costFirstCostScale)-math.Log(defaultCostScale)))
+}
+
+// modelCostPenalty uses an absolute cost tolerance. The candidate set does
+// not affect this penalty, so adding a cheaper model cannot rewrite existing
+// models' scores.
+func modelCostPenalty(cost, scale float64) float64 {
+	ratio := cost / scale
+	return ratio*ratio + costLogPenaltyWeight*math.Log2(1+cost)
+}
+
+// pickModels scores every servable, scored model and deterministically chooses
+// the highest utility. Live traffic never excludes a model: complete
+// unavailability remains the hard gate.
+func pickModels(models []string, scores map[string]float64, weights DimensionWeights, overridable func(string) bool, price func(string) (float64, bool), costs func([]string) (map[string]Cost, *PreviewOutcome), metrics func([]string) map[string]MetricSample, why func(string) string) (Pick, bool) {
 	var pick Pick
 	weights = weights.Normalized()
+	weights.Temperature = 0
 	pick.Dimensions = weights
-	if weights.Temperature < 0 || math.IsNaN(weights.Temperature) {
-		return pick, false
-	}
+	// The built-in policies reserve 0.4 for runtime signals. Calibrate custom
+	// quality strengths against the built-in quality share at this cost strength.
+	pick.QualityScale = weights.Quality / (0.6 - min(weights.Cost, 0.4))
+	pick.CostScale = costScale(weights.Cost)
+	pick.CapacityPenalty = defaultCapacityPenalty * weights.Capacity / defaultRuntimeWeight
+	pick.SuccessPenalty = defaultSuccessPenalty * weights.Success / defaultRuntimeWeight
 	names := make([]string, 0, len(models))
 	for _, model := range models {
 		score, found := scores[model]
@@ -311,22 +354,17 @@ func pickModels(models []string, scores map[string]float64, weights DimensionWei
 		}
 	}
 
-	floor := math.Inf(1)
-	for _, candidate := range pick.Band {
-		if cost := candidate.compared(); cost > 0 {
-			floor = min(floor, cost)
-		}
-	}
 	samples := map[string]MetricSample{}
 	if metrics != nil {
 		samples = metrics(names)
 	}
-	for i := range pick.Band {
-		candidate := &pick.Band[i]
+	scored := pick.Band[:0]
+	for _, candidate := range pick.Band {
 		cost := candidate.compared()
-		candidate.CostScore = 1
-		if cost > floor && floor > 0 && !math.IsInf(floor, 1) {
-			candidate.CostScore = max(0, 1-math.Log(cost/floor)/math.Log(10))
+		candidate.CostPenalty = modelCostPenalty(cost, pick.CostScale)
+		if cost < 0 || math.IsNaN(candidate.CostPenalty) || math.IsInf(candidate.CostPenalty, 0) {
+			pick.skip(candidate.Model, candidate.Score, ReasonInvalidCost)
+			continue
 		}
 		candidate.Capacity = 1
 		sample := samples[candidate.Model]
@@ -337,49 +375,24 @@ func pickModels(models []string, scores map[string]float64, weights DimensionWei
 		// Four prior successes keep a new model competitive without overwhelming
 		// measured failure once enough outcomes have accumulated.
 		candidate.Success = (float64(sample.Successes) + 4) / (float64(candidate.Samples) + 4)
-		candidate.Utility = weights.Quality*candidate.Score + weights.Cost*candidate.CostScore + weights.Capacity*candidate.Capacity + weights.Success*candidate.Success
+		candidate.CapacityPenalty = pick.CapacityPenalty * (1 - candidate.Capacity)
+		candidate.SuccessPenalty = pick.SuccessPenalty * (1 - candidate.Success)
+		candidate.Utility = pick.QualityScale*candidate.Score - candidate.CostPenalty - candidate.CapacityPenalty - candidate.SuccessPenalty
+		scored = append(scored, candidate)
 	}
-
-	maxUtility := pick.Band[0].Utility
-	for _, candidate := range pick.Band[1:] {
-		maxUtility = max(maxUtility, candidate.Utility)
+	pick.Band = scored
+	if len(pick.Band) == 0 {
+		return pick, false
 	}
-	totalProbability := 0.0
-	for i := range pick.Band {
-		pick.Band[i].Probability = math.Exp((pick.Band[i].Utility - maxUtility) / weights.Temperature)
-		totalProbability += pick.Band[i].Probability
-	}
-	chosen := 0
-	if weights.Temperature == 0 {
-		for i, candidate := range pick.Band {
-			pick.Band[i].Probability = 0
-			if candidate.Utility > pick.Band[chosen].Utility {
-				chosen = i
-			}
+	slices.SortStableFunc(pick.Band, func(a, b Candidate) int {
+		if order := cmp.Compare(b.Utility, a.Utility); order != 0 {
+			return order
 		}
-		pick.Band[chosen].Probability = 1
-		pick.Chosen = pick.Band[chosen].Model
-		return pick, true
-	}
-	if random == nil {
-		for i := range pick.Band {
-			if pick.Band[i].Utility > pick.Band[chosen].Utility {
-				chosen = i
-			}
+		if order := cmp.Compare(a.compared(), b.compared()); order != 0 {
+			return order
 		}
-	} else {
-		draw := min(max(random(), 0), 1-math.SmallestNonzeroFloat64) * totalProbability
-		for i := range pick.Band {
-			draw -= math.Exp((pick.Band[i].Utility - maxUtility) / weights.Temperature)
-			if draw <= 0 {
-				chosen = i
-				break
-			}
-		}
-	}
-	for i := range pick.Band {
-		pick.Band[i].Probability /= totalProbability
-	}
-	pick.Chosen = pick.Band[chosen].Model
+		return strings.Compare(a.Model, b.Model)
+	})
+	pick.Chosen = pick.Band[0].Model
 	return pick, true
 }

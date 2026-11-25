@@ -1073,7 +1073,7 @@ func TestDistributeAutoPicksByQualityAndUserPrice(t *testing.T) {
 				common.SetContextKey(c, constant.ContextKeyTokenAutoPreference, autorouter.PreferenceCapability)
 			})
 		require.Equal(t, http.StatusNoContent, recorder.Code, recorder.Body.String())
-		assert.Equal(t, "opus-x", originalModel, "同样的候选和价格，能力优先的 key 不拿便宜的 sonnet-x 换分数")
+		assert.Equal(t, "sonnet-x", originalModel, "质量差距不足以覆盖成本差异时，能力优先也选成本更低的模型")
 	})
 
 	t.Run("the fallback never picks an unpriced model either", func(t *testing.T) {
@@ -1176,7 +1176,7 @@ func TestDistributeAutoComparesThePlatformCost(t *testing.T) {
 		assert.Equal(t, "pick-x", band["pick-x"].Model)
 		assert.Equal(t, 8.0, band["pick-x"].Price)
 		assert.Equal(t, 2.0, band["pick-x"].Cost)
-		assert.Equal(t, 1.0, band["pick-x"].CostScore)
+		assert.Less(t, band["pick-x"].CostPenalty, band["alt-y"].CostPenalty)
 		assert.Equal(t, autorouter.CostSourceExpected, band["pick-x"].CostSource)
 		assert.Equal(t, 1.0, band["alt-y"].CostMultiplier, "an unconfigured channel counts as 1")
 	})
@@ -1321,7 +1321,7 @@ func TestDistributeAutoAsksTheSchedulerPreviewWhenItDecides(t *testing.T) {
 		assert.Equal(t, "pick-x", pick.Model)
 		assert.Equal(t, 8.0, pick.Price)
 		assert.Equal(t, 2.0, pick.Cost)
-		assert.Equal(t, 1.0, pick.CostScore)
+		assert.Positive(t, pick.CostPenalty)
 		assert.Equal(t, autorouter.CostSourceScheduler, pick.CostSource)
 		assert.Equal(t, "pick-x", originalModel)
 		assert.Equal(t, []int{1, 2}, allowed["pick-x"], "the preview gets the same channel scope as the real schedule")

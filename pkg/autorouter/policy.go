@@ -136,6 +136,7 @@ func SelectRoute(decision *Decision, previous *Route, policy Policy, candidates 
 		policy.DimensionWeights = mode.Weights
 		mode.Weights = mode.Weights.Normalized()
 		mode.Weight = mode.Weights.Cost
+		mode.CostScale = costScale(mode.Weights.Cost)
 		trace.Mode = &mode
 	}
 	available, overridable := candidates.Available, candidates.Overridable
@@ -204,8 +205,9 @@ func SelectRoute(decision *Decision, previous *Route, policy Policy, candidates 
 }
 
 // choose picks a model from one ranking's list. With scores and prices it
-// compares the four dimensions under the policy's weights; otherwise, or when no
-// scored model is servable, it takes the first available model in list order.
+// compares every servable candidate with the deterministic utility formula;
+// otherwise, or when no scored model is servable, it takes the first available
+// model in list order.
 // picked is set only for the comparison. Every call adds a step to trace.
 // ignoreClientReasoning 表示 available 撇开了客户端的推理字段（档位由判断定下时走 overridable），
 // effort 是这一步的期望档位，两者一起交给 Candidates.Costs，让主机按同一口径找出服务请求的模型名和渠道。
@@ -221,7 +223,7 @@ func (p Policy) choose(profile string, models []string, available func(string) b
 				return candidates.Costs(names, effort, ignoreClientReasoning)
 			}
 		}
-		pick, ok := pickModels(models, scores, p.DimensionWeights, servable, candidates.Price, costs, candidates.Metrics, candidates.Random, candidates.Why)
+		pick, ok := pickModels(models, scores, p.DimensionWeights, servable, candidates.Price, costs, candidates.Metrics, candidates.Why)
 		step.Skipped, step.SkippedMore = pick.skipped, pick.skippedMore
 		if ok {
 			picked, model, found = &pick, pick.Chosen, true

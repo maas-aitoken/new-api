@@ -137,7 +137,7 @@ func pickForTest(models []string, scores map[string]float64, weight float64, ava
 	if len(why) > 0 {
 		reason = why[0]
 	}
-	return pickModels(models, scores, DimensionWeights{Quality: 1 - weight, Cost: weight, Temperature: 1}, available, price, costs, nil, nil, reason)
+	return pickModels(models, scores, DimensionWeights{Quality: 1 - weight, Cost: weight, Temperature: 1}, available, price, costs, nil, reason)
 }
 
 // pickEntry 描述质量/成本选择里的一个候选。
@@ -176,52 +176,29 @@ func runPick(entries []pickEntry, weight float64) (Pick, bool, []string) {
 func TestPickModelsScoresAllDimensionsAndSamples(t *testing.T) {
 	models := []string{"busy", "idle"}
 	scores := map[string]float64{"busy": 0.9, "idle": 0.9}
-	price := func(string) (float64, bool) { return 1, true }
 	metrics := func([]string) map[string]MetricSample {
-		return map[string]MetricSample{
-			"busy": {Successes: 0, Failures: 100},
-			"idle": {Successes: 100},
-		}
+		return map[string]MetricSample{"busy": {Failures: 100}, "idle": {Successes: 100}}
 	}
 	costs := func([]string) (map[string]Cost, *PreviewOutcome) {
 		return map[string]Cost{
-			"busy": {Capacity: 0.2, CapacityKnown: true},
-			"idle": {Capacity: 0.8, CapacityKnown: true},
+			"busy": {Price: 1, Capacity: 0.2, CapacityKnown: true},
+			"idle": {Price: 1, Capacity: 0.8, CapacityKnown: true},
 		}, nil
 	}
-	pick, ok := pickModels(models, scores, DimensionWeights{Quality: 0.4, Cost: 0.1, Capacity: 0.2, Success: 0.3, Temperature: 0.1},
-		func(string) bool { return true }, price, costs, metrics, func() float64 { return 0 }, nil)
+	weights := DimensionWeights{Quality: 0.4, Cost: 0.2, Capacity: 0.2, Success: 0.2, Temperature: 0.1}
+	pick, ok := pickModels(models, scores, weights, func(string) bool { return true },
+		func(string) (float64, bool) { return 1, true }, costs, metrics, nil)
 	require.True(t, ok)
 	require.Len(t, pick.Band, 2)
-	busy, idle := pick.Band[0], pick.Band[1]
-	assert.InDelta(t, 0.2, busy.Capacity, 1e-9)
+	assert.Equal(t, "idle", pick.Chosen)
+	idle, busy := pick.Band[0], pick.Band[1]
 	assert.InDelta(t, 0.8, idle.Capacity, 1e-9)
+	assert.InDelta(t, 0.2, busy.Capacity, 1e-9)
+	assert.Equal(t, 1.0, idle.Success)
 	assert.InDelta(t, 4.0/104, busy.Success, 1e-9)
-	assert.InDelta(t, 104.0/104, idle.Success, 1e-9)
 	assert.Equal(t, int64(100), busy.Samples)
-	assert.InDelta(t, 0.4*busy.Score+0.1+0.2*busy.Capacity+0.3*busy.Success, busy.Utility, 1e-9)
-	assert.InDelta(t, 0.4*idle.Score+0.1+0.2*idle.Capacity+0.3*idle.Success, idle.Utility, 1e-9)
-	assert.InDelta(t, 1, busy.Probability+idle.Probability, 1e-9)
-	assert.Equal(t, "busy", pick.Chosen, "draw zero samples the first candidate")
-
-	pick, ok = pickModels(models, scores, DimensionWeights{Quality: 1, Temperature: 0.1},
-		func(string) bool { return true }, price, nil, metrics, func() float64 { return 0.999 }, nil)
-	require.True(t, ok)
-	assert.Equal(t, "idle", pick.Chosen, "the random draw samples the lower-probability candidate too")
-
-	pick, ok = pickModels(models, scores, DimensionWeights{Quality: 1, Temperature: 0.1},
-		func(string) bool { return true }, price, nil, metrics, nil, nil)
-	require.True(t, ok)
-	assert.Equal(t, "busy", pick.Chosen, "nil random chooses the highest utility deterministically")
-
-	pick, ok = pickModels([]string{"busy", "idle"}, scores, DimensionWeights{Quality: 1},
-		func(string) bool { return true }, price, nil, metrics, func() float64 { return 0 }, nil)
-	require.True(t, ok)
-	assert.Equal(t, "busy", pick.Chosen, "zero temperature selects the highest utility without exploration")
-	assert.Equal(t, map[string]float64{"busy": 1, "idle": 0}, map[string]float64{
-		pick.Band[0].Model: pick.Band[0].Probability,
-		pick.Band[1].Model: pick.Band[1].Probability,
-	})
+	assert.InDelta(t, 0.8439784598, idle.Utility, 1e-9)
+	assert.InDelta(t, 0.5108412610, busy.Utility, 1e-9)
 }
 
 func TestAggregateCapacityUsesWeightedLimitsAndBottleneck(t *testing.T) {
@@ -236,47 +213,97 @@ func TestAggregateCapacityUsesWeightedLimitsAndBottleneck(t *testing.T) {
 }
 
 func TestPickModelsNormalizesFourDimensionWeights(t *testing.T) {
-	models := []string{"quality", "cheap"}
-	scores := map[string]float64{"quality": 0.95, "cheap": 0.8}
-	price := func(model string) (float64, bool) {
-		if model == "cheap" {
-			return 1, true
-		}
-		return 10, true
-	}
-	weights := DimensionWeights{Quality: 0.8, Cost: 0.2, Temperature: 0.25}
-	pick, ok := pickModels(models, scores, weights, func(string) bool { return true }, price, nil, nil, nil, nil)
+	models := []string{"same-b", "same-a"}
+	scores := map[string]float64{"same-a": 0.8, "same-b": 0.8}
+	available := func(string) bool { return true }
+	price := func(string) (float64, bool) { return 1, true }
+	pick, ok := pickModels(models, scores, DimensionWeights{Quality: 0.8, Cost: 0.2, Temperature: 0.25}, available, price, nil, nil, nil)
 	require.True(t, ok)
-	assert.Equal(t, DimensionWeights{Quality: 0.8, Cost: 0.2, Temperature: 0.25}, pick.Dimensions)
-	assert.InDelta(t, 0.76, pick.Band[0].Utility, 1e-9)
-	assert.InDelta(t, 0.84, pick.Band[1].Utility, 1e-9)
-	assert.Equal(t, "cheap", pick.Chosen, "质量独立配置，不再由 1-cost 推导")
+	assert.Equal(t, DimensionWeights{Quality: 0.8, Cost: 0.2}, pick.Dimensions)
+	assert.Equal(t, "same-a", pick.Chosen)
 
-	scaled, ok := pickModels(models, scores, DimensionWeights{Quality: 8, Cost: 2, Temperature: 0.25}, func(string) bool { return true }, price, nil, nil, nil, nil)
+	slices.Reverse(models)
+	scaled, ok := pickModels(models, scores, DimensionWeights{Quality: 8, Cost: 2, Temperature: 1}, available, price, nil, nil, nil)
 	require.True(t, ok)
-	assert.Equal(t, pick, scaled, "四项整体缩放不改变选路，温度不参与归一化")
+	assert.Equal(t, pick, scaled)
+}
+
+func TestPickModelsUsesCandidateIndependentCostPenalty(t *testing.T) {
+	models := []string{"premium", "mid"}
+	scores := map[string]float64{"premium": 1, "mid": 0.9828, "budget": 0.70}
+	prices := map[string]float64{"premium": 8, "mid": 4, "budget": 0.1}
+	available := func(string) bool { return true }
+	price := func(model string) (float64, bool) { return prices[model], true }
+
+	for _, tc := range []struct {
+		name    string
+		weights DimensionWeights
+		want    string
+	}{
+		{"capability", DimensionWeights{Quality: 0.6, Capacity: 0.2, Success: 0.2}, "mid"},
+		{"balanced", DimensionWeights{Quality: 0.4, Cost: 0.2, Capacity: 0.2, Success: 0.2}, "mid"},
+		{"cost", DimensionWeights{Quality: 0.2, Cost: 0.4, Capacity: 0.2, Success: 0.2}, "budget"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pick, ok := pickModels(models, scores, tc.weights, available, price, nil, nil, nil)
+			require.True(t, ok)
+			assert.Equal(t, "mid", pick.Chosen)
+
+			expanded, ok := pickModels(append(slices.Clone(models), "budget"), scores, tc.weights, available, price, nil, nil, nil)
+			require.True(t, ok)
+			require.Len(t, expanded.Band, 3)
+			assert.Equal(t, tc.want, expanded.Chosen)
+			for _, scored := range pick.Band {
+				assert.Contains(t, expanded.Band, scored)
+			}
+		})
+	}
 }
 
 func TestPickModelsNormalizesCost(t *testing.T) {
 	models := []string{"free", "cheap", "mid", "dear"}
-	scores := map[string]float64{"dear": 0.9, "mid": 0.9, "cheap": 0.9, "free": 0.9}
-	prices := map[string]float64{"dear": 100, "mid": 10, "cheap": 1, "free": 0}
-	pick, ok := pickModels(models, scores, DimensionWeights{Cost: 1, Temperature: 0.1}, func(string) bool { return true },
-		func(model string) (float64, bool) { return prices[model], true }, nil, nil, nil, nil)
+	scores := map[string]float64{"free": 0.9, "cheap": 0.9, "mid": 0.9, "dear": 0.9}
+	prices := map[string]float64{"free": 0, "cheap": 1, "mid": 10, "dear": 100}
+	pick, ok := pickModels(models, scores, DimensionWeights{Cost: 1}, func(string) bool { return true }, func(model string) (float64, bool) { return prices[model], true }, nil, nil, nil)
 	require.True(t, ok)
-	assert.InDelta(t, 1, pick.Band[0].CostScore, 1e-9)
-	assert.InDelta(t, 1, pick.Band[1].CostScore, 1e-9)
-	assert.InDelta(t, 0, pick.Band[2].CostScore, 1e-9)
-	assert.InDelta(t, 0, pick.Band[3].CostScore, 1e-9)
-
-	pick, ok = pickModels(models, scores, DimensionWeights{Quality: 1, Temperature: 0.1}, func(string) bool { return true },
-		func(string) (float64, bool) { return 5, true }, nil, nil, nil, nil)
-	require.True(t, ok)
-	for _, candidate := range pick.Band {
-		assert.Equal(t, 1.0, candidate.CostScore)
+	require.Len(t, pick.Band, 4)
+	assert.Equal(t, "free", pick.Chosen)
+	assert.Zero(t, pick.Band[0].CostPenalty)
+	for i, candidate := range pick.Band {
 		assert.Equal(t, 1.0, candidate.Capacity)
 		assert.Equal(t, 1.0, candidate.Success)
+		if i > 0 {
+			assert.Greater(t, candidate.CostPenalty, pick.Band[i-1].CostPenalty)
+		}
 	}
+}
+
+func TestPickModelsSkipsOverflowingComparisonCosts(t *testing.T) {
+	models := []string{"normal", "overflowed-cost", "overflowed-penalty"}
+	scores := map[string]float64{"normal": 0.8, "overflowed-cost": 1, "overflowed-penalty": 1}
+	costs := func([]string) (map[string]Cost, *PreviewOutcome) {
+		return map[string]Cost{
+			"overflowed-cost":    {Price: 2, Multiplier: math.MaxFloat64},
+			"overflowed-penalty": {Price: 2, Multiplier: 1e200},
+		}, nil
+	}
+	pick, ok := pickForTest(models, scores, 0.2, func(string) bool { return true },
+		func(string) (float64, bool) { return 1, true }, costs)
+	require.True(t, ok)
+	assert.Equal(t, "normal", pick.Chosen)
+	require.Len(t, pick.Band, 1)
+	assert.Equal(t, "normal", pick.Band[0].Model)
+}
+
+func TestPickModelsKeepsQualityRelevantAboveDefaultCostWeight(t *testing.T) {
+	models := []string{"cheap", "strong"}
+	scores := map[string]float64{"cheap": 0.7, "strong": 0.95}
+	prices := map[string]float64{"cheap": 0.2, "strong": 0.21}
+	weights := DimensionWeights{Quality: 0.2, Cost: 0.6, Capacity: 0.1, Success: 0.1}
+	pick, ok := pickModels(models, scores, weights, func(string) bool { return true },
+		func(model string) (float64, bool) { return prices[model], true }, nil, nil, nil)
+	require.True(t, ok)
+	assert.Equal(t, "strong", pick.Chosen)
 }
 
 func TestPickModelsRejectsUnavailableAndUnscoredModels(t *testing.T) {
@@ -291,22 +318,16 @@ func TestPickModelsRejectsUnavailableAndUnscoredModels(t *testing.T) {
 }
 
 func TestPickModelsComparesAllScoredCandidates(t *testing.T) {
-	pick, ok, _ := runPick(pickLadder, 0.3)
+	pick, ok, probed := runPick(pickLadder, 0.3)
 	require.True(t, ok)
-	require.Len(t, pick.Band, 4)
-	assert.Equal(t, 0.3, pick.Dimensions.Cost)
-	assert.Equal(t, "weak", pick.Chosen)
-	wantCost := map[string]float64{"top": 0, "mid": 0, "cheap": 0, "weak": 1}
-	for _, candidate := range pick.Band {
-		assert.InDelta(t, wantCost[candidate.Model], candidate.CostScore, 1e-9, candidate.Model)
-		assert.InDelta(t, 0.7*candidate.Score+0.3*candidate.CostScore, candidate.Utility, 1e-9, candidate.Model)
+	assert.Len(t, probed, 4)
+	assert.Equal(t, pick.Band[0].Model, pick.Chosen)
+	for i := 1; i < len(pick.Band); i++ {
+		assert.GreaterOrEqual(t, pick.Band[i-1].Utility, pick.Band[i].Utility)
 	}
-	_, _, probed := runPick(pickLadder, 0.07)
-	assert.Len(t, probed, 4, "所有模型都参与四维比较，不再按质量候选带提前过滤")
 }
 
-// 比较的价格是"用户价 × 首次会落到的渠道的费用倍率"（平台成本）：倍率不同能翻转选择，
-// 全都一样时与只比用户价相同；带定下来之后一次取齐，带外的模型不问。
+// 比较成本等于用户价乘以首次落点的渠道费用倍率。一次估算所有可服务且有榜单分的候选。
 func TestPickByQualityCostComparesThePlatformCost(t *testing.T) {
 	scores := map[string]float64{"a": 0.95, "b": 0.94, "far": 0.50}
 	models := []string{"a", "b", "far"}
@@ -326,7 +347,7 @@ func TestPickByQualityCostComparesThePlatformCost(t *testing.T) {
 
 	pick, ok := pickForTest(models, scores, 0.07, all, price, nil, nil)
 	require.True(t, ok)
-	assert.Equal(t, "a", pick.Chosen, "较小成本权重下仍选质量更高的 a")
+	assert.Equal(t, "b", pick.Chosen, "统一效用会让成本惩罚参与能力档选择")
 
 	pick = pickWith(map[string]Cost{
 		"a": {Price: 10, Multiplier: 0.2, ChannelID: 7, Channels: 1, Source: CostSourceScheduler},
@@ -334,8 +355,7 @@ func TestPickByQualityCostComparesThePlatformCost(t *testing.T) {
 	})
 	assert.Equal(t, "a", pick.Chosen, "a costs the platform 2, b costs 3")
 	assert.Equal(t, [][]string{{"a", "b", "far"}}, asked, "one call for every scored candidate")
-	assert.Zero(t, pick.Band[0].CostScore)
-	assert.Zero(t, pick.Band[1].CostScore)
+	assert.Less(t, pick.Band[0].CostPenalty, pick.Band[1].CostPenalty)
 	assert.Nil(t, pick.Preview, "no scheduler, nothing to record")
 
 	// 调度器的预览结果原样记进 Pick；某个模型没用上它的答案时，原因跟着那个候选。
@@ -354,10 +374,10 @@ func TestPickByQualityCostComparesThePlatformCost(t *testing.T) {
 		return map[string]Cost{"a": {Price: 10, Multiplier: 0.2}, "b": {Price: 3, Multiplier: 1}}, nil
 	}, nil)
 	require.True(t, ok)
-	assert.Equal(t, "a", pick.Chosen, "成本权重为零时保留榜单顺序，质量相同不再由价格决定")
+	assert.Equal(t, "a", pick.Chosen, "成本强度为零时，相同质量仍优先选成本更低的模型")
 
 	pick = pickWith(map[string]Cost{"a": {Price: 10, Multiplier: 0.5}, "b": {Price: 3, Multiplier: 0.5}})
-	assert.Equal(t, "a", pick.Chosen, "相同倍率保持原质量成本比较")
+	assert.Equal(t, "b", pick.Chosen, "相同倍率时质量差距不足以覆盖成本差异")
 
 	pick = pickWith(map[string]Cost{"a": {Price: 10, Multiplier: 0.2}})
 	assert.Equal(t, "a", pick.Chosen, "a model without an estimate is compared by its user price")
@@ -407,13 +427,13 @@ func TestSelectRoutePicksByQualityAndPrice(t *testing.T) {
 		route, inherited, ok, pick := SelectRoute(decide("code.build", 1), nil, policy, priced, nil)
 		assert.True(t, ok)
 		assert.False(t, inherited)
-		assert.Equal(t, Route{Profile: "code.build", Model: "top", Effort: "medium"}, route)
+		assert.Equal(t, Route{Profile: "code.build", Model: "cheap", Effort: "medium"}, route)
 		require.NotNil(t, pick)
-		assert.Equal(t, "top", pick.Chosen)
+		assert.Equal(t, "cheap", pick.Chosen)
 		assert.Equal(t, 0.07, pick.Dimensions.Cost)
 	})
 	t.Run("the weight decides how far down the ladder the pick goes", func(t *testing.T) {
-		for weight, want := range map[float64]string{0: "top", 0.07: "top", 0.3: "weak"} {
+		for weight, want := range map[float64]string{0: "mid", 0.07: "cheap", 0.3: "weak"} {
 			withWeight := policy
 			withWeight.DimensionWeights = DimensionWeights{Quality: 1 - weight, Cost: weight}
 			route, _, ok, _ := SelectRoute(decide("code.build", 1), nil, withWeight, priced, nil)
@@ -465,7 +485,7 @@ func TestSelectRoutePicksByQualityAndPrice(t *testing.T) {
 		route, inherited, ok, pick := SelectRoute(nil, nil, policy, priced, nil)
 		assert.True(t, ok)
 		assert.True(t, inherited)
-		assert.Equal(t, Route{Model: "general-cheap", Effort: "medium"}, route)
+		assert.Equal(t, Route{Model: "general", Effort: "medium"}, route)
 		require.NotNil(t, pick)
 
 		capability := policy
@@ -479,7 +499,7 @@ func TestSelectRoutePicksByQualityAndPrice(t *testing.T) {
 		candidates.Overridable = func(model string) bool { return strings.HasPrefix(model, "general") }
 		route, _, ok, pick := SelectRoute(decide("code.build", 1), nil, policy, candidates, nil)
 		assert.True(t, ok)
-		assert.Equal(t, Route{Model: "general-cheap", Effort: "medium"}, route)
+		assert.Equal(t, Route{Model: "general", Effort: "medium"}, route)
 		require.NotNil(t, pick)
 	})
 	t.Run("unscored models are a fallback in list order", func(t *testing.T) {
@@ -511,10 +531,10 @@ func TestSelectRoutePicksByQualityAndPrice(t *testing.T) {
 			wantWeight                 float64
 		}{
 			{"certain cost", 0, 0, 1, "weak", 0.3},
-			{"certain capability", 1, 0, 0, "top", 0},
-			{"certain balanced", 0, 1, 0, "top", 0.07},
+			{"certain capability", 1, 0, 0, "mid", 0},
+			{"certain balanced", 0, 1, 0, "cheap", 0.07},
 			// 对称的不确定仍读均衡档；价格不再缩小候选集合。
-			{"an even split between capability and cost reads as balanced", 0.5, 0, 0.5, "top", 0.07},
+			{"an even split between capability and cost reads as balanced", 0.5, 0, 0.5, "cheap", 0.07},
 		}
 		for _, tt := range tests {
 			t.Run(tt.name, func(t *testing.T) {
@@ -545,7 +565,7 @@ func TestSelectRoutePicksByQualityAndPrice(t *testing.T) {
 		assert.InDelta(t, 1.0/6, pick.Dimensions.Cost, 1e-9)
 		assert.InDelta(t, 0.25, pick.Dimensions.Capacity, 1e-9)
 		assert.InDelta(t, 1.0/3, pick.Dimensions.Success, 1e-9)
-		assert.InDelta(t, 0.5, pick.Dimensions.Temperature, 1e-9)
+		assert.Zero(t, pick.Dimensions.Temperature)
 		assert.InDelta(t, 0.25, trace.Mode.Weights.Quality, 1e-9)
 		assert.InDelta(t, 1.0/6, trace.Mode.Weights.Cost, 1e-9)
 		assert.InDelta(t, 0.25, trace.Mode.Weights.Capacity, 1e-9)
@@ -555,7 +575,7 @@ func TestSelectRoutePicksByQualityAndPrice(t *testing.T) {
 		assert.Equal(t, pick.Dimensions.Cost, trace.Mode.Weights.Cost)
 		assert.Equal(t, pick.Dimensions.Capacity, trace.Mode.Weights.Capacity)
 		assert.Equal(t, pick.Dimensions.Success, trace.Mode.Weights.Success)
-		assert.Equal(t, pick.Dimensions.Temperature, trace.Mode.Weights.Temperature)
+		assert.Equal(t, 0.5, trace.Mode.Weights.Temperature)
 	})
 	t.Run("the mode answer counts even when the task type is unknown", func(t *testing.T) {
 		unknown := &Decision{TaskType: TaskTypeUnknown, TaskTypeProbability: 0.9, Difficulty: 1}
@@ -595,7 +615,7 @@ func TestSelectRoutePicksByQualityAndPrice(t *testing.T) {
 		trace := &Trace{}
 		route, _, ok, pick := SelectRoute(withMode(decide("code.build", 1), 0, 0, 1), nil, policy, priced, trace)
 		require.True(t, ok)
-		assert.Equal(t, "top", route.Model, "均衡档的权重 0.07 不受 mode 影响")
+		assert.Equal(t, "cheap", route.Model, "均衡档的效用公式不受 mode 影响")
 		require.NotNil(t, pick)
 		assert.Equal(t, 0.07, pick.Dimensions.Cost)
 		assert.Nil(t, trace.Mode)
@@ -730,11 +750,11 @@ func TestSelectRouteTrace(t *testing.T) {
 
 	t.Run("a leaf task type records the comparison and how difficulty became the effort", func(t *testing.T) {
 		route, trace := run(decide("code.build", 2, 1, 0.1), nil, candidates)
-		assert.Equal(t, Route{Profile: "code.build", Model: "mid", Effort: "medium"}, route)
+		assert.Equal(t, Route{Profile: "code.build", Model: "cheap", Effort: "medium"}, route)
 		assert.Equal(t, &Validity{Profiles: []string{"code.build", "code"}}, trace.Validity)
 		assert.Equal(t, &EffortTrace{Difficulty: 2, Base: "medium", Benefit: ptr(0.1), Threshold: 0.5}, trace.Effort)
 		assert.Nil(t, trace.Continuation, "没有上一轮路由就谈不上续用")
-		assert.Equal(t, []LadderStep{{Profile: "code.build", Models: 3, Outcome: OutcomeCompared, Model: "mid"}}, trace.Ladder)
+		assert.Equal(t, []LadderStep{{Profile: "code.build", Models: 3, Outcome: OutcomeCompared, Model: "cheap"}}, trace.Ladder)
 	})
 
 	t.Run("a task type without its own ranking falls to its class", func(t *testing.T) {
@@ -830,7 +850,7 @@ func TestSelectRouteTrace(t *testing.T) {
 			return ""
 		}
 		route, trace := run(decide("code.build", 2, 0.1, 0.1), previous, withoutTop)
-		assert.Equal(t, Route{Profile: "code.build", Model: "mid", Effort: "medium"}, route,
+		assert.Equal(t, Route{Profile: "code.build", Model: "cheap", Effort: "medium"}, route,
 			"榜单第一的 top 不能服务，跳过它后在全部可服务模型中比较")
 		assert.Equal(t, &Continuation{Previous: "top", TaskChange: 0.1, Threshold: 0.5}, trace.Continuation)
 		require.Len(t, trace.Ladder, 1)
@@ -841,7 +861,7 @@ func TestSelectRouteTrace(t *testing.T) {
 		perCall := candidates
 		perCall.Price = func(model string) (float64, bool) { return prices[model], model != "top" }
 		route, trace := run(decide("code.build", 2, 1, 0.1), nil, perCall)
-		assert.Equal(t, "mid", route.Model)
+		assert.Equal(t, "cheap", route.Model)
 		require.Len(t, trace.Ladder, 1)
 		assert.Equal(t, []Skipped{{Model: "top", Score: 0.97, Reason: ReasonPerCall}}, trace.Ladder[0].Skipped)
 	})

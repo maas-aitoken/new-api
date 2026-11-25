@@ -61,7 +61,6 @@ export type RoutingWeights = {
   cost: number
   capacity: number
   success: number
-  temperature: number
 }
 export type PreferenceWeights = Record<AutoPreference, RoutingWeights>
 /** What the platform default can be: a weighted preference, or deciding per request. */
@@ -89,21 +88,18 @@ export const DEFAULT_PREFERENCE_WEIGHTS: PreferenceWeights = {
     cost: 0,
     capacity: 0.2,
     success: 0.2,
-    temperature: 0.12,
   },
   balanced: {
     quality: 0.4,
     cost: 0.2,
     capacity: 0.2,
     success: 0.2,
-    temperature: 0.12,
   },
   cost: {
     quality: 0.2,
     cost: 0.4,
     capacity: 0.2,
     success: 0.2,
-    temperature: 0.12,
   },
 }
 
@@ -131,7 +127,6 @@ export function parsePreferenceWeights(raw: string): PreferenceWeights {
       'cost',
       'capacity',
       'success',
-      'temperature',
     ] as const) {
       const value = (entry as Record<string, unknown>)[dimension]
       if (typeof value === 'number' && Number.isFinite(value)) {

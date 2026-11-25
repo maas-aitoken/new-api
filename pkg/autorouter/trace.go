@@ -12,6 +12,7 @@ const (
 	ReasonGroupDisabled   = "group_disabled"   // the group has not enabled it
 	ReasonNoChannel       = "no_channel"       // no enabled channel serves it on this path
 	ReasonUnpriced        = "unpriced"         // no price is configured, so billing would fail
+	ReasonInvalidCost     = "invalid_cost"     // the estimated cost cannot be scored
 	ReasonCapability      = "capability"       // every channel's declared capabilities fall short of the request
 	ReasonPerCall         = "per_call"         // billed per call, which cannot be compared with per-token prices
 	ReasonClientReasoning = "client_reasoning" // the client's own reasoning settings rule it out
@@ -86,6 +87,9 @@ type ModeTrace struct {
 	Position float64 `json:"position"`
 	// Weight is the normalized cost weight this request used.
 	Weight float64 `json:"weight"`
+	// CostScale is the fixed cost tolerance used by the deterministic utility
+	// formula after the interpolated strengths are normalized.
+	CostScale float64 `json:"cost_scale,omitempty"`
 	// Weights are the normalized four dimensions and the independent temperature.
 	Weights DimensionWeights `json:"weights"`
 	// Tiers are the platform's raw configured strengths, before interpolation and normalization.

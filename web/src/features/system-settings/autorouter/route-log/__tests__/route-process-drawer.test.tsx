@@ -270,9 +270,9 @@ test('a comparison by platform cost shows the multiplier of each candidate, wher
   expect(screen.getByRole('columnheader', { name: 'Cost score' })).toBeVisible()
   expect(screen.getByRole('columnheader', { name: 'Capacity' })).toBeVisible()
   expect(screen.getByRole('columnheader', { name: 'Success' })).toBeVisible()
-  expect(
-    screen.getByRole('columnheader', { name: 'Probability' })
-  ).toBeVisible()
+  const probability = screen.getByRole('columnheader', { name: 'Probability' })
+  expect(probability).toBeVisible()
+  expect(probability.previousElementSibling).toHaveTextContent('Utility')
   expect(within(chosenRow).getByText('0.4000')).toBeVisible()
   expect(within(chosenRow).getByText('0.5000')).toBeVisible()
   expect(within(chosenRow).getByText('0.9800')).toBeVisible()
@@ -870,6 +870,39 @@ test('an adaptive request with no usable judgment says the balanced policy appli
   expect(
     screen.queryByText('Probability of each preference')
   ).not.toBeInTheDocument()
+})
+
+test('a deterministic adaptive comparison shows the cost penalty and utility ranking without sampling fields', async () => {
+  const log = adaptiveLog({
+    shares: { balanced: 1 },
+    position: 1,
+    cost_scale: 8.5,
+    weights: balancedWeights,
+    tiers,
+  })
+  const pick = log.detail?.result?.pick
+  if (!pick) throw new Error('the fixture has no comparison')
+  pick.cost_scale = 8.5
+  pick.quality_scale = 1.25
+  pick.band[0].cost_penalty = 0.0338
+  mockLog(log)
+  renderDrawer({})
+
+  expect(
+    await screen.findByRole('columnheader', { name: 'Cost penalty' })
+  ).toBeVisible()
+  expect(screen.getByRole('columnheader', { name: 'Utility' })).toBeVisible()
+  expect(
+    screen.getByText(/Quality scale 1\.2500.*\$8\.5 per million tokens/)
+  ).toBeVisible()
+  expect(
+    screen.getByText(/Capacity is the lowest remaining fraction/)
+  ).toBeVisible()
+  expect(screen.getByText('0.0338')).toBeVisible()
+  expect(
+    screen.queryByRole('columnheader', { name: 'Probability' })
+  ).not.toBeInTheDocument()
+  expect(screen.queryByText('Sampling temperature')).not.toBeInTheDocument()
 })
 
 const legacyPick = {

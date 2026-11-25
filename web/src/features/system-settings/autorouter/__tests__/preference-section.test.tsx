@@ -98,21 +98,21 @@ test.each(['balanced', 'adaptive'])(
     const user = userEvent.setup()
     renderSection(defaultPreference)
 
-    expect(screen.getAllByRole('spinbutton')).toHaveLength(5)
+    expect(screen.getAllByRole('spinbutton')).toHaveLength(4)
     await user.click(screen.getByRole('tab', { name: 'Capability first' }))
-    expect(screen.getAllByRole('spinbutton')).toHaveLength(5)
+    expect(screen.getAllByRole('spinbutton')).toHaveLength(4)
     expect(screen.getByRole('spinbutton', { name: 'Cost weight' })).toHaveValue(
       0
     )
     await user.click(screen.getByRole('tab', { name: 'Cost first' }))
-    expect(screen.getAllByRole('spinbutton')).toHaveLength(5)
+    expect(screen.getAllByRole('spinbutton')).toHaveLength(4)
     expect(screen.getByRole('spinbutton', { name: 'Cost weight' })).toHaveValue(
       0.4
     )
   }
 )
 
-test('a stored preference policy fills its five fields', async () => {
+test('a stored preference policy fills its four fields', async () => {
   const user = userEvent.setup()
   const settings = {
     'autorouter_setting.default_preference': 'balanced',
@@ -137,9 +137,6 @@ test('a stored preference policy fills its five fields', async () => {
   expect(
     screen.getByRole('spinbutton', { name: 'Success weight' })
   ).toHaveValue(0.3)
-  expect(
-    screen.getByRole('spinbutton', { name: 'Sampling temperature' })
-  ).toHaveValue(0)
   await user.click(screen.getByRole('tab', { name: 'Cost first' }))
   expect(screen.getByRole('spinbutton', { name: 'Cost weight' })).toHaveValue(
     0.4
@@ -156,17 +153,13 @@ test('editing one preference writes the complete policy for all preferences', as
       target: { value: '0.8' },
     }
   )
-  fireEvent.change(
-    screen.getByRole('spinbutton', { name: 'Sampling temperature' }),
-    { target: { value: '0.25' } }
-  )
   await user.click(screen.getByRole('button', { name: 'Save Changes' }))
 
   await waitFor(() => expect(api.put).toHaveBeenCalledTimes(1))
   expect(api.put).toHaveBeenCalledWith('/api/option/', {
     key: 'autorouter_setting.preference_weights',
     value:
-      '{"capability":{"quality":0.6,"cost":0,"capacity":0.2,"success":0.2,"temperature":0.12},"balanced":{"quality":0.8,"cost":0.2,"capacity":0.2,"success":0.2,"temperature":0.25},"cost":{"quality":0.2,"cost":0.4,"capacity":0.2,"success":0.2,"temperature":0.12}}',
+      '{"capability":{"quality":0.6,"cost":0,"capacity":0.2,"success":0.2},"balanced":{"quality":0.8,"cost":0.2,"capacity":0.2,"success":0.2},"cost":{"quality":0.2,"cost":0.4,"capacity":0.2,"success":0.2}}',
   })
 })
 

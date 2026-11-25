@@ -47,7 +47,6 @@ describe('parsePreferenceWeights', () => {
         ...DEFAULT_PREFERENCE_WEIGHTS.balanced,
         quality: 0.4,
         cost: 0.12,
-        temperature: 0,
       },
     })
   })
@@ -81,7 +80,7 @@ describe('parsePreferenceWeights', () => {
 test('serializePreferenceWeights writes every preference in a fixed order', () => {
   const weights = parsePreferenceWeights('{}')
   expect(serializePreferenceWeights(weights)).toBe(
-    '{"capability":{"quality":0.6,"cost":0,"capacity":0.2,"success":0.2,"temperature":0.12},"balanced":{"quality":0.4,"cost":0.2,"capacity":0.2,"success":0.2,"temperature":0.12},"cost":{"quality":0.2,"cost":0.4,"capacity":0.2,"success":0.2,"temperature":0.12}}'
+    '{"capability":{"quality":0.6,"cost":0,"capacity":0.2,"success":0.2},"balanced":{"quality":0.4,"cost":0.2,"capacity":0.2,"success":0.2},"cost":{"quality":0.2,"cost":0.4,"capacity":0.2,"success":0.2}}'
   )
 })
 

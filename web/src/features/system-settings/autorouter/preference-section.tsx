@@ -57,21 +57,18 @@ function createSchema(t: TFunction) {
         cost: fractionBetween(t),
         capacity: fractionBetween(t),
         success: fractionBetween(t),
-        temperature: fractionBetween(t),
       }),
       balanced: z.object({
         quality: fractionBetween(t),
         cost: fractionBetween(t),
         capacity: fractionBetween(t),
         success: fractionBetween(t),
-        temperature: fractionBetween(t),
       }),
       cost: z.object({
         quality: fractionBetween(t),
         cost: fractionBetween(t),
         capacity: fractionBetween(t),
         success: fractionBetween(t),
-        temperature: fractionBetween(t),
       }),
     }),
   })
@@ -110,12 +107,6 @@ const DIMENSIONS: ReadonlyArray<{
     label: 'Success weight',
     helpText: 'The weight given to recent request success rate.',
   },
-  {
-    name: 'temperature',
-    label: 'Sampling temperature',
-    helpText:
-      'Sampling temperature controls score variability; lower values produce more stable routing.',
-  },
 ]
 
 /** The default key preference and the model scoring policy of each fixed preference. */
@@ -144,22 +135,18 @@ export function PreferenceSection(props: PreferenceSectionProps) {
   const tiers: Array<{
     value: AutoPreference
     label: string
-    description: string
   }> = [
     {
       value: 'capability',
       label: t('Capability first'),
-      description: t('Gives cost no weight in model selection.'),
     },
     {
       value: 'balanced',
       label: t('Balanced'),
-      description: t('Balances model quality against price.'),
     },
     {
       value: 'cost',
       label: t('Cost first'),
-      description: t('Gives lower-priced models more weight.'),
     },
   ]
   const options = [
@@ -167,9 +154,6 @@ export function PreferenceSection(props: PreferenceSectionProps) {
     {
       value: 'adaptive',
       label: t('Decide per request'),
-      description: t(
-        'Judges each request on whether it stresses result quality or cost, then reads the weights for that request from the three preferences below.'
-      ),
     },
   ]
   const selected = form.watch('default_preference')
@@ -206,7 +190,11 @@ export function PreferenceSection(props: PreferenceSectionProps) {
             name='default_preference'
             label={t('Default preference for keys without one')}
             description={
-              options.find((option) => option.value === selected)?.description
+              selected === 'adaptive'
+                ? t(
+                    'Judges each request on whether it stresses result quality or cost, then reads the weights for that request from the three preferences below.'
+                  )
+                : undefined
             }
             options={options}
           />

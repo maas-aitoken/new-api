@@ -8421,6 +8421,12 @@
   "Restore model-level capabilities": "Khôi phục năng lực cấp mô hình",
   "Same as model capabilities": "Giống năng lực mô hình",
   "Same as model-level capability declaration.": "Hiện giống hoàn toàn với tuyên bố năng lực cấp mô hình.",
-  "Model-level declaration": "Tuyên bố cấp mô hình"
+  "Model-level declaration": "Tuyên bố cấp mô hình",
+  "Cost penalty": "Mức phạt chi phí",
+  "Quality {{quality}}, cost {{cost}}, capacity {{capacity}} and success {{success}}.": "Chất lượng {{quality}}, chi phí {{cost}}, năng lực {{capacity}} và tỷ lệ thành công {{success}}.",
+  "Invalid comparison cost": "Chi phí so sánh không hợp lệ",
+  "Quality scale {{qualityScale}}. Cost tolerance {{costScale}} per million tokens. Capacity penalty coefficient {{capacityPenalty}}, success penalty coefficient {{successPenalty}}.": "Hệ số chất lượng {{qualityScale}}. Mức dung sai chi phí {{costScale}} trên mỗi triệu token. Hệ số phạt dung lượng {{capacityPenalty}} và tỷ lệ thành công {{successPenalty}}.",
+  "The expected position runs from 0 (capability first) through 1 (balanced) to 2 (cost first). The four strengths are read along the line through the three preference policies and normalized before scoring.": "Vị trí kỳ vọng đi từ 0 (ưu tiên năng lực) qua 1 (cân bằng) đến 2 (ưu tiên chi phí). Bốn trọng số được nội suy giữa ba chính sách rồi chuẩn hóa trước khi tính điểm.",
+  "Retained candidates keep their scores from the full comparison.": "Các ứng viên được giữ lại vẫn dùng điểm từ phép so sánh đầy đủ."
 }
 }

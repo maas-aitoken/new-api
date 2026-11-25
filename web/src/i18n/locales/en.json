@@ -8435,6 +8435,12 @@
   "Restore model-level capabilities": "Restore model-level capabilities",
   "Same as model capabilities": "Same as model capabilities",
   "Same as model-level capability declaration.": "Same as model-level capability declaration.",
-  "Model-level declaration": "Model-level declaration"
+  "Model-level declaration": "Model-level declaration",
+  "Cost penalty": "Cost penalty",
+  "Quality {{quality}}, cost {{cost}}, capacity {{capacity}} and success {{success}}.": "Quality {{quality}}, cost {{cost}}, capacity {{capacity}} and success {{success}}.",
+  "Invalid comparison cost": "Invalid comparison cost",
+  "Quality scale {{qualityScale}}. Cost tolerance {{costScale}} per million tokens. Capacity penalty coefficient {{capacityPenalty}}, success penalty coefficient {{successPenalty}}.": "Quality scale {{qualityScale}}. Cost tolerance {{costScale}} per million tokens. Capacity penalty coefficient {{capacityPenalty}}, success penalty coefficient {{successPenalty}}.",
+  "The expected position runs from 0 (capability first) through 1 (balanced) to 2 (cost first). The four strengths are read along the line through the three preference policies and normalized before scoring.": "The expected position runs from 0 (capability first) through 1 (balanced) to 2 (cost first). The four strengths are read along the line through the three preference policies and normalized before scoring.",
+  "Retained candidates keep their scores from the full comparison.": "Retained candidates keep their scores from the full comparison."
 }
 }

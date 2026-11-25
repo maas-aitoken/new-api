@@ -1,7 +1,6 @@
 package service
 
 import (
-	"math/rand/v2"
 	"slices"
 
 	"github.com/QuantumNous/new-api/common"
@@ -39,13 +38,10 @@ func ResolveAutoRetryModel(c *gin.Context, candidates AutoCandidates) (*autorout
 	policy.TaskModels = taskModels
 	routing := autorouter.Candidates{
 		Available: available, Overridable: overridable, Price: candidates.Price,
-		Why: candidates.Why, Costs: candidates.Costs, Metrics: candidates.Metrics, Random: candidates.Random,
+		Why: candidates.Why, Costs: candidates.Costs, Metrics: candidates.Metrics,
 	}
 	if routing.Metrics == nil {
 		routing.Metrics = autoModelMetricsStore.Snapshot
-	}
-	if routing.Random == nil {
-		routing.Random = rand.Float64
 	}
 	initial := GetAutoRouterResult(c)
 	var decision *autorouter.Decision

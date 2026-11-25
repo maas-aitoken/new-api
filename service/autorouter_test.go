@@ -505,7 +505,7 @@ func TestResolveAutoModelPicksByQualityAndPrice(t *testing.T) {
 		require.NotNil(t, result.Pick)
 		assert.Equal(t, "sonnet-m", result.Pick.Chosen)
 		assert.Len(t, result.Pick.Band, 2)
-		assert.Greater(t, result.Pick.Band[1].CostScore, result.Pick.Band[0].CostScore)
+		assert.Less(t, result.Pick.Band[0].CostPenalty, result.Pick.Band[1].CostPenalty)
 		assert.Equal(t, autorouter.PreferenceBalanced, result.Preference, "没设偏好的 key 走平台默认，出厂是均衡")
 	})
 
@@ -514,7 +514,7 @@ func TestResolveAutoModelPicksByQualityAndPrice(t *testing.T) {
 		common.SetContextKey(c, constant.ContextKeyTokenAutoPreference, autorouter.PreferenceCapability)
 		result, err := ResolveAutoModel(c, candidates(func(model string) (float64, bool) { return prices[model], true }))
 		require.NoError(t, err)
-		assert.Equal(t, "opus-m-xhigh", result.ResolvedModel)
+		assert.Equal(t, "sonnet-m-xhigh", result.ResolvedModel)
 		assert.Equal(t, autorouter.PreferenceCapability, result.Preference)
 		require.NotNil(t, result.Pick)
 		assert.Len(t, result.Pick.Band, 2)
@@ -526,7 +526,7 @@ func TestResolveAutoModelPicksByQualityAndPrice(t *testing.T) {
 		t.Cleanup(func() { setting.DefaultPreference = previous })
 		result, err := ResolveAutoModel(newAutoRouterContext(9805, body), candidates(func(model string) (float64, bool) { return prices[model], true }))
 		require.NoError(t, err)
-		assert.Equal(t, "opus-m-xhigh", result.ResolvedModel)
+		assert.Equal(t, "sonnet-m-xhigh", result.ResolvedModel)
 		assert.Equal(t, autorouter.PreferenceCapability, result.Preference)
 	})
 
@@ -575,8 +575,8 @@ func TestResolveAutoModelAdaptivePreferenceReadsTheWeightFromTheModeAnswer(t *te
 			wantModel   string
 			wantWeight  float64
 		}{
-			{"careful", "opus-m-xhigh", 0.0105},
-			{"hard", "sonnet-m-xhigh", 0.07},
+			{"careful", "sonnet-m-xhigh", 0.0105},
+			{"hard", "haiku-m-xhigh", 0.07},
 			{"frugal", "haiku-m-xhigh", 0.2655},
 		} {
 			result := resolve(t, 9631+i, autorouter.PreferenceAdaptive, tt.instruction)
@@ -591,7 +591,7 @@ func TestResolveAutoModelAdaptivePreferenceReadsTheWeightFromTheModeAnswer(t *te
 	})
 	t.Run("a fixed preference still asks the mode question but ignores the answer", func(t *testing.T) {
 		result := resolve(t, 9634, autorouter.PreferenceCapability, "frugal")
-		assert.Equal(t, "opus-m-xhigh", result.ResolvedModel)
+		assert.Equal(t, "sonnet-m-xhigh", result.ResolvedModel)
 		assert.Nil(t, result.Trace.Mode)
 	})
 	t.Run("the weight is read again from the tiers when the judgment comes from the cache", func(t *testing.T) {
@@ -609,7 +609,7 @@ func TestResolveAutoModelAdaptivePreferenceReadsTheWeightFromTheModeAnswer(t *te
 		require.NoError(t, err)
 		assert.Equal(t, before+1, calls.Load(), "命中判断缓存，不再调 jev")
 		assert.Equal(t, autorouter.SourceCache, second.Source)
-		assert.Equal(t, "opus-m-xhigh", second.ResolvedModel, "平台改了三档权重，同一个判断读出的权重跟着变")
+		assert.Equal(t, "haiku-m-xhigh", second.ResolvedModel, "平台改了三档权重，同一个判断读出的权重跟着变")
 		assert.Equal(t, autorouter.PreferenceWeights{"capability": {Quality: 1, Cost: 0}, "balanced": {Quality: 0.97, Cost: 0.03}, "cost": {Quality: 0.95, Cost: 0.05}}, second.Trace.Mode.Tiers)
 	})
 	t.Run("a request that is never judged takes the balanced weight", func(t *testing.T) {
@@ -1230,7 +1230,6 @@ func TestEncodeAutoRouteDetailShrinksToFit(t *testing.T) {
 				}
 				return costs, nil
 			},
-			Random: func() float64 { return 0.5 },
 		}, trace)
 		require.True(t, ok)
 		require.NotNil(t, pick)
@@ -1302,12 +1301,7 @@ func TestEncodeAutoRouteDetailShrinksToFit(t *testing.T) {
 		require.True(t, found)
 		assert.Equal(t, len(originalBand), truncation.Total)
 		assert.Equal(t, len(kept), truncation.Kept)
-		require.NotNil(t, truncation.OmittedProbability)
-		keptProbability := 0.0
-		for _, candidate := range kept {
-			keptProbability += candidate.Probability
-		}
-		assert.InDelta(t, 1-keptProbability, *truncation.OmittedProbability, 1e-9)
+		assert.Nil(t, truncation.OmittedProbability)
 		afterResult, err := common.Marshal(result)
 		require.NoError(t, err)
 		afterTrace, err := common.Marshal(trace)

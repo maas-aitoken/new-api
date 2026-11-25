@@ -132,6 +132,14 @@ export function ModeStep(props: { mode: RouteTraceMode }) {
   const mode = props.mode
   const schema = routeModeSchema(mode)
   const judged = !mode.reason
+  const deterministic = typeof mode.cost_scale === 'number'
+  const positionNote = deterministic
+    ? t(
+        'The expected position runs from 0 (capability first) through 1 (balanced) to 2 (cost first). The four strengths are read along the line through the three preference policies and normalized before scoring.'
+      )
+    : t(
+        'The expected position runs from 0 (capability first) through 1 (balanced) to 2 (cost first). The four strengths and sampling temperature are read along the line through the three preference policies. The strengths are then normalized to sum to one; temperature remains independent.'
+      )
   const hasShares = AUTO_PREFERENCES.some(
     (preference) => typeof mode.shares?.[preference] === 'number'
   )
@@ -147,14 +155,23 @@ export function ModeStep(props: { mode: RouteTraceMode }) {
     }
     if (weights && typeof weights === 'object') {
       return `${label} ${t(
-        'Quality {{quality}}, cost {{cost}}, capacity {{capacity}} and success {{success}}; sampling temperature {{temperature}}.',
-        {
-          quality: formatScore(weights.quality),
-          cost: formatScore(weights.cost),
-          capacity: formatScore(weights.capacity),
-          success: formatScore(weights.success),
-          temperature: formatScore(weights.temperature),
-        }
+        deterministic
+          ? 'Quality {{quality}}, cost {{cost}}, capacity {{capacity}} and success {{success}}.'
+          : 'Quality {{quality}}, cost {{cost}}, capacity {{capacity}} and success {{success}}; sampling temperature {{temperature}}.',
+        deterministic
+          ? {
+              quality: formatScore(weights.quality),
+              cost: formatScore(weights.cost),
+              capacity: formatScore(weights.capacity),
+              success: formatScore(weights.success),
+            }
+          : {
+              quality: formatScore(weights.quality),
+              cost: formatScore(weights.cost),
+              capacity: formatScore(weights.capacity),
+              success: formatScore(weights.success),
+              temperature: formatScore(weights.temperature),
+            }
       )}`
     }
     return `${label} -`
@@ -167,8 +184,13 @@ export function ModeStep(props: { mode: RouteTraceMode }) {
       [t('Cost weight'), formatScore(mode.weights.cost)],
       [t('Capacity weight'), formatScore(mode.weights.capacity)],
       [t('Success weight'), formatScore(mode.weights.success)],
-      [t('Sampling temperature'), formatScore(mode.weights.temperature)],
     ]
+    if (!deterministic) {
+      facts.push([
+        t('Sampling temperature'),
+        formatScore(mode.weights.temperature),
+      ])
+    }
   } else if (schema === 'legacy' || typeof mode.weight === 'number') {
     facts = [[t('Cost weight'), formatScore(mode.weight)]]
   }
@@ -207,9 +229,7 @@ export function ModeStep(props: { mode: RouteTraceMode }) {
       {schema === 'current' && (
         <p className='text-muted-foreground text-xs'>
           {judged
-            ? t(
-                'The expected position runs from 0 (capability first) through 1 (balanced) to 2 (cost first). The four strengths and sampling temperature are read along the line through the three preference policies. The strengths are then normalized to sum to one; temperature remains independent.'
-              )
+            ? positionNote
             : t(
                 'The classifier gave no usable answer, so the balanced policy applies.'
               )}

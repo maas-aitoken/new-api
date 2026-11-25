@@ -83,8 +83,9 @@ type AutoRouterSetting struct {
 	// DefaultPreference is the preference of a key that sets none: one of the three
 	// fixed preferences, or adaptive to blend them from the request's judgment.
 	DefaultPreference string `json:"default_preference"`
-	// PreferenceWeights maps a preference to its four scoring strengths and
-	// sampling temperature. A preference missing from the map uses its built-in policy.
+	// PreferenceWeights maps a preference to the utility formula strengths.
+	// Temperature remains in the stored shape for compatibility and is ignored
+	// by deterministic model selection. A preference missing from the map uses its built-in policy.
 	PreferenceWeights autorouter.PreferenceWeights `json:"preference_weights"`
 	// RouteLogMode decides which auto requests leave a routing log: off, decisions
 	// (a request that called the classifier, or found no model at all) or all.
