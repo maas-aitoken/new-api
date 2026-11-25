@@ -185,7 +185,7 @@
 - 渠道级判定会写入 `capability_gate_events`：`passed` / `soft` / `filtered`（淘汰部分渠道但请求仍完成）/ `rejected`（可用渠道为 0，请求被拦）/ `would_filter` / `would_reject`（shadow 预演）。「记录通过的判定」**默认关闭**，只留违规行；打开后每个请求写一行，只适合短时间排查。
 - 事件是遥测，不在请求路径上落库：`service/capability_gate_event_writer.go` 用 4096 容量的队列接住事件，后台每 2 秒或满 200 条批量写入**日志库**（`LOG_SQL_DSN` 为空时与主库同库）。队列满了直接丢弃并计数，写入失败只记日志，都不影响选路。进程退出时会把队列写完。队列容量、每批条数、最长等待时间、清理任务每块删除的行数可以用 `CAPABILITY_GATE_EVENT_BUFFER_SIZE`、`CAPABILITY_GATE_EVENT_BATCH_SIZE`、`CAPABILITY_GATE_EVENT_FLUSH_MS`、`CAPABILITY_GATE_EVENT_CLEANUP_CHUNK` 调整（写法同 `RELAY_ATTEMPT_LOG_*`，超出范围会被截断，范围与默认值见 `.env.example`）。`rejected_channels` 的列宽跟表结构绑定，不可调。
 - 每条事件带 `request_id`（与 `logs`、`relay_attempts` 同源）、`user_id`、`token_id`、`using_group`，管理页可以按 request_id 筛选，再去使用日志里看这次请求的真实结果。`rejected_channels` 列宽有限，过长时在逗号处截断，准确数量见 `rejected_count`。
-- 保留期由「Gate log retention (days)」控制。非 ClickHouse 日志库由独立的系统任务 `capability_gate_event_cleanup` 每小时分块删除过期事件；ClickHouse 日志库靠建表 TTL（`LOG_SQL_CLICKHOUSE_TTL_DAYS`）过期，不走这个任务。
+- 保留期由「Gate log retention (days)」控制。非 ClickHouse 日志库由独立的系统任务 `capability_gate_event_cleanup` 每小时分块删除过期事件；ClickHouse 日志库通过表 TTL 控制过期，应用建表和启动迁移不会创建、修改或删除 TTL，数据库优化与代码发版可独立进行；这里不走这个清理任务。
 - 对被拦下的请求，错误信息会列出未满足的维度与实际声明值，例如
   `no available channel for model "x" satisfies the request: reasoning.effort (requested xhigh, supported none, low, medium)`。
 

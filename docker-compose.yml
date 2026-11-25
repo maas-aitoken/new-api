@@ -46,7 +46,7 @@ services:
       - RELAY_ATTEMPT_LOG_BATCH_SIZE=200
       - RELAY_ATTEMPT_LOG_FLUSH_MS=2000
       - GLOBAL_API_RATE_LIMIT_ENABLE=false
-      #      - LOG_SQL_CLICKHOUSE_TTL_DAYS=0 # OPTIONAL: ClickHouse log retention days. Unset or 0 disables automatic deletion; set to e.g. 30 to keep 30 days
+      # ClickHouse TTL changes and application releases are independent; migrations do not change table TTL.
       - REDIS_CONN_STRING=redis://:123456@redis:6379 # ⚠️ IMPORTANT: Change the password in production!
       - TZ=Asia/Shanghai
       - ERROR_LOG_ENABLED=true # 是否启用错误日志记录 (Whether to enable error log recording)

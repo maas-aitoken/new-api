@@ -1187,7 +1187,6 @@ func TestIndependentAuditLogStores(t *testing.T) {
 					require.NoError(t, logDB.Create(&releasedAuditLog{UserId: 1, Username: "legacy", CreatedAt: time.Now().Unix(), Type: model.LogTypeLogin, Content: "retained historical login", RequestId: "legacy-split-request"}).Error)
 				}
 				t.Setenv("LOG_SQL_DSN", isolatedDSN)
-				t.Setenv("LOG_SQL_CLICKHOUSE_TTL_DAYS", "7")
 				require.NoError(t, model.InitLogDB())
 				require.NoError(t, model.InitLogDB())
 				if upgrade {
@@ -1222,7 +1221,7 @@ func TestIndependentAuditLogStores(t *testing.T) {
 					require.NoError(t, model.LOG_DB.Raw("SHOW CREATE TABLE audit_logs").Scan(&create).Error)
 					assert.NotContains(t, strings.ToUpper(create), "TTL")
 					require.NoError(t, model.LOG_DB.Raw("SHOW CREATE TABLE logs").Scan(&create).Error)
-					assert.Contains(t, strings.ToUpper(create), "TTL")
+					assert.NotContains(t, strings.ToUpper(create), "TTL")
 				}
 			})
 		}

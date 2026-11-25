@@ -557,8 +557,7 @@ func migrateLOGDB() error {
 }
 
 func migrateClickHouseLogDB() error {
-	ttlDays := clickHouseLogTTLDays()
-	if err := LOG_DB.Exec(clickHouseLogCreateTableSQL(ttlDays)).Error; err != nil {
+	if err := LOG_DB.Exec(clickHouseLogCreateTableSQL()).Error; err != nil {
 		return err
 	}
 	if err := LOG_DB.Exec("ALTER TABLE logs ADD COLUMN IF NOT EXISTS fast_mode UInt8 DEFAULT 0").Error; err != nil {
@@ -570,55 +569,24 @@ func migrateClickHouseLogDB() error {
 	if err := LOG_DB.Exec("ALTER TABLE logs ADD COLUMN IF NOT EXISTS iself_email String DEFAULT ''").Error; err != nil {
 		return err
 	}
-	if err := syncClickHouseTableTTL("logs", ttlDays); err != nil {
+	if err := LOG_DB.Exec(clickHouseRelayAttemptCreateTableSQL()).Error; err != nil {
 		return err
 	}
-	if err := LOG_DB.Exec(clickHouseRelayAttemptCreateTableSQL(ttlDays)).Error; err != nil {
+	if err := LOG_DB.Exec(clickHouseCapabilityGateEventCreateTableSQL()).Error; err != nil {
 		return err
 	}
-	if err := syncClickHouseTableTTL("relay_attempts", ttlDays); err != nil {
-		return err
-	}
-	if err := LOG_DB.Exec(clickHouseCapabilityGateEventCreateTableSQL(ttlDays)).Error; err != nil {
-		return err
-	}
-	if err := syncClickHouseTableTTL("capability_gate_events", ttlDays); err != nil {
-		return err
-	}
-	if err := LOG_DB.Exec(clickHouseAutoRouteLogCreateTableSQL(ttlDays)).Error; err != nil {
+	if err := LOG_DB.Exec(clickHouseAutoRouteLogCreateTableSQL()).Error; err != nil {
 		return err
 	}
 	if err := LOG_DB.Exec("ALTER TABLE auto_route_logs ADD COLUMN IF NOT EXISTS request_params String DEFAULT '' AFTER request_id").Error; err != nil {
 		return err
 	}
-	return syncClickHouseTableTTL("auto_route_logs", ttlDays)
+	return nil
 }
 
-func clickHouseLogTTLDays() int {
-	ttlDays := common.GetEnvOrDefault("LOG_SQL_CLICKHOUSE_TTL_DAYS", 0)
-	if ttlDays < 0 {
-		return 0
-	}
-	return ttlDays
-}
-
-func clickHouseLogTTLExpression(ttlDays int) string {
-	if ttlDays <= 0 {
-		return ""
-	}
-	return fmt.Sprintf("toDateTime(created_at) + INTERVAL %d DAY DELETE", ttlDays)
-}
-
-func clickHouseLogTTLClause(ttlDays int) string {
-	expression := clickHouseLogTTLExpression(ttlDays)
-	if expression == "" {
-		return ""
-	}
-	return "\nTTL " + expression
-}
-
-func clickHouseLogCreateTableSQL(ttlDays int) string {
-	return fmt.Sprintf(`
+// ClickHouse 建表和启动迁移不创建、修改或删除 TTL，数据库优化与代码发版可独立进行。
+func clickHouseLogCreateTableSQL() string {
+	return `
 CREATE TABLE IF NOT EXISTS logs (
 	id Int64 DEFAULT 0,
 	user_id Int32 DEFAULT 0,
@@ -637,7 +605,7 @@ CREATE TABLE IF NOT EXISTS logs (
 	auto_routed UInt8 DEFAULT 0,
 	channel_id Int32 DEFAULT 0,
 	token_id Int32 DEFAULT 0,
-	`+"`group`"+` String DEFAULT '',
+	` + "`group`" + ` String DEFAULT '',
 	ip String DEFAULT '',
 	request_id String DEFAULT '',
 	upstream_request_id String DEFAULT '',
@@ -646,15 +614,15 @@ CREATE TABLE IF NOT EXISTS logs (
 )
 ENGINE = MergeTree()
 PARTITION BY toYYYYMM(toDateTime(created_at))
-ORDER BY (created_at, request_id)%s`, clickHouseLogTTLClause(ttlDays))
+ORDER BY (created_at, request_id)`
 }
 
 // clickHouseRelayAttemptCreateTableSQL mirrors the RelayAttempt struct. GORM
 // AutoMigrate is deliberately bypassed for ClickHouse, so this DDL must be kept
 // in sync with model/relay_attempt.go by hand. Nullable() columns correspond to
 // the pointer fields there, where null means "not observed" rather than zero.
-func clickHouseRelayAttemptCreateTableSQL(ttlDays int) string {
-	return fmt.Sprintf(`
+func clickHouseRelayAttemptCreateTableSQL() string {
+	return `
 CREATE TABLE IF NOT EXISTS relay_attempts (
 	id Int64 DEFAULT 0,
 	created_at Int64 DEFAULT 0,
@@ -715,19 +683,20 @@ CREATE TABLE IF NOT EXISTS relay_attempts (
 )
 ENGINE = MergeTree()
 PARTITION BY toYYYYMM(toDateTime(created_at))
-ORDER BY (created_at, channel_id, request_id)%s`, clickHouseLogTTLClause(ttlDays))
+ORDER BY (created_at, channel_id, request_id)`
 }
 
 // clickHouseCapabilityGateEventCreateTableSQL mirrors the CapabilityGateEvent
 // struct; keep the two in sync by hand because AutoMigrate is bypassed for
-// ClickHouse. Rows expire through the table TTL, so no cleanup task touches it.
-func clickHouseCapabilityGateEventCreateTableSQL(ttlDays int) string {
-	return fmt.Sprintf(`
+// ClickHouse. Rows expire through the externally managed table TTL, so no
+// cleanup task touches it.
+func clickHouseCapabilityGateEventCreateTableSQL() string {
+	return `
 CREATE TABLE IF NOT EXISTS capability_gate_events (
 	id Int64 DEFAULT 0,
-	`+"`mode`"+` String DEFAULT '',
-	`+"`model`"+` String DEFAULT '',
-	`+"`action`"+` String DEFAULT '',
+	` + "`mode`" + ` String DEFAULT '',
+	` + "`model`" + ` String DEFAULT '',
+	` + "`action`" + ` String DEFAULT '',
 	channels_evaluated Int32 DEFAULT 0,
 	rejected_channels String DEFAULT '',
 	dimensions String DEFAULT '',
@@ -740,15 +709,15 @@ CREATE TABLE IF NOT EXISTS capability_gate_events (
 )
 ENGINE = MergeTree()
 PARTITION BY toYYYYMM(toDateTime(created_at))
-ORDER BY (created_at, request_id)%s`, clickHouseLogTTLClause(ttlDays))
+ORDER BY (created_at, request_id)`
 }
 
 // clickHouseAutoRouteLogCreateTableSQL mirrors the AutoRouteLog struct; keep the
 // two in sync by hand because AutoMigrate is bypassed for ClickHouse. Rows expire
-// through the table TTL (LOG_SQL_CLICKHOUSE_TTL_DAYS), not through the retention
-// option that the cleanup task applies to other databases.
-func clickHouseAutoRouteLogCreateTableSQL(ttlDays int) string {
-	return fmt.Sprintf(`
+// through the externally managed table TTL, not through the retention option
+// that the cleanup task applies to other databases.
+func clickHouseAutoRouteLogCreateTableSQL() string {
+	return `
 CREATE TABLE IF NOT EXISTS auto_route_logs (
 	id Int64 DEFAULT 0,
 	created_at Int64 DEFAULT 0,
@@ -759,9 +728,9 @@ CREATE TABLE IF NOT EXISTS auto_route_logs (
 	using_group String DEFAULT '',
 	outcome String DEFAULT '',
 	judgment String DEFAULT '',
-	`+"`source`"+` String DEFAULT '',
+	` + "`source`" + ` String DEFAULT '',
 	task_type String DEFAULT '',
-	`+"`model`"+` String DEFAULT '',
+	` + "`model`" + ` String DEFAULT '',
 	effort String DEFAULT '',
 	preference String DEFAULT '',
 	jev_latency_ms Int64 DEFAULT 0,
@@ -769,38 +738,7 @@ CREATE TABLE IF NOT EXISTS auto_route_logs (
 )
 ENGINE = MergeTree()
 PARTITION BY toYYYYMM(toDateTime(created_at))
-ORDER BY (created_at, request_id)%s`, clickHouseLogTTLClause(ttlDays))
-}
-
-// syncClickHouseTableTTL reconciles the TTL of a log-database ClickHouse table.
-// table is always an internal literal, never user input.
-func syncClickHouseTableTTL(table string, ttlDays int) error {
-	expression := clickHouseLogTTLExpression(ttlDays)
-	if expression != "" {
-		return LOG_DB.Exec("ALTER TABLE " + table + " MODIFY TTL " + expression).Error
-	}
-
-	hasTTL, err := clickHouseTableHasTTL(table)
-	if err != nil {
-		return err
-	}
-	if !hasTTL {
-		return nil
-	}
-	return LOG_DB.Exec("ALTER TABLE " + table + " REMOVE TTL").Error
-}
-
-func clickHouseTableHasTTL(table string) (bool, error) {
-	var createTableSQL string
-	if err := LOG_DB.Raw("SHOW CREATE TABLE " + table).Scan(&createTableSQL).Error; err != nil {
-		return false, err
-	}
-	return clickHouseCreateTableHasTTL(createTableSQL), nil
-}
-
-func clickHouseCreateTableHasTTL(createTableSQL string) bool {
-	upperSQL := strings.ToUpper(createTableSQL)
-	return strings.Contains(upperSQL, "\nTTL ") || strings.Contains(upperSQL, " TTL ")
+ORDER BY (created_at, request_id)`
 }
 
 type sqliteColumnDef struct {
