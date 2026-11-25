@@ -33,7 +33,7 @@ export type AutoRouterSettings = {
   'autorouter_setting.cache_ttl_seconds': number
   'autorouter_setting.max_retries': number
   'autorouter_setting.default_preference': string
-  /** JSON object: preference -> four scoring weights and sampling temperature. */
+  /** JSON object: preference -> deterministic utility formula strengths. */
   'autorouter_setting.preference_weights': string
   'autorouter_setting.continuation_task_change': number
   'autorouter_setting.upgrade_benefit': number

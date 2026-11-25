@@ -26,7 +26,7 @@ import * as z from 'zod'
 
 import { Form } from '@/components/ui/form'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { SELECTABLE_AUTO_PREFERENCES } from '@/features/keys/lib'
+import { AUTO_PREFERENCES } from '@/features/keys/lib'
 
 import {
   SettingsForm,
@@ -50,28 +50,25 @@ import type { AutoRouterSettings } from './types'
 
 function createSchema(t: TFunction) {
   return z.object({
-    default_preference: z.enum(SELECTABLE_AUTO_PREFERENCES),
+    default_preference: z.enum(AUTO_PREFERENCES),
     weights: z.object({
       capability: z.object({
         quality: fractionBetween(t),
         cost: fractionBetween(t),
         capacity: fractionBetween(t),
         success: fractionBetween(t),
-        temperature: fractionBetween(t),
       }),
       balanced: z.object({
         quality: fractionBetween(t),
         cost: fractionBetween(t),
         capacity: fractionBetween(t),
         success: fractionBetween(t),
-        temperature: fractionBetween(t),
       }),
       cost: z.object({
         quality: fractionBetween(t),
         cost: fractionBetween(t),
         capacity: fractionBetween(t),
         success: fractionBetween(t),
-        temperature: fractionBetween(t),
       }),
     }),
   })
@@ -110,12 +107,6 @@ const DIMENSIONS: ReadonlyArray<{
     label: 'Success weight',
     helpText: 'The weight given to recent request success rate.',
   },
-  {
-    name: 'temperature',
-    label: 'Sampling temperature',
-    helpText:
-      'Sampling temperature controls score variability; lower values produce more stable routing.',
-  },
 ]
 
 /** The default key preference and the model scoring policy of each fixed preference. */
@@ -127,9 +118,8 @@ export function PreferenceSection(props: PreferenceSectionProps) {
     const stored = props.settings['autorouter_setting.default_preference']
     return {
       default_preference:
-        SELECTABLE_AUTO_PREFERENCES.find(
-          (preference) => preference === stored
-        ) ?? 'balanced',
+        AUTO_PREFERENCES.find((preference) => preference === stored) ??
+        'balanced',
       weights: parsePreferenceWeights(
         props.settings['autorouter_setting.preference_weights']
       ),
@@ -144,35 +134,20 @@ export function PreferenceSection(props: PreferenceSectionProps) {
   const tiers: Array<{
     value: AutoPreference
     label: string
-    description: string
   }> = [
     {
       value: 'capability',
       label: t('Capability first'),
-      description: t('Gives cost no weight in model selection.'),
     },
     {
       value: 'balanced',
       label: t('Balanced'),
-      description: t('Balances model quality against price.'),
     },
     {
       value: 'cost',
       label: t('Cost first'),
-      description: t('Gives lower-priced models more weight.'),
     },
   ]
-  const options = [
-    ...tiers,
-    {
-      value: 'adaptive',
-      label: t('Decide per request'),
-      description: t(
-        'Judges each request on whether it stresses result quality or cost, then reads the weights for that request from the three preferences below.'
-      ),
-    },
-  ]
-  const selected = form.watch('default_preference')
 
   const onSubmit = async (values: PreferenceValues) => {
     const updates = changedOptions(
@@ -205,10 +180,7 @@ export function PreferenceSection(props: PreferenceSectionProps) {
             control={form.control}
             name='default_preference'
             label={t('Default preference for keys without one')}
-            description={
-              options.find((option) => option.value === selected)?.description
-            }
-            options={options}
+            options={tiers}
           />
 
           <Tabs defaultValue='balanced' data-settings-form-span='full'>

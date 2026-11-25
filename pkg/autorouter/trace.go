@@ -12,6 +12,7 @@ const (
 	ReasonGroupDisabled   = "group_disabled"   // the group has not enabled it
 	ReasonNoChannel       = "no_channel"       // no enabled channel serves it on this path
 	ReasonUnpriced        = "unpriced"         // no price is configured, so billing would fail
+	ReasonInvalidCost     = "invalid_cost"     // the estimated cost cannot be scored
 	ReasonCapability      = "capability"       // every channel's declared capabilities fall short of the request
 	ReasonPerCall         = "per_call"         // billed per call, which cannot be compared with per-token prices
 	ReasonClientReasoning = "client_reasoning" // the client's own reasoning settings rule it out
@@ -41,11 +42,6 @@ const (
 	DecisionInvalidTaskType = "invalid_task_type" // jev answered a task type it was not offered
 )
 
-// Why an adaptive request has no judged weight.
-const (
-	ModeNoAnswer = "no_answer" // no decision, or the decision carries no usable mode answer
-)
-
 // What one ranking tried.
 const (
 	OutcomeCompared       = "compared"        // picked by quality and price
@@ -67,29 +63,9 @@ type Trace struct {
 	Judgment     string        `json:"judgment"`
 	Unroutable   *Unroutable   `json:"unroutable,omitempty"`
 	Validity     *Validity     `json:"validity,omitempty"`
-	Mode         *ModeTrace    `json:"mode,omitempty"`
 	Continuation *Continuation `json:"continuation,omitempty"`
 	Effort       *EffortTrace  `json:"effort,omitempty"`
 	Ladder       []LadderStep  `json:"ladder,omitempty"`
-}
-
-// ModeTrace is how an adaptive request got its four-dimensional policy. It is set
-// only for an adaptive request, and the policy matters only to a request that ran
-// a model comparison: one that kept the previous model never used it.
-type ModeTrace struct {
-	// Reason is empty when the weight was judged, ModeNoAnswer when it fell back to
-	// the balanced weight.
-	Reason string `json:"reason,omitempty"`
-	// Shares is each preference's share of the judged probability.
-	Shares map[string]float64 `json:"shares,omitempty"`
-	// Position is the expected position on the capability (0), balanced (1), cost (2) scale.
-	Position float64 `json:"position"`
-	// Weight is the normalized cost weight this request used.
-	Weight float64 `json:"weight"`
-	// Weights are the normalized four dimensions and the independent temperature.
-	Weights DimensionWeights `json:"weights"`
-	// Tiers are the platform's raw configured strengths, before interpolation and normalization.
-	Tiers PreferenceWeights `json:"tiers"`
 }
 
 // RequestTrace holds what the instruction looked like, never its text.

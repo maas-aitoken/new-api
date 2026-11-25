@@ -123,6 +123,8 @@ export function skipReasonLabel(t: TFunction, reason: string): string {
       return t('No enabled channel serves it')
     case 'unpriced':
       return t('No price configured')
+    case 'invalid_cost':
+      return t('Invalid comparison cost')
     case 'capability':
       return t('Capabilities fall short of the request')
     case 'per_call':

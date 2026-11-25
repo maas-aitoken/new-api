@@ -64,55 +64,59 @@ beforeEach(() => {
   vi.spyOn(api, 'put').mockResolvedValue({ data: { success: true } })
 })
 
-test('choosing to decide per request writes only the default preference', async () => {
+test('choosing another preference writes only the default preference', async () => {
   const user = userEvent.setup()
   renderSection()
 
   await user.click(defaultPreferenceSelect())
-  await user.click(
-    await screen.findByRole('option', { name: 'Decide per request' })
-  )
-  expect(
-    screen.getByText(
-      'Judges each request on whether it stresses result quality or cost, then reads the weights for that request from the three preferences below.'
-    )
-  ).toBeVisible()
+  await user.click(await screen.findByRole('option', { name: 'Cost first' }))
   await user.click(screen.getByRole('button', { name: 'Save Changes' }))
 
   await waitFor(() => expect(api.put).toHaveBeenCalledTimes(1))
   expect(api.put).toHaveBeenCalledWith('/api/option/', {
     key: 'autorouter_setting.default_preference',
-    value: 'adaptive',
+    value: 'cost',
   })
 })
 
-test('a stored adaptive default is shown as chosen', () => {
-  renderSection('adaptive')
+test('deciding per request is no longer offered as the default preference', async () => {
+  const user = userEvent.setup()
+  renderSection()
 
-  expect(defaultPreferenceSelect()).toHaveTextContent('Decide per request')
+  await user.click(defaultPreferenceSelect())
+  expect(await screen.findAllByRole('option')).toHaveLength(3)
+  expect(
+    screen.queryByRole('option', { name: 'Decide per request' })
+  ).not.toBeInTheDocument()
 })
 
-test.each(['balanced', 'adaptive'])(
+test('a stored adaptive default is shown as balanced, the preference the server applies', () => {
+  renderSection('adaptive')
+
+  expect(defaultPreferenceSelect()).toHaveTextContent('Balanced')
+})
+
+test.each(['balanced', 'cost'])(
   'with %s as the default the four weights are edited for exactly the three weighted preferences',
   async (defaultPreference) => {
     const user = userEvent.setup()
     renderSection(defaultPreference)
 
-    expect(screen.getAllByRole('spinbutton')).toHaveLength(5)
+    expect(screen.getAllByRole('spinbutton')).toHaveLength(4)
     await user.click(screen.getByRole('tab', { name: 'Capability first' }))
-    expect(screen.getAllByRole('spinbutton')).toHaveLength(5)
+    expect(screen.getAllByRole('spinbutton')).toHaveLength(4)
     expect(screen.getByRole('spinbutton', { name: 'Cost weight' })).toHaveValue(
       0
     )
     await user.click(screen.getByRole('tab', { name: 'Cost first' }))
-    expect(screen.getAllByRole('spinbutton')).toHaveLength(5)
+    expect(screen.getAllByRole('spinbutton')).toHaveLength(4)
     expect(screen.getByRole('spinbutton', { name: 'Cost weight' })).toHaveValue(
       0.4
     )
   }
 )
 
-test('a stored preference policy fills its five fields', async () => {
+test('a stored preference policy fills its four fields', async () => {
   const user = userEvent.setup()
   const settings = {
     'autorouter_setting.default_preference': 'balanced',
@@ -137,9 +141,6 @@ test('a stored preference policy fills its five fields', async () => {
   expect(
     screen.getByRole('spinbutton', { name: 'Success weight' })
   ).toHaveValue(0.3)
-  expect(
-    screen.getByRole('spinbutton', { name: 'Sampling temperature' })
-  ).toHaveValue(0)
   await user.click(screen.getByRole('tab', { name: 'Cost first' }))
   expect(screen.getByRole('spinbutton', { name: 'Cost weight' })).toHaveValue(
     0.4
@@ -156,17 +157,13 @@ test('editing one preference writes the complete policy for all preferences', as
       target: { value: '0.8' },
     }
   )
-  fireEvent.change(
-    screen.getByRole('spinbutton', { name: 'Sampling temperature' }),
-    { target: { value: '0.25' } }
-  )
   await user.click(screen.getByRole('button', { name: 'Save Changes' }))
 
   await waitFor(() => expect(api.put).toHaveBeenCalledTimes(1))
   expect(api.put).toHaveBeenCalledWith('/api/option/', {
     key: 'autorouter_setting.preference_weights',
     value:
-      '{"capability":{"quality":0.6,"cost":0,"capacity":0.2,"success":0.2,"temperature":0.12},"balanced":{"quality":0.8,"cost":0.2,"capacity":0.2,"success":0.2,"temperature":0.25},"cost":{"quality":0.2,"cost":0.4,"capacity":0.2,"success":0.2,"temperature":0.12}}',
+      '{"capability":{"quality":0.6,"cost":0,"capacity":0.2,"success":0.2},"balanced":{"quality":0.8,"cost":0.2,"capacity":0.2,"success":0.2},"cost":{"quality":0.2,"cost":0.4,"capacity":0.2,"success":0.2}}',
   })
 })
 
@@ -198,7 +195,7 @@ test('a weight above one is rejected before anything is saved', async () => {
 
 test('saving with nothing changed writes nothing', async () => {
   const user = userEvent.setup()
-  renderSection('adaptive')
+  renderSection('cost')
 
   await user.click(screen.getByRole('button', { name: 'Save Changes' }))
 

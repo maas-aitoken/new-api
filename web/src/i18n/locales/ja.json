@@ -8421,6 +8421,12 @@
   "Restore model-level capabilities": "モデルレベルの能力に戻す",
   "Same as model capabilities": "モデルと同じ能力",
   "Same as model-level capability declaration.": "モデルレベルの能力宣言と一致しています。",
-  "Model-level declaration": "モデルレベル宣言"
+  "Model-level declaration": "モデルレベル宣言",
+  "Cost penalty": "コストペナルティ",
+  "Quality {{quality}}, cost {{cost}}, capacity {{capacity}} and success {{success}}.": "品質 {{quality}}、コスト {{cost}}、容量 {{capacity}}、成功率 {{success}}。",
+  "Invalid comparison cost": "比較コストが無効",
+  "Quality scale {{qualityScale}}. Cost tolerance {{costScale}} per million tokens. Capacity penalty coefficient {{capacityPenalty}}, success penalty coefficient {{successPenalty}}.": "品質係数 {{qualityScale}}。100 万トークンあたりのコスト許容値 {{costScale}}。容量ペナルティ係数 {{capacityPenalty}}、成功率ペナルティ係数 {{successPenalty}}。",
+  "The expected position runs from 0 (capability first) through 1 (balanced) to 2 (cost first). The four strengths are read along the line through the three preference policies and normalized before scoring.": "期待位置は 0（能力優先）から 1（均衡）を経て 2（コスト優先）までです。4 つの強度を 3 つのポリシー間で補間し、スコア計算前に正規化します。",
+  "Retained candidates keep their scores from the full comparison.": "残った候補は完全比較時のスコアを保持します。"
 }
 }

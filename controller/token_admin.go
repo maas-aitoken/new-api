@@ -53,7 +53,7 @@ func AdminListTokens(c *gin.Context) {
 	}
 	switch routingMode := c.Query("routing_mode"); routingMode {
 	case "":
-	case string(common.TokenRoutingModeSmart), string(common.TokenRoutingModeFixed):
+	case string(common.TokenRoutingModeSmart), string(common.TokenRoutingModeHybrid), string(common.TokenRoutingModeFixed):
 		filter.RoutingMode = common.TokenRoutingMode(routingMode)
 	default:
 		common.ApiErrorT(c, "Invalid routing mode filter")

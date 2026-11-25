@@ -24,6 +24,7 @@ distributor.token_model_forbidden: "该令牌无权访问模型 {{.Model}}"
 distributor.token_auto_forbidden: "该令牌为锁定模型，不能使用智能路由（model: auto），请指定具体模型名称，或把密钥改成智能路由"
 distributor.smart_key_gemini_unsupported: "该令牌为智能路由，不支持 Gemini 原生格式，请改用 /v1/chat/completions、/v1/responses 或 /v1/messages，或使用锁定模型的令牌"
 distributor.smart_key_completions_unsupported: "该令牌为智能路由，不支持 /v1/completions，请改用 /v1/chat/completions、/v1/responses 或 /v1/messages，或使用锁定模型的令牌"
+distributor.hybrid_auto_unsupported_format: "该令牌仅支持在 /v1/chat/completions、/v1/responses 或 /v1/messages 中使用 auto，当前格式请指定具体模型"
 distributor.model_name_required: "未指定模型名称，模型名称不能为空"
 distributor.invalid_playground_request: "无效的playground请求，{{.Error}}"
 distributor.group_access_denied: "无权访问该分组"
@@ -46,6 +47,7 @@ relay.retry_get_channel_failed: "获取分组 {{.Group}} 下模型 {{.Model}} �
 relay.retry_no_available_channel: "分组 {{.Group}} 下模型 {{.Model}} 的可用渠道不存在（retry）"
 relay.access_token_unsupported: "暂不支持使用 access token"
 relay.smart_key_responses_websocket_unsupported: "该令牌为智能路由，不支持 Responses WebSocket，请通过 HTTP 调用 /v1/responses，或使用锁定模型的令牌"
+relay.hybrid_auto_responses_websocket_unsupported: "该令牌的 auto 仅支持 HTTP，请通过 HTTP 调用 /v1/responses，或在 Responses WebSocket 中指定具体模型"
 relay.upstream_refused: "上游模型拒绝回答"
 
 # Emails and the name of the token created at registration

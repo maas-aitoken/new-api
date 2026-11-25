@@ -648,6 +648,48 @@ func TestDistributeLockedKeyRejectsAuto(t *testing.T) {
 	})
 }
 
+func TestDistributeHybridKeyAllowsAutoAndNamedModels(t *testing.T) {
+	setupAutoRoutingDistribute(t, []string{"general"}, map[int][]string{1: {"general", "private-model"}})
+	useModelPrices(t, map[string]float64{"general": 1, "private-model": 1})
+	hybridKey := func(c *gin.Context) {
+		common.SetContextKey(c, constant.ContextKeyTokenRoutingMode, common.TokenRoutingModeHybrid)
+	}
+
+	autoBody := `{"model":"auto","messages":[{"role":"user","content":"hello"}]}`
+	stored, originalModel, recorder := serveAutoRoutingRequestIn(t, "/v1/chat/completions", "default", 9641, autoBody, hybridKey)
+	require.Equal(t, http.StatusNoContent, recorder.Code, recorder.Body.String())
+	assert.Equal(t, "general", originalModel)
+	assert.JSONEq(t, `{"model":"general","messages":[{"role":"user","content":"hello"}]}`, stored)
+
+	namedBody := `{"model":"private-model","messages":[{"role":"user","content":"hello"}]}`
+	stored, originalModel, recorder = serveAutoRoutingRequestIn(t, "/v1/chat/completions", "default", 9642, namedBody, hybridKey)
+	require.Equal(t, http.StatusNoContent, recorder.Code, recorder.Body.String())
+	assert.Equal(t, "private-model", originalModel)
+	assert.Equal(t, namedBody, stored)
+
+	poolKey := func(c *gin.Context) {
+		hybridKey(c)
+		common.SetContextKey(c, constant.ContextKeyTokenModelLimitEnabled, true)
+		common.SetContextKey(c, constant.ContextKeyTokenModelLimit, map[string]bool{"private-model": true})
+	}
+	_, _, recorder = serveAutoRoutingRequestIn(t, "/v1/chat/completions", "default", 9643,
+		`{"model":"general","messages":[{"role":"user","content":"hello"}]}`, poolKey)
+	assert.Equal(t, http.StatusForbidden, recorder.Code, "a hybrid key still enforcing its model pool on named models")
+
+	_, _, recorder = serveAutoRoutingRequestIn(t, "/v1/completions", "default", 9644,
+		`{"model":"auto","prompt":"hello"}`, hybridKey)
+	assert.Equal(t, http.StatusForbidden, recorder.Code, "auto is not available on formats the auto router cannot serve")
+
+	geminiBody := `{"contents":[{"role":"user","parts":[{"text":"hello"}]}]}`
+	_, _, recorder = serveAutoRoutingRequestIn(t, "/v1beta/models/auto:generateContent", "default", 9645, geminiBody, hybridKey)
+	assert.Equal(t, http.StatusForbidden, recorder.Code)
+
+	stored, originalModel, recorder = serveAutoRoutingRequestIn(t, "/v1beta/models/private-model:generateContent", "default", 9646, geminiBody, hybridKey)
+	require.Equal(t, http.StatusNoContent, recorder.Code, recorder.Body.String())
+	assert.Equal(t, "private-model", originalModel)
+	assert.Equal(t, geminiBody, stored)
+}
+
 // Gemini 原生格式（模型名在 URL 里）和 /v1/completions 都是对话，但 auto 改写不了：智能路由 key 在里面
 // 写具体模型就能绕开 auto，所以平台开着 auto 时整种格式都拒绝（Gemini 的 embedContent 也拒，embedding
 // 走 /v1/embeddings）。锁定模型 key 不受影响；平台关了 auto 时智能路由 key 照常按模型池直接调。
@@ -1031,7 +1073,7 @@ func TestDistributeAutoPicksByQualityAndUserPrice(t *testing.T) {
 				common.SetContextKey(c, constant.ContextKeyTokenAutoPreference, autorouter.PreferenceCapability)
 			})
 		require.Equal(t, http.StatusNoContent, recorder.Code, recorder.Body.String())
-		assert.Equal(t, "opus-x", originalModel, "同样的候选和价格，能力优先的 key 不拿便宜的 sonnet-x 换分数")
+		assert.Equal(t, "sonnet-x", originalModel, "质量差距不足以覆盖成本差异时，能力优先也选成本更低的模型")
 	})
 
 	t.Run("the fallback never picks an unpriced model either", func(t *testing.T) {
@@ -1134,7 +1176,7 @@ func TestDistributeAutoComparesThePlatformCost(t *testing.T) {
 		assert.Equal(t, "pick-x", band["pick-x"].Model)
 		assert.Equal(t, 8.0, band["pick-x"].Price)
 		assert.Equal(t, 2.0, band["pick-x"].Cost)
-		assert.Equal(t, 1.0, band["pick-x"].CostScore)
+		assert.Less(t, band["pick-x"].CostPenalty, band["alt-y"].CostPenalty)
 		assert.Equal(t, autorouter.CostSourceExpected, band["pick-x"].CostSource)
 		assert.Equal(t, 1.0, band["alt-y"].CostMultiplier, "an unconfigured channel counts as 1")
 	})
@@ -1279,7 +1321,7 @@ func TestDistributeAutoAsksTheSchedulerPreviewWhenItDecides(t *testing.T) {
 		assert.Equal(t, "pick-x", pick.Model)
 		assert.Equal(t, 8.0, pick.Price)
 		assert.Equal(t, 2.0, pick.Cost)
-		assert.Equal(t, 1.0, pick.CostScore)
+		assert.Positive(t, pick.CostPenalty)
 		assert.Equal(t, autorouter.CostSourceScheduler, pick.CostSource)
 		assert.Equal(t, "pick-x", originalModel)
 		assert.Equal(t, []int{1, 2}, allowed["pick-x"], "the preview gets the same channel scope as the real schedule")

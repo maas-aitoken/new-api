@@ -523,10 +523,13 @@ func TestListModelsFollowsTheKeyRoutingMode(t *testing.T) {
 		{name: "smart routing key", mode: common.TokenRoutingModeSmart, modelType: constant.ChannelTypeOpenAI, want: []string{"auto"}},
 		{name: "smart routing key, anthropic format", mode: common.TokenRoutingModeSmart, modelType: constant.ChannelTypeAnthropic, want: []string{"auto"}},
 		{name: "smart routing key, gemini native", mode: common.TokenRoutingModeSmart, modelType: constant.ChannelTypeGemini, want: []string{}},
+		{name: "hybrid routing key", mode: common.TokenRoutingModeHybrid, modelType: constant.ChannelTypeOpenAI, want: []string{"auto", "zz-embed-model", "zz-ranked-model"}},
+		{name: "hybrid routing key, gemini native", mode: common.TokenRoutingModeHybrid, modelType: constant.ChannelTypeGemini, want: []string{"zz-embed-model", "zz-ranked-model"}},
 		{name: "locked key", mode: common.TokenRoutingModeFixed, modelType: constant.ChannelTypeOpenAI, want: []string{"zz-embed-model", "zz-ranked-model"}},
 		{name: "locked key, gemini native", mode: common.TokenRoutingModeFixed, modelType: constant.ChannelTypeGemini, want: []string{"zz-embed-model", "zz-ranked-model"}},
 		{name: "smart routing key with auto turned off", mode: common.TokenRoutingModeSmart, modelType: constant.ChannelTypeOpenAI, disabled: true, want: []string{"zz-embed-model", "zz-ranked-model"}},
 		{name: "smart routing key with auto turned off, gemini native", mode: common.TokenRoutingModeSmart, modelType: constant.ChannelTypeGemini, disabled: true, want: []string{"zz-embed-model", "zz-ranked-model"}},
+		{name: "hybrid routing key with auto turned off", mode: common.TokenRoutingModeHybrid, modelType: constant.ChannelTypeOpenAI, disabled: true, want: []string{"zz-embed-model", "zz-ranked-model"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			routerSetting.Enabled = !tc.disabled

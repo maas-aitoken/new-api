@@ -46,6 +46,8 @@ func (f AdminTokenFilter) apply(query *gorm.DB) (*gorm.DB, error) {
 		query = query.Where("routing_mode = ?", string(common.TokenRoutingModeFixed))
 	case common.TokenRoutingModeSmart:
 		query = query.Where("routing_mode = ?", string(common.TokenRoutingModeSmart))
+	case common.TokenRoutingModeHybrid:
+		query = query.Where("routing_mode = ?", string(common.TokenRoutingModeHybrid))
 	}
 	if f.Status != 0 {
 		query = query.Where("status = ?", f.Status)

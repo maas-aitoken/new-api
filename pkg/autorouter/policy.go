@@ -41,11 +41,8 @@ type Policy struct {
 	TaskScores map[string]map[string]float64
 	// Preference names the capability/cost balance chosen by this request's key.
 	Preference string
-	// Tiers are the platform's configured strengths of the three fixed preferences.
-	// An adaptive request replaces DimensionWeights with strengths interpolated from them.
-	Tiers PreferenceWeights
-	// DimensionWeights holds the configured strengths; pickModels normalizes the four
-	// dimensions and leaves Temperature independent.
+	// DimensionWeights holds the preference's configured strengths; pickModels
+	// normalizes the four dimensions and leaves Temperature independent.
 	DimensionWeights DimensionWeights
 }
 
@@ -126,18 +123,6 @@ func SelectRoute(decision *Decision, previous *Route, policy Policy, candidates 
 	if trace == nil {
 		trace = &Trace{}
 	}
-	if policy.Preference == PreferenceAdaptive {
-		// mode 问题与任务类型无关：任务类型只决定走哪个榜单，unknown 或没有合法判断时成本倾向照样可用。
-		var probabilities map[string]float64
-		if decision != nil {
-			probabilities = decision.ModeProbabilities
-		}
-		mode := policy.Tiers.Blend(probabilities)
-		policy.DimensionWeights = mode.Weights
-		mode.Weights = mode.Weights.Normalized()
-		mode.Weight = mode.Weights.Cost
-		trace.Mode = &mode
-	}
 	available, overridable := candidates.Available, candidates.Overridable
 	profiles, validity := validateDecision(decision)
 	trace.Validity = &validity
@@ -204,8 +189,9 @@ func SelectRoute(decision *Decision, previous *Route, policy Policy, candidates 
 }
 
 // choose picks a model from one ranking's list. With scores and prices it
-// compares the four dimensions under the policy's weights; otherwise, or when no
-// scored model is servable, it takes the first available model in list order.
+// compares every servable candidate with the deterministic utility formula;
+// otherwise, or when no scored model is servable, it takes the first available
+// model in list order.
 // picked is set only for the comparison. Every call adds a step to trace.
 // ignoreClientReasoning 表示 available 撇开了客户端的推理字段（档位由判断定下时走 overridable），
 // effort 是这一步的期望档位，两者一起交给 Candidates.Costs，让主机按同一口径找出服务请求的模型名和渠道。
@@ -221,7 +207,7 @@ func (p Policy) choose(profile string, models []string, available func(string) b
 				return candidates.Costs(names, effort, ignoreClientReasoning)
 			}
 		}
-		pick, ok := pickModels(models, scores, p.DimensionWeights, servable, candidates.Price, costs, candidates.Metrics, candidates.Random, candidates.Why)
+		pick, ok := pickModels(models, scores, p.DimensionWeights, servable, candidates.Price, costs, candidates.Metrics, candidates.Why)
 		step.Skipped, step.SkippedMore = pick.skipped, pick.skippedMore
 		if ok {
 			picked, model, found = &pick, pick.Chosen, true

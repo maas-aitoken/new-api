@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
-	"math/rand/v2"
 	"net/http"
 	"slices"
 	"strconv"
@@ -153,7 +152,6 @@ type AutoCandidates struct {
 	// 预览的结果，见 autorouter.Candidates.Costs。为 nil 时只比较用户价。
 	Costs   func(names []string, effort string, ignoreClientReasoning bool) (map[string]autorouter.Cost, *autorouter.PreviewOutcome)
 	Metrics func(models []string) map[string]autorouter.MetricSample
-	Random  func() float64
 }
 
 // rememberAutoRoute records the route the next instruction and its sub-agents inherit.
@@ -192,13 +190,10 @@ func ResolveAutoModel(c *gin.Context, candidates AutoCandidates) (*autorouter.Re
 	overridable := func(name string) bool { return candidates.Serves(name, true) }
 	routing := autorouter.Candidates{
 		Available: available, Overridable: overridable, Price: candidates.Price,
-		Why: candidates.Why, Costs: candidates.Costs, Metrics: candidates.Metrics, Random: candidates.Random,
+		Why: candidates.Why, Costs: candidates.Costs, Metrics: candidates.Metrics,
 	}
 	if routing.Metrics == nil {
 		routing.Metrics = autoModelMetricsStore.Snapshot
-	}
-	if routing.Random == nil {
-		routing.Random = rand.Float64
 	}
 	trace := &autorouter.Trace{Judgment: autorouter.JudgmentNoInstruction}
 	result.Trace = trace
