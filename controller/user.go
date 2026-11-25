@@ -1309,7 +1309,7 @@ func ManageUser(c *gin.Context) {
 			common.ApiErrorT(c, "Invalid parameters")
 			return
 		}
-		user.Role = common.RoleAdminUser
+		user.Role = common.RoleCommonUser
 	default:
 		common.ApiErrorT(c, "Invalid parameters")
 		return
@@ -1383,7 +1383,7 @@ func ManageUser(c *gin.Context) {
 				if len(roots) <= 1 {
 					return errLastRoot
 				}
-				current.Role = common.RoleAdminUser
+				current.Role = common.RoleCommonUser
 			}
 			if err := current.UpdateWithTx(tx, false); err != nil {
 				return err

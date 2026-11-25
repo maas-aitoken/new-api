@@ -331,7 +331,7 @@ func TestManageUserDemoteRootPreservesRemainingRootAndRevokesSessions(t *testing
 	assert.Equal(t, http.StatusOK, response.Code)
 	assert.Contains(t, response.Body.String(), `"success":true`)
 	require.NoError(t, db.First(&target, target.Id).Error)
-	assert.Equal(t, common.RoleAdminUser, target.Role)
+	assert.Equal(t, common.RoleCommonUser, target.Role)
 	assert.EqualValues(t, 2, target.AuthVersion)
 	var session model.UserSession
 	require.NoError(t, db.First(&session, "sid = ?", "root-demotion-session").Error)
