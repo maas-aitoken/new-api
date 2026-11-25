@@ -110,10 +110,11 @@ func Distribute() func(c *gin.Context) {
 			}
 		}
 		// 令牌的模型配置方式（只在令牌鉴权的请求上有）。智能路由 key 在 chat / responses / messages 上
-		// 不管客户端传什么模型都改走 auto，模型池仍是 auto 的候选范围；embedding、图片等 auto 不支持的
-		// 接口按模型池直接调。smartKeyBlockedFormats 里的格式也是对话，但 auto 改写不了，平台开着 auto 时
-		// 整种格式都拒绝，不然写个具体模型就绕开了 auto。锁定模型 key（含旧令牌的空值）拒绝客户端传的 auto，
-		// 但平台关了 auto 时 "auto" 只是普通模型名，照常按白名单判断；额度档位用完时服务端强制的 auto 不拦。
+		// 不管客户端传什么模型都改走 auto，模型池仍是 auto 的候选范围；hybrid key 允许 auto 或模型池内的
+		// 具体模型；embedding、图片等 auto 不支持的接口按模型池直接调。smartKeyBlockedFormats 里的格式也是
+		// 对话，但 auto 改写不了，平台开着 auto 时智能路由整种格式都拒绝，hybrid 只拒绝 auto。锁定模型 key
+		// （含旧令牌的空值）拒绝客户端传的 auto，但平台关了 auto 时 "auto" 只是普通模型名，照常按白名单判断；
+		// 额度档位用完时服务端强制的 auto 不拦。
 		if routingMode, ok := common.GetContextKeyType[common.TokenRoutingMode](c, constant.ContextKeyTokenRoutingMode); ok && shouldSelectChannel && !pinned && !tierForcedAuto {
 			blockedMessage, blockedFormat := smartKeyBlockedFormats[relayconstant.Path2RelayMode(c.Request.URL.Path)]
 			switch {
@@ -122,7 +123,11 @@ func Distribute() func(c *gin.Context) {
 			case routingMode == common.TokenRoutingModeSmart && blockedFormat && autorouter_setting.GetAutoRouterSetting().Enabled:
 				abortWithOpenAiMessage(c, http.StatusForbidden, i18n.T(c, blockedMessage))
 				return
-			case routingMode != common.TokenRoutingModeSmart && service.IsAutoRouterRequest(c, modelRequest.Model):
+			case routingMode == common.TokenRoutingModeHybrid && service.IsAutoRouterRequest(c, modelRequest.Model):
+			case routingMode == common.TokenRoutingModeHybrid && blockedFormat && modelRequest.Model == autorouter.AutoModel && autorouter_setting.GetAutoRouterSetting().Enabled:
+				abortWithOpenAiMessage(c, http.StatusForbidden, i18n.T(c, i18n.MsgDistributorHybridAutoUnsupportedFormat))
+				return
+			case routingMode != common.TokenRoutingModeSmart && routingMode != common.TokenRoutingModeHybrid && service.IsAutoRouterRequest(c, modelRequest.Model):
 				abortWithOpenAiMessage(c, http.StatusForbidden, i18n.T(c, i18n.MsgDistributorTokenAutoForbidden))
 				return
 			}

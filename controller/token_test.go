@@ -703,8 +703,7 @@ func TestTokenAutoPreferenceOnCreateAndUpdate(t *testing.T) {
 	}{
 		{name: "create without the field leaves the platform default", target: "/api/token/"},
 		{name: "create with a preference", target: "/api/token/", field: "cost", want: "cost"},
-		{name: "create with the adaptive preference", target: "/api/token/", field: "adaptive", want: "adaptive"},
-		{name: "update to the adaptive preference", target: "/api/token/", stored: common.GetPointer("cost"), field: "adaptive", want: "adaptive"},
+		{name: "create with the retired adaptive preference is rejected", target: "/api/token/", field: "adaptive", rejected: true},
 		{name: "create with an empty preference", target: "/api/token/", field: ""},
 		{name: "create with an unknown preference is rejected", target: "/api/token/", field: "turbo", rejected: true},
 		{name: "update without the field keeps the stored preference", target: "/api/token/", stored: common.GetPointer("cost"), want: "cost"},
@@ -775,11 +774,17 @@ func TestTokenRoutingFieldsOnCreateAndUpdate(t *testing.T) {
 		{name: "create a smart routing key", target: "/api/token/",
 			request: map[string]any{"scene": "office", "routing_mode": "smart", "description": "notes"},
 			want:    fields{scene: common.TokenSceneOffice, routingMode: common.TokenRoutingModeSmart, description: "notes"}},
+		{name: "create a hybrid routing key", target: "/api/token/",
+			request: map[string]any{"scene": "office", "routing_mode": "hybrid"},
+			want:    fields{scene: common.TokenSceneOffice, routingMode: common.TokenRoutingModeHybrid}},
 		{name: "create with an unknown routing mode stores an empty one", target: "/api/token/",
 			request: map[string]any{"routing_mode": "turbo"},
 			want:    fields{scene: common.TokenSceneOffice}},
 		{name: "a business key is always locked to its models", target: "/api/token/",
 			request: map[string]any{"scene": "business", "routing_mode": "smart"},
+			want:    fields{scene: common.TokenSceneBusiness, routingMode: common.TokenRoutingModeFixed}},
+		{name: "a business key cannot use hybrid routing", target: "/api/token/",
+			request: map[string]any{"scene": "business", "routing_mode": "hybrid"},
 			want:    fields{scene: common.TokenSceneBusiness, routingMode: common.TokenRoutingModeFixed}},
 		{name: "update without the fields keeps a smart office key", target: "/api/token/",
 			stored: &fields{scene: common.TokenSceneOffice, routingMode: common.TokenRoutingModeSmart, description: "notes"},
@@ -851,6 +856,7 @@ func TestSmartRoutingKeyRejectsAPoolAutoCannotChooseFrom(t *testing.T) {
 		{name: "a pool with only unranked models", request: map[string]any{"routing_mode": "smart", "model_limits_enabled": true, "model_limits": "private-model,auto"}, rejected: true},
 		{name: "no pool", request: map[string]any{"routing_mode": "smart"}},
 		{name: "a locked key may hold unranked models", request: map[string]any{"routing_mode": "fixed", "model_limits_enabled": true, "model_limits": "private-model"}},
+		{name: "a hybrid key may hold unranked models for direct calls", request: map[string]any{"routing_mode": "hybrid", "model_limits_enabled": true, "model_limits": "private-model"}},
 		{name: "a business key is locked whatever it asks for", request: map[string]any{"scene": "business", "routing_mode": "smart", "model_limits_enabled": true, "model_limits": "private-model"}},
 		{name: "auto turned off passes the client's model through", request: map[string]any{"routing_mode": "smart", "model_limits_enabled": true, "model_limits": "private-model"}, disabled: true},
 	} {
@@ -1332,8 +1338,10 @@ func TestTokenListFiltersBySceneRoutingAndStatus(t *testing.T) {
 	}
 
 	seedFilterToken("f-office-smart-on", common.TokenSceneOffice, common.TokenRoutingModeSmart, common.TokenStatusEnabled)
+	seedFilterToken("f-office-hybrid-on", common.TokenSceneOffice, common.TokenRoutingModeHybrid, common.TokenStatusEnabled)
 	seedFilterToken("f-office-fixed-off", common.TokenSceneOffice, common.TokenRoutingModeFixed, common.TokenStatusDisabled)
 	seedFilterToken("f-biz-smart-on", common.TokenSceneBusiness, common.TokenRoutingModeSmart, common.TokenStatusEnabled)
+	seedFilterToken("f-biz-hybrid-on", common.TokenSceneBusiness, common.TokenRoutingModeHybrid, common.TokenStatusEnabled)
 	seedFilterToken("f-biz-fixed-expired", common.TokenSceneBusiness, common.TokenRoutingModeFixed, common.TokenStatusExpired)
 	// 另一个用户的令牌，任何筛选都不该带出来。
 	require.NoError(t, db.Create(&model.Token{
@@ -1354,18 +1362,18 @@ func TestTokenListFiltersBySceneRoutingAndStatus(t *testing.T) {
 		{
 			name:      "no filter returns every token of the caller",
 			query:     "",
-			wantNames: []string{"f-biz-fixed-expired", "f-biz-smart-on", "f-legacy-empty", "f-office-fixed-off", "f-office-smart-on"},
+			wantNames: []string{"f-biz-fixed-expired", "f-biz-hybrid-on", "f-biz-smart-on", "f-legacy-empty", "f-office-fixed-off", "f-office-hybrid-on", "f-office-smart-on"},
 		},
 		{
 			// 空 scene 必须归到 office 桶，与 common.NormalizeTokenScene 一致。
 			name:      "scene office includes rows with an empty scene",
 			query:     "&scene=office",
-			wantNames: []string{"f-legacy-empty", "f-office-fixed-off", "f-office-smart-on"},
+			wantNames: []string{"f-legacy-empty", "f-office-fixed-off", "f-office-hybrid-on", "f-office-smart-on"},
 		},
 		{
 			name:      "scene business",
 			query:     "&scene=business",
-			wantNames: []string{"f-biz-fixed-expired", "f-biz-smart-on"},
+			wantNames: []string{"f-biz-fixed-expired", "f-biz-hybrid-on", "f-biz-smart-on"},
 		},
 		{
 			// 与 Token.UsesSmartRouting 一致：只有办公场景显式设成 smart 的才算智能路由。
@@ -1374,10 +1382,15 @@ func TestTokenListFiltersBySceneRoutingAndStatus(t *testing.T) {
 			wantNames: []string{"f-office-smart-on"},
 		},
 		{
+			name:      "routing mode hybrid is only an office key set to hybrid",
+			query:     "&routing_mode=hybrid",
+			wantNames: []string{"f-office-hybrid-on"},
+		},
+		{
 			// 空值是升级前的旧令牌，保持原来的行为，即锁定模型；业务 key 一律锁定模型。
 			name:      "routing mode fixed includes an empty routing mode and every business key",
 			query:     "&routing_mode=fixed",
-			wantNames: []string{"f-biz-fixed-expired", "f-biz-smart-on", "f-legacy-empty", "f-office-fixed-off"},
+			wantNames: []string{"f-biz-fixed-expired", "f-biz-hybrid-on", "f-biz-smart-on", "f-legacy-empty", "f-office-fixed-off"},
 		},
 		{
 			name:      "status disabled",
@@ -1420,6 +1433,87 @@ func TestTokenListFiltersBySceneRoutingAndStatus(t *testing.T) {
 				slices.Sort(gotNames)
 				assert.Equal(t, tc.wantNames, gotNames, "%s: filtered rows", route.label)
 				assert.Equal(t, len(tc.wantNames), page.Total, "%s: filtered total", route.label)
+			}
+		})
+	}
+}
+
+func TestTokenRoutingModeFilterDatabaseMatrix(t *testing.T) {
+	for _, database := range []struct {
+		name, env, dialect string
+	}{
+		{"sqlite", "", "sqlite"},
+		{"mysql", "TEST_MYSQL_DSN", "mysql"},
+		{"postgres", "TEST_POSTGRES_DSN", "postgres"},
+	} {
+		t.Run(database.name, func(t *testing.T) {
+			dsn := os.Getenv(database.env)
+			if database.env != "" && dsn == "" {
+				t.Skip(database.env + " is not configured")
+			}
+
+			var db *gorm.DB
+			if database.dialect == "sqlite" {
+				db = setupTokenControllerTestDB(t)
+			} else {
+				var managedTokensTable *bool
+				db, managedTokensTable = openTokenControllerExternalDB(t, database.dialect, dsn)
+				require.NoError(t, db.AutoMigrate(&model.Token{}))
+				*managedTokensTable = true
+			}
+
+			seed := func(name string, scene common.TokenScene, mode common.TokenRoutingMode) {
+				t.Helper()
+				require.NoError(t, db.Create(&model.Token{
+					UserId: 1, Name: name, Key: name + "-key",
+					Status: common.TokenStatusEnabled, CreatedTime: 1, ExpiredTime: -1,
+					Scene: scene, RoutingMode: mode,
+				}).Error)
+			}
+			seed("office-smart", common.TokenSceneOffice, common.TokenRoutingModeSmart)
+			seed("office-hybrid", common.TokenSceneOffice, common.TokenRoutingModeHybrid)
+			seed("office-fixed", common.TokenSceneOffice, common.TokenRoutingModeFixed)
+			seed("business-hybrid", common.TokenSceneBusiness, common.TokenRoutingModeHybrid)
+			seed("legacy-empty", common.TokenSceneOffice, common.TokenRoutingModeSmart)
+			require.NoError(t, db.Model(&model.Token{}).Where("name = ?", "legacy-empty").
+				UpdateColumns(map[string]any{"scene": "", "routing_mode": ""}).Error)
+
+			for _, filter := range []struct {
+				mode common.TokenRoutingMode
+				want []string
+			}{
+				{common.TokenRoutingModeSmart, []string{"office-smart"}},
+				{common.TokenRoutingModeHybrid, []string{"office-hybrid"}},
+				{common.TokenRoutingModeFixed, []string{"business-hybrid", "legacy-empty", "office-fixed"}},
+			} {
+				tokens, total, err := model.ListTokens(model.TokenFilter{UserId: 1, RoutingMode: filter.mode}, 0, 10)
+				require.NoError(t, err)
+				var names []string
+				for _, token := range tokens {
+					names = append(names, token.Name)
+				}
+				slices.Sort(names)
+				assert.Equal(t, filter.want, names, "routing_mode=%s", filter.mode)
+				assert.EqualValues(t, len(filter.want), total, "routing_mode=%s", filter.mode)
+			}
+
+			for _, filter := range []struct {
+				mode common.TokenRoutingMode
+				want []string
+			}{
+				{common.TokenRoutingModeSmart, []string{"office-smart"}},
+				{common.TokenRoutingModeHybrid, []string{"business-hybrid", "office-hybrid"}},
+				{common.TokenRoutingModeFixed, []string{"office-fixed"}},
+			} {
+				tokens, total, err := model.ListAllTokens(model.AdminTokenFilter{RoutingMode: filter.mode}, 0, 10)
+				require.NoError(t, err)
+				var names []string
+				for _, token := range tokens {
+					names = append(names, token.Name)
+				}
+				slices.Sort(names)
+				assert.Equal(t, filter.want, names, "admin routing_mode=%s", filter.mode)
+				assert.EqualValues(t, len(filter.want), total, "admin routing_mode=%s", filter.mode)
 			}
 		})
 	}
@@ -1476,6 +1570,27 @@ func TestAdminListUserTokensFiltersTargetUser(t *testing.T) {
 		response := decodeAPIResponse(t, recorder)
 		assert.False(t, response.Success)
 	})
+}
+
+func TestAdminTokenListFiltersHybridRoutingMode(t *testing.T) {
+	db := setupTokenControllerTestDB(t)
+	seedToken(t, db, 1, "admin-hybrid", "admin-hybrid-key")
+	require.NoError(t, db.Model(&model.Token{}).Where("name = ?", "admin-hybrid").
+		UpdateColumn("routing_mode", common.TokenRoutingModeHybrid).Error)
+	seedToken(t, db, 1, "admin-smart", "admin-smart-key")
+	require.NoError(t, db.Model(&model.Token{}).Where("name = ?", "admin-smart").
+		UpdateColumn("routing_mode", common.TokenRoutingModeSmart).Error)
+
+	ctx, recorder := newAuthenticatedContext(t, http.MethodGet, "/api/token/admin?p=1&size=10&routing_mode=hybrid", nil, 1)
+	AdminListTokens(ctx)
+
+	response := decodeAPIResponse(t, recorder)
+	require.True(t, response.Success, response.Message)
+	var page tokenPageResponse
+	require.NoError(t, common.Unmarshal(response.Data, &page))
+	require.Len(t, page.Items, 1)
+	assert.Equal(t, "admin-hybrid", page.Items[0].Name)
+	assert.EqualValues(t, 1, page.Total)
 }
 
 // TestTokenFilterWithoutUserScopeReturnsNothing 锁住 TokenFilter 漏设 UserId 时查不到数据。

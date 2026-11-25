@@ -81,10 +81,11 @@ type AutoRouterSetting struct {
 	// current task types.
 	TaskScores map[string]map[string]float64 `json:"task_scores"`
 	// DefaultPreference is the preference of a key that sets none: one of the three
-	// fixed preferences, or adaptive to blend them from the request's judgment.
+	// preferences.
 	DefaultPreference string `json:"default_preference"`
-	// PreferenceWeights maps a preference to its four scoring strengths and
-	// sampling temperature. A preference missing from the map uses its built-in policy.
+	// PreferenceWeights maps a preference to the utility formula strengths.
+	// Temperature remains in the stored shape for compatibility and is ignored
+	// by deterministic model selection. A preference missing from the map uses its built-in policy.
 	PreferenceWeights autorouter.PreferenceWeights `json:"preference_weights"`
 	// RouteLogMode decides which auto requests leave a routing log: off, decisions
 	// (a request that called the classifier, or found no model at all) or all.
@@ -236,19 +237,15 @@ func (s *AutoRouterSetting) preferenceWeights(preference string) autorouter.Dime
 
 // Policy builds the routing policy for one request. preference is the key's own;
 // one that is empty or unknown uses DefaultPreference, and that falling back to
-// balanced when it is unknown too. An adaptive preference starts from balanced
-// and reads its weights from the three tiers using its mode answer.
+// balanced when it is unknown too. A preference retired from the options, such as
+// the former adaptive one, counts as unknown.
 func (s *AutoRouterSetting) Policy(preference string) autorouter.Policy {
 	ranking := s.Ranking()
 	for _, candidate := range []string{preference, s.DefaultPreference, autorouter.PreferenceBalanced} {
-		if slices.Contains(autorouter.SelectablePreferences, candidate) {
+		if slices.Contains(autorouter.Preferences, candidate) {
 			preference = candidate
 			break
 		}
-	}
-	tiers := autorouter.PreferenceWeights{}
-	for _, tier := range autorouter.Preferences {
-		tiers[tier] = s.preferenceWeights(tier)
 	}
 	return autorouter.Policy{
 		TaskModels:             ranking.TaskModels,
@@ -259,8 +256,7 @@ func (s *AutoRouterSetting) Policy(preference string) autorouter.Policy {
 		ContinuationTaskChange: s.ContinuationTaskChange,
 		TaskScores:             ranking.TaskScores,
 		Preference:             preference,
-		Tiers:                  tiers,
-		DimensionWeights:       tiers.Of(preference),
+		DimensionWeights:       s.preferenceWeights(preference),
 	}
 }
 

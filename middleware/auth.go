@@ -699,9 +699,9 @@ func SetupContextForToken(c *gin.Context, token *model.Token, parts ...string) e
 	common.SetContextKey(c, constant.ContextKeyTokenCrossGroupRetry, token.CrossGroupRetry)
 	common.SetContextKey(c, constant.ContextKeyTokenScene, common.NormalizeTokenScene(string(token.Scene)))
 	common.SetContextKey(c, constant.ContextKeyTokenRPM, token.RPM)
-	routingMode := common.TokenRoutingModeFixed
-	if token.UsesSmartRouting() {
-		routingMode = common.TokenRoutingModeSmart
+	routingMode := common.NormalizeTokenRoutingMode(string(token.RoutingMode))
+	if token.Scene == common.TokenSceneBusiness || routingMode == "" {
+		routingMode = common.TokenRoutingModeFixed
 	}
 	common.SetContextKey(c, constant.ContextKeyTokenRoutingMode, routingMode)
 	if token.AutoGroups != "" {

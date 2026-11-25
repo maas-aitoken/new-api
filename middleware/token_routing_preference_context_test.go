@@ -38,9 +38,11 @@ func TestSetupContextForTokenSetsTheEffectiveRoutingMode(t *testing.T) {
 		want  common.TokenRoutingMode
 	}{
 		{scene: common.TokenSceneOffice, mode: common.TokenRoutingModeSmart, want: common.TokenRoutingModeSmart},
+		{scene: common.TokenSceneOffice, mode: common.TokenRoutingModeHybrid, want: common.TokenRoutingModeHybrid},
 		{scene: common.TokenSceneOffice, mode: common.TokenRoutingModeFixed, want: common.TokenRoutingModeFixed},
 		{scene: common.TokenSceneOffice, mode: "", want: common.TokenRoutingModeFixed},
 		{scene: common.TokenSceneBusiness, mode: common.TokenRoutingModeSmart, want: common.TokenRoutingModeFixed},
+		{scene: common.TokenSceneBusiness, mode: common.TokenRoutingModeHybrid, want: common.TokenRoutingModeFixed},
 	} {
 		ctx := newTokenAutoGroupsContext()
 		require.NoError(t, SetupContextForToken(ctx, &model.Token{Id: 1, UserId: 2, Scene: tc.scene, RoutingMode: tc.mode}))

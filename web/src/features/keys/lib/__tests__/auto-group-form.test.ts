@@ -218,7 +218,7 @@ describe('API key auto model preference form mapping', () => {
     expect(transformFormDataToPayload(defaults).auto_preference).toBe('')
   })
 
-  test.each(['capability', 'balanced', 'cost', 'adaptive'] as const)(
+  test.each(['capability', 'balanced', 'cost'] as const)(
     'submits the chosen preference %s unchanged',
     (preference) => {
       const defaults = getApiKeyFormDefaultValues(false)
@@ -230,7 +230,7 @@ describe('API key auto model preference form mapping', () => {
     }
   )
 
-  test.each(['capability', 'balanced', 'cost', 'adaptive'])(
+  test.each(['capability', 'balanced', 'cost'])(
     'shows the stored preference %s when an existing key is edited',
     (stored) => {
       const defaults = transformApiKeyToFormDefaults({
@@ -243,7 +243,7 @@ describe('API key auto model preference form mapping', () => {
     }
   )
 
-  test.each([undefined, null, '', 'turbo'])(
+  test.each([undefined, null, '', 'turbo', 'adaptive'])(
     'treats a stored preference of %j as following the platform setting',
     (stored) => {
       const defaults = transformApiKeyToFormDefaults({

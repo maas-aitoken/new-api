@@ -8421,6 +8421,12 @@
   "Restore model-level capabilities": "恢復同模型級能力",
   "Same as model capabilities": "同模型級能力",
   "Same as model-level capability declaration.": "當前與模型級能力聲明完全一致。",
-  "Model-level declaration": "模型級聲明"
+  "Model-level declaration": "模型級聲明",
+  "Cost penalty": "成本懲罰",
+  "Quality {{quality}}, cost {{cost}}, capacity {{capacity}} and success {{success}}.": "品質 {{quality}}、成本 {{cost}}、容量 {{capacity}}、成功率 {{success}}。",
+  "Invalid comparison cost": "比較成本無效",
+  "Quality scale {{qualityScale}}. Cost tolerance {{costScale}} per million tokens. Capacity penalty coefficient {{capacityPenalty}}, success penalty coefficient {{successPenalty}}.": "品質係數 {{qualityScale}}。每百萬 token 成本容許值 {{costScale}}。容量懲罰係數 {{capacityPenalty}}，成功率懲罰係數 {{successPenalty}}。",
+  "The expected position runs from 0 (capability first) through 1 (balanced) to 2 (cost first). The four strengths are read along the line through the three preference policies and normalized before scoring.": "期望位置從 0（能力優先）經 1（均衡）到 2（成本優先）。四項強度沿三檔偏好策略插值，並在評分前正規化。",
+  "Retained candidates keep their scores from the full comparison.": "保留的候選會沿用完整比較中的分數。"
 }
 }

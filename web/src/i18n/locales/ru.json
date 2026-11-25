@@ -8421,6 +8421,12 @@
   "Restore model-level capabilities": "Восстановить возможности модели",
   "Same as model capabilities": "Как у модели",
   "Same as model-level capability declaration.": "Совпадает с объявлением возможностей модели.",
-  "Model-level declaration": "Объявление модели"
+  "Model-level declaration": "Объявление модели",
+  "Cost penalty": "Штраф за стоимость",
+  "Quality {{quality}}, cost {{cost}}, capacity {{capacity}} and success {{success}}.": "Качество {{quality}}, стоимость {{cost}}, ёмкость {{capacity}} и успешность {{success}}.",
+  "Invalid comparison cost": "Недопустимая стоимость для сравнения",
+  "Quality scale {{qualityScale}}. Cost tolerance {{costScale}} per million tokens. Capacity penalty coefficient {{capacityPenalty}}, success penalty coefficient {{successPenalty}}.": "Коэффициент качества {{qualityScale}}. Допустимая стоимость {{costScale}} за миллион токенов. Коэффициенты штрафа за загрузку {{capacityPenalty}} и за долю успешных запросов {{successPenalty}}.",
+  "The expected position runs from 0 (capability first) through 1 (balanced) to 2 (cost first). The four strengths are read along the line through the three preference policies and normalized before scoring.": "Ожидаемая позиция проходит от 0 (приоритет возможностей) через 1 (баланс) к 2 (приоритет стоимости). Четыре силы интерполируются между тремя политиками и нормализуются перед оценкой.",
+  "Retained candidates keep their scores from the full comparison.": "Сохранённые кандидаты сохраняют оценки полного сравнения."
 }
 }

@@ -39,6 +39,7 @@ const priceFormat = { digitsLarge: 4, digitsSmall: 6, abbreviate: false }
 type NumericCandidateKey =
   | 'score'
   | 'cost_score'
+  | 'cost_penalty'
   | 'capacity'
   | 'success'
   | 'utility'
@@ -121,6 +122,7 @@ export function PickTable(props: {
   const hasCapacityPremium = band.some((row) => (row.capacity_premium ?? 0) > 0)
   const previewOutcome = previewOutcomeLabel(t, pick.preview)
   const bandTruncation = props.truncated?.collections?.['result.pick.band']
+  const deterministic = typeof pick.cost_scale === 'number'
   const omittedProbability = bandTruncation?.omitted_probability
 
   const columns: StaticDataTableColumn<RoutePickCandidate>[] = [
@@ -209,8 +211,12 @@ export function PickTable(props: {
   }
 
   if (schema === 'current') {
+    if (deterministic) {
+      columns.push(scoreColumn('cost_penalty', t('Cost penalty')))
+    } else {
+      columns.push(scoreColumn('cost_score', t('Cost score')))
+    }
     columns.push(
-      scoreColumn('cost_score', t('Cost score')),
       scoreColumn('capacity', t('Capacity')),
       scoreColumn('success', t('Success'))
     )
@@ -228,27 +234,49 @@ export function PickTable(props: {
     ),
     cellClassName: cn(tableStyles.topNumericCell, 'font-semibold'),
   })
-  if (schema === 'current') {
+  if (schema === 'current' && !deterministic) {
     columns.push(scoreColumn('probability', t('Probability')))
   }
-
   return (
     <div className='space-y-1'>
       {schema === 'current' && pick.dimensions && (
         <p className='text-muted-foreground text-xs'>
-          {t(
-            'Quality {{quality}}, cost {{cost}}, capacity {{capacity}} and success {{success}}; sampling temperature {{temperature}}.',
-            {
-              quality: formatScore(pick.dimensions.quality),
-              cost: formatScore(pick.dimensions.cost),
-              capacity: formatScore(pick.dimensions.capacity),
-              success: formatScore(pick.dimensions.success),
-              temperature: formatScore(pick.dimensions.temperature),
-            }
-          )}
+          {deterministic
+            ? t(
+                'Quality {{quality}}, cost {{cost}}, capacity {{capacity}} and success {{success}}.',
+                {
+                  quality: formatScore(pick.dimensions.quality),
+                  cost: formatScore(pick.dimensions.cost),
+                  capacity: formatScore(pick.dimensions.capacity),
+                  success: formatScore(pick.dimensions.success),
+                }
+              )
+            : t(
+                'Quality {{quality}}, cost {{cost}}, capacity {{capacity}} and success {{success}}; sampling temperature {{temperature}}.',
+                {
+                  quality: formatScore(pick.dimensions.quality),
+                  cost: formatScore(pick.dimensions.cost),
+                  capacity: formatScore(pick.dimensions.capacity),
+                  success: formatScore(pick.dimensions.success),
+                  temperature: formatScore(pick.dimensions.temperature),
+                }
+              )}
           {comparesCost
             ? ` ${t('The cost multiplier never changes what the user is billed.')}`
             : null}
+        </p>
+      )}
+      {schema === 'current' && deterministic && (
+        <p className='text-muted-foreground text-xs'>
+          {t(
+            'Quality scale {{qualityScale}}. Cost tolerance {{costScale}} per million tokens. Capacity penalty coefficient {{capacityPenalty}}, success penalty coefficient {{successPenalty}}.',
+            {
+              qualityScale: formatScore(pick.quality_scale),
+              costScale: formatPrice(pick.cost_scale),
+              capacityPenalty: formatScore(pick.capacity_penalty),
+              successPenalty: formatScore(pick.success_penalty),
+            }
+          )}
         </p>
       )}
       {schema === 'current' && (
@@ -286,25 +314,30 @@ export function PickTable(props: {
       {bandTruncation && (
         <>
           <p className='text-muted-foreground text-xs'>
-            {typeof omittedProbability === 'number' &&
-            Number.isFinite(omittedProbability)
-              ? t(
+            {deterministic ||
+            typeof omittedProbability !== 'number' ||
+            !Number.isFinite(omittedProbability)
+              ? t('Showing {{kept}} of {{total}} compared models.', {
+                  kept: bandTruncation.kept,
+                  total: bandTruncation.total,
+                })
+              : t(
                   'Showing {{kept}} of {{total}} compared models; omitted sampling probability {{probability}}.',
                   {
                     kept: bandTruncation.kept,
                     total: bandTruncation.total,
                     probability: formatScore(omittedProbability),
                   }
-                )
-              : t('Showing {{kept}} of {{total}} compared models.', {
-                  kept: bandTruncation.kept,
-                  total: bandTruncation.total,
-                })}
+                )}
           </p>
           <p className='text-muted-foreground text-xs'>
-            {t(
-              'Retained candidates keep their scores and probabilities from the full comparison.'
-            )}
+            {deterministic
+              ? t(
+                  'Retained candidates keep their scores from the full comparison.'
+                )
+              : t(
+                  'Retained candidates keep their scores and probabilities from the full comparison.'
+                )}
           </p>
         </>
       )}

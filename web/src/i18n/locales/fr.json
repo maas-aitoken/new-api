@@ -8421,6 +8421,12 @@
   "Restore model-level capabilities": "Restaurer les capacités du modèle",
   "Same as model capabilities": "Identique aux capacités du modèle",
   "Same as model-level capability declaration.": "Identique à la déclaration de capacité du modèle.",
-  "Model-level declaration": "Déclaration du modèle"
+  "Model-level declaration": "Déclaration du modèle",
+  "Cost penalty": "Pénalité de coût",
+  "Quality {{quality}}, cost {{cost}}, capacity {{capacity}} and success {{success}}.": "Qualité {{quality}}, coût {{cost}}, capacité {{capacity}} et réussite {{success}}.",
+  "Invalid comparison cost": "Coût de comparaison non valide",
+  "Quality scale {{qualityScale}}. Cost tolerance {{costScale}} per million tokens. Capacity penalty coefficient {{capacityPenalty}}, success penalty coefficient {{successPenalty}}.": "Coefficient de qualité {{qualityScale}}. Tolérance de coût de {{costScale}} par million de jetons. Coefficients de pénalité de capacité {{capacityPenalty}} et de taux de réussite {{successPenalty}}.",
+  "The expected position runs from 0 (capability first) through 1 (balanced) to 2 (cost first). The four strengths are read along the line through the three preference policies and normalized before scoring.": "La position attendue va de 0 (capacité) à 1 (équilibre) puis 2 (coût). Les quatre intensités sont interpolées entre les trois politiques puis normalisées avant le score.",
+  "Retained candidates keep their scores from the full comparison.": "Les candidats conservés gardent leurs scores de la comparaison complète."
 }
 }

@@ -102,7 +102,7 @@ Artificial Analysis 免费接口只返回指数，不含单项 benchmark 分数�
 - **不用语言类榜单**：中文、英文等分榜按提问语言切分，测的不是任务能力，任何画像都不使用。
 - **数学、逻辑题不单列**：互联网公司场景占比低，由 `general` 一级画像中的 `lb.reasoning` 覆盖。
 - **difficulty、task_change、larger_model_benefit 三个问题不变。**
-- **新增 `mode` 问题（问题集版本 v6）**：判断用户更看重结果质量与可靠（`capability`）、没有明显倾向（`balanced`），还是要省钱省时间（`cost`），返回三项的概率。判据只看用户这条消息本身，任务的难易不是依据，难度已经由 `difficulty` 管。每次调 jev 都问，不论令牌用哪种偏好，这样判断缓存里的每一条都带这个答案，令牌中途换成自适应偏好也不会拿到缺答案的缓存。问题集变了，缓存的判断随版本号失效一次。
+- **不再问 `mode`（问题集版本 v7）**：v6 曾加过 `mode` 问题，让 jev 判断用户更看重质量还是成本，供自适应偏好插值权重。质量与成本的取舍应由任务难度决定，而不是另一道判断题，所以 v7 去掉了这道题和自适应偏好。问题集变了，缓存的判断随版本号失效一次。
 
 ## 5. 候选模型与名称匹配
 
@@ -176,61 +176,45 @@ jev 的回答分三种：
 
 路由日志与 trace 记录 `task_type`（jev 选中的二级类）、`route_profile`（实际使用的画像）和 `route_fallback`（`leaf` / `class` / `default`），用于复核分类和兜底的发生频率。消费日志的 `admin_info.auto_router` 带完整的决策过程，包括第 7.3 节的比较明细，成功和失败的请求都写，样例见第 7.4 节。一次请求是怎么一步步走到最后那个模型的，另存在选路日志里，见第 7.5 节。
 
-### 7.3 四维评分与采样
+### 7.3 统一效用评分
 
-每一级 `task_models` 列表和 `default_models` 都对所有可服务、有榜单分且可按 token 计价的模型做一次整体比较。auto 只评估模型状态，不维护渠道级质量或成功率评分；渠道能力与调度预览负责硬可用性过滤，渠道费用倍率只进入成本维度。
+每一级 `task_models` 列表和 `default_models` 都对所有可服务、有榜单分且可按 token 计价的模型做一次整体比较。auto 只评估模型状态，不维护渠道级质量或成功率榜单；渠道能力与调度预览负责硬可用性过滤，渠道费用倍率进入比较成本。
 
-**偏好**：质量、成本、容量和成功率是四项独立配置的强度，连同采样温度在「偏好与成本」页按三档分别设置。保存时保留填写的原始强度；每次选路把四项除以它们的总和，得到合计为 1 的实际权重。温度不参与归一化，独立控制最后的随机探索。
+**偏好**：三档偏好共用一套效用公式。质量强度决定榜单分的尺度，成本强度映射为固定的成本容忍度，容量和成功率强度决定运行状态惩罚。温度字段保留用于兼容旧设置和旧日志，不参与新选路。
 
-| 偏好 | 含义 | 质量强度 | 成本强度 | 容量强度 | 成功率强度 | 温度 |
-| --- | --- | --- | --- | --- | --- | --- |
-| `capability` 能力优先 | 不为价格让分，取榜单分最高的 | 0.6 | 0 | 0.2 | 0.2 | 0.12 |
-| `balanced` 均衡 | 在质量、成本、容量和成功率之间取平衡 | 0.4 | 0.2 | 0.2 | 0.2 | 0.12 |
-| `cost` 成本优先 | 为低价让出较多的分 | 0.2 | 0.4 | 0.2 | 0.2 | 0.12 |
+| 偏好 | 质量强度 | 成本强度 | 成本容忍度 B（美元/百万 token） | 容量强度 | 成功率强度 |
+| --- | --- | --- | --- | --- | --- |
+| `capability` 能力优先 | 0.6 | 0 | 40 | 0.2 | 0.2 |
+| `balanced` 均衡 | 0.4 | 0.2 | 8.5 | 0.2 | 0.2 |
+| `cost` 成本优先 | 0.2 | 0.4 | 0.5 | 0.2 | 0.2 |
 
-令牌没设偏好（或值不认识）时用平台的 `default_preference`，出厂是 `balanced`；它也不认识时用 `balanced`。这个偏好只决定 auto 选哪个模型，和 Scheduler 的路由倾向（决定选定的模型走哪个渠道）互不相干，两边不读对方的设置。比价时会看候选会落到哪个渠道（见下面的“价格”），Scheduler 决定渠道时会去问它，但那只是为了取那个渠道的费用倍率，不改变这里的偏好。
-
-**自适应偏好**：令牌和 `default_preference` 还可以选 `adaptive`（界面上叫“按请求判断”）。它没有固定策略，每个请求用 jev 的 `mode` 判断，从三档策略里折算出本次的质量、成本、容量、成功率权重和温度，再按下面的步骤比较。`preference_weights` 只有三个偏好键，写 `adaptive` 会被拒绝。
-
-折算方法：三档记为位置 0（`capability`）、1（`balanced`）、2（`cost`），先把 `mode` 给三项的概率归一，对位置求期望，再沿三档相邻点连成的折线分别读出四项原始强度和温度，随后归一化四维强度。下表用默认的原始成本强度 w 演示：
-
-| 能力 / 均衡 / 成本 | 期望位置 | w |
-| --- | --- | --- |
-| 0 / 1 / 0 | 1 | 0.2000 |
-| 0.1 / 0.6 / 0.3 | 1.2 | 0.2400 |
-| 0.3 / 0.6 / 0.1 | 0.8 | 0.1600 |
-| 1/3 / 1/3 / 1/3 | 1 | 0.2000 |
-| 0.5 / 0 / 0.5 | 1 | 0.2000 |
-| 0 / 0 / 1 | 2 | 0.4000 |
-
-默认的 0 / 0.2 / 0.4 间距均匀，所以按三项概率直接求 w 的平均值与按期望位置折线取值相同；保留折线是为了自定义三档策略间距不均时，仍按偏好位置取值。判断完全确定时就是该档的 w，对称的不确定落在均衡档，概率从能力移向成本时 w 不会变小。折线假定三档的 w 按能力、均衡、成本递增，界面和接口目前不强制这一点。
-
-没有可用的 `mode` 答案（没有判断、答案缺失、概率含负数或 NaN、总和不为正）时用均衡档的完整策略，选路日志里 `mode.reason` 是 `no_answer`。`mode` 与任务类型无关：任务类型是 `unknown`、改走默认模型时，判断出的策略照样用。沿用上一轮模型的请求不做比较，策略只记录不使用。每次请求用缓存里的概率和当前的 `preference_weights` 重新折算，平台改了三档策略，已缓存的判断立刻按新值读。
+令牌没设偏好（或值不认识）时用平台的 `default_preference`，出厂是 `balanced`；它也不认识时用 `balanced`。这个偏好只决定 auto 选哪个模型，和 Scheduler 的路由倾向互不相干。比价时会看候选会落到哪个渠道，Scheduler 只负责给比较成本提供渠道费用倍率。
 
 **候选**：列表里同时满足下面三条的模型。
 
 - 在该画像下有榜单分（`task_scores`）。
-- 当前可用：令牌白名单允许、所在分组启用，并且至少有一个渠道可用（已启用、支持当前请求路径、没被熔断，渠道的生效能力满足请求）。判断时撇开客户端自己写的推理档位，因为按榜单选模型时档位由判断定下。
+- 当前可用：令牌白名单允许、所在分组启用，并且至少有一个渠道可用。判断时撇开客户端自己写的推理档位，因为档位由本次判断定下。
 - 有可比较的价格：按 token 计价，且用户侧价格已配置。
 
-没配置价格的模型计费时会直接失败，任何路径都不选。按次计价的模型可以被选中，但没法和按 token 计价的模型比价，所以不进入比较，只会在比较选不出结果时按列表顺序出现。
+没配置价格的模型计费时会直接失败，任何路径都不选。按次计价的模型可以被选中，但没法和按 token 计价的模型比较，只会在比较选不出结果时按列表顺序出现。
 
 **步骤**：
 
-1. 先按当前请求的能力、白名单、分组和价格过滤候选，再估算首次尝试的比较成本；Scheduler 预览明确没有渠道的模型直接排除。不再按质量分差裁掉低分模型。
-2. 把四项原始强度归一化，每个候选计算 `Quality`、`CostScore`、`Capacity`、`Success` 四个 `[0,1]` 维度，再加权得到 `Utility`。
-3. 按 `softmax(Utility / temperature)` 计算每个候选的概率并采样。温度为 0 时不探索，确定选择 Utility 最高的模型；并列时取榜单靠前的模型。
-4. 如果随机源为 nil（确定性调用和测试），同样选择 Utility 最高的模型。生产请求注入真实随机源。
+1. 先按当前请求的能力、白名单、分组和价格过滤候选，再估算首次尝试的比较成本。Scheduler 预览明确没有渠道的模型直接排除。不按质量分差预先截断候选。
+2. 对每个候选计算统一效用分。质量、成本、容量和成功率始终在同一公式中发挥作用。
+3. 按效用分降序排列，选第一名。效用相同先选比较成本较低者，再按模型名字稳定排序。没有随机抽样，候选数量不会稀释高分模型的选择机会。
 
-令 `S = quality + cost + capacity + success`，`Weight_i = Strength_i / S`，则 `Utility = Weight_quality·Quality + Weight_cost·CostScore + Weight_capacity·Capacity + Weight_success·Success`。保存的是四项原始强度，`Pick.Dimensions` 和自适应 `ModeTrace.Weights` 记录归一化后的实际权重，`ModeTrace.Tiers` 保留原始三档配置。四项全为零时使用该档内置默认四维强度，仍保留配置的温度。
-
-**成本归一化**：令 `C_i` 为模型的比较成本，`C_min` 为候选中最低的正成本。
+设 `Q` 为榜单分，`C` 为比较成本，`A` 为剩余容量，`S` 为平滑成功率，`B` 为当前偏好的成本容忍度：
 
 ```text
-CostScore_i = clamp(1 - ln(C_i/C_min)/ln(10), 0, 1)
+QualityScale = normalized_quality_strength / (0.6 - min(normalized_cost_strength, 0.4))
+CostPenalty = (C / B)^2 + 0.02 × log2(1 + C)
+CapacityPenalty = (0.04 × ln(2) / 0.25) × normalized_capacity_strength / 0.2 × (1 - A)
+SuccessPenalty = (0.04 × ln(2) / 0.10) × normalized_success_strength / 0.2 × (1 - S)
+Utility = QualityScale × Q - CostPenalty - CapacityPenalty - SuccessPenalty
 ```
 
-免费模型和最低正成本模型得 1，同价模型都得 1；达到最低正成本 10 倍及以上得 0，其余按对数位置线性插值。
+`B` 由成本强度在三个内置锚点之间按对数插值，归一化成本强度达到 0.4 时取下限 0.5。比较成本为负，或成本惩罚无法表示为有限数时，该模型不参与评分比较。同等质量和运行状态下成本越低，效用越高。质量接近时，较贵模型需要足够的质量增益来覆盖额外成本。加入更便宜的模型时，其他模型的成本惩罚保持原值。
 
 **容量**：直接读取模型-渠道能力设置的 RPM、TPM、并发上限和当前用量。渠道选择沿用首次尝试的实际规则：调度器预览确定渠道时只计算该渠道，否则按会话亲和或渠道权重计算首次命中概率；已禁用、被能力门控排除的渠道不参与。相同容量池只计算一次；非资源池渠道只有至少设置一项上限时才参与。
 
@@ -252,9 +236,9 @@ Success_i = (Successes + 4) / (Samples + 4)
 - 其余情况按原生选渠道的规则：会话亲和绑定了渠道就是那个渠道；否则按分组顺序取第一个过滤后还有渠道的分组，在最高优先级那一档里按权重算各渠道的命中概率，倍率取期望。
 - 渠道范围与选定模型后一致：令牌分组里可用的渠道，能力门控 enforce 下再按同一口径收窄。计费分组取首次会命中的分组（令牌分组是 `auto` 时，是第一个在这个渠道上服务该模型的分组），用户价按这个分组的倍率算。
 
-**费用倍率**：在模型管理 → 能力设置的渠道卡上配，按用户请求的模型名（映射之前）存，和计费同侧：同一渠道里映射到同一上游的两个别名各配各的倍率。RPM/TPM/并发额度则按映射后发给上游的名字存，几个别名共用。没配倍率按 1。费用倍率不参与计费，只乘 `cost_actual` 和这里的比较成本；所有候选的倍率都一样时在对数归一化里抵消，选择与只比用户价相同。
+**费用倍率**：在模型管理 → 能力设置的渠道卡上配，按用户请求的模型名（映射之前）存，和计费同侧：同一渠道里映射到同一上游的两个别名各配各的倍率。RPM/TPM/并发额度则按映射后发给上游的名字存，几个别名共用。没配倍率按 1。费用倍率不参与计费，只乘 `cost_actual` 和这里的比较成本；统一调高候选的倍率会增大绝对成本惩罚，也可能改变模型排序。
 
-**价格**：`price` 是用户侧混合报价，只进入 `cost = price × 渠道费用倍率` 和上面的对数成本归一化。费用倍率不改变真实计费；容量和成功率是独立维度，不再乘进价格。
+**价格**：`price` 是用户侧混合报价，只进入 `cost = price × 渠道费用倍率` 和统一效用公式的 `CostPenalty`。费用倍率不改变真实计费；容量和成功率通过各自的惩罚项参与效用。
 
 **不做比较的情况**：
 
@@ -266,27 +250,27 @@ Success_i = (Successes + 4) / (Samples + 4)
 
 ### 7.4 示例
 
-下面的数字只用来演示四维公式，不对应某份榜单快照。设均衡档原始强度为质量 0.4、成本 0.2、容量 0.2、成功率 0.2，归一化分母为 1，温度 0.12。
+下面的数字只用来演示统一效用公式，不对应某份榜单快照。设均衡档质量强度为 0.4、成本强度为 0.2、容量和成功率强度均为 0.2，因此质量尺度为 1，成本容忍度 B 为 8.5。
 
 **例 1：同一组候选的 Utility**
 
-三个候选都可服务、可计价、有榜单分；比较成本已经乘过渠道费用倍率。
+三个候选都可服务、可计价、有榜单分；比较成本已经乘过渠道费用倍率。容量和成功率使用现有定义。
 
-| 模型 | Quality | 成本 | CostScore | RPM | Capacity | 成功/样本 | Success |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| strong | 0.98 | 10.00 | 0 | 30 | 0.70 | 96/100 | 0.9615 |
-| cheap | 0.91 | 1.00 | 1 | 50 | 0.50 | 4/8 | 0.6667 |
-| idle | 0.94 | 3.16 | 0.5003 | 20 | 0.80 | 0/0 | 1 |
+| 模型 | Quality | 成本 | Capacity | Success |
+| --- | --- | --- | --- | --- |
+| strong | 0.98 | 10.00 | 0.70 | 100/104 |
+| cheap | 0.91 | 1.00 | 0.50 | 8/12 |
+| idle | 0.94 | 3.16 | 0.80 | 1 |
 
-总 RPM=100，低样本模型有 4 个虚拟成功。以 `strong` 为例：`Utility = 0.4×0.98 + 0.2×0 + 0.2×0.70 + 0.2×0.9615 = 0.7243`。三者 Utility 为 0.7243、0.7973 和 0.8361；温度为 0 时选 `idle`，温度大于 0 时三者都有非零概率。
+`strong` 的成本惩罚为 `1.4533`，容量惩罚为 `0.0333`，成功率惩罚为 `0.0107`，最终效用为 `-0.5172`。按完整精度计算，三个模型的效用降序为 `idle`（0.7385）、`cheap`（0.7283）、`strong`（-0.5172），选择 `idle`。
 
-**例 2：独立调整质量和成本强度**
+**例 2：偏好改变成本容忍度**
 
-同样三个候选，改用成本优先档的原始强度：质量 0.2、成本 0.4，容量和成功率不变。`strong` 的 Utility 降为 0.5283，`cheap` 升为 0.8153，`idle` 为 0.7481。所有候选仍参与采样，低分或高价模型不会被提前删除。
+同样三个候选，能力优先的 B 为 40，均衡的 B 为 8.5，成本优先的 B 为 0.5。成本容忍度越低，价格惩罚越大，但质量、容量和成功率仍在同一个公式里计算。能力优先不会无条件选最高质量模型，质量差不足以覆盖价差时仍会选中等模型。
 
 **例 3：近期流量分散请求**
 
-窗口内 `busy` 有 90 RPM、`idle` 有 10 RPM，总 RPM=100，则 Capacity 分别为 0.1 和 0.9。其它维度和原始强度总和不变时，仅容量项就让 `idle` 多 `Weight_capacity×0.8` Utility。下一个窗口流量变化后概率随之变化，不需要先失败再重试来分散流量。
+窗口内 `busy` 的 Capacity 为 0.1，`idle` 的 Capacity 为 0.9。两者其它输入相同，`idle` 少承担 `0.1109 × (0.9 - 0.1) ≈ 0.0887` 的容量惩罚，因此效用更高。下一次选路读取新的容量和成功率后，首选模型可以确定性换位，不需要随机抽样或失败重试来分散流量。
 
 **例 4：从 jev 的概率到画像**
 
@@ -300,7 +284,7 @@ Success_i = (Successes + 4) / (Samples + 4)
 
 **例 5：一次决策在日志里的样子**
 
-例 1 的请求（均衡档），难度 3，`larger_model_benefit` 为 0.2，不到 0.5 所以不提档。消费日志 `admin_info.auto_router`（数值保留四位小数）：
+例 1 的请求（均衡档），难度 3，`larger_model_benefit` 为 0.2，不到 0.5 所以不提档。效用最高的 `idle` 被选中。消费日志 `admin_info.auto_router`（数值保留四位小数）：
 
 ```json
 {
@@ -322,11 +306,15 @@ Success_i = (Successes + 4) / (Samples + 4)
   "effort_override": true,
   "pick": {
     "chosen": "idle",
-    "dimensions": {"quality": 0.4, "cost": 0.2, "capacity": 0.2, "success": 0.2, "temperature": 0.12},
+    "dimensions": {"quality": 0.4, "cost": 0.2, "capacity": 0.2, "success": 0.2, "temperature": 0},
+    "quality_scale": 1,
+    "cost_scale": 8.5,
+    "capacity_penalty": 0.1109,
+    "success_penalty": 0.2773,
     "band": [
-      {"model": "strong", "score": 0.98, "price": 10, "cost_score": 0, "capacity": 0.7, "success": 0.9615, "samples": 100, "utility": 0.7243, "probability": 0.1860},
-      {"model": "cheap", "score": 0.91, "price": 1, "cost_score": 1, "capacity": 0.5, "success": 0.6667, "samples": 8, "utility": 0.7973, "probability": 0.3419},
-      {"model": "idle", "score": 0.94, "price": 3.16, "cost_score": 0.5003, "capacity": 0.8, "success": 1, "samples": 0, "utility": 0.8361, "probability": 0.4721}
+      {"model": "idle", "score": 0.94, "price": 3.16, "cost_penalty": 0.1793, "capacity_penalty": 0.0222, "capacity": 0.8, "success": 1, "samples": 0, "utility": 0.7385},
+      {"model": "cheap", "score": 0.91, "price": 1, "cost_penalty": 0.0338, "capacity_penalty": 0.0555, "success_penalty": 0.0924, "capacity": 0.5, "success": 0.6667, "samples": 8, "utility": 0.7283},
+      {"model": "strong", "score": 0.98, "price": 10, "cost_penalty": 1.4533, "capacity_penalty": 0.0333, "success_penalty": 0.0107, "capacity": 0.7, "success": 0.9615, "samples": 100, "utility": -0.5172}
     ]
   },
   "applied_effort": "high",
@@ -337,8 +325,8 @@ Success_i = (Successes + 4) / (Samples + 4)
 - `profile` 是实际用的榜单；它和 `decision.task_type` 不一致，说明发生了回退（回到大类或默认）。
 - `source` 是 `jev`（本次调用）、`cache`（判断缓存命中）、`inherit`（沿用上一轮）或 `default`（没有可用信号）。
 - `preference` 是这次请求用的偏好：令牌自己设的，没设则是平台的 `default_preference`。
-- `pick` 只在做过四维比较时出现。`dimensions` 记录归一化后的本次四维权重和独立温度，`band` 保留历史字段名但包含全部候选，`utility` 是加权总分，`probability` 是 softmax 采样概率，`chosen` 是选中的模型。沿用上一轮模型和按列表顺序取第一个时没有 `pick`。线上日志里的数值是完整精度，不是示例里的四位小数。
-- `band` 的每一项还有 `cost_multiplier`（首次会落到的渠道的费用倍率）、`cost`（比较成本 = `price` × 倍率）、`cost_score`、`capacity`、`success`、`samples`、`utility` 和 `probability`。`cost_source` 为 `scheduler` 调度器预览、`affinity` 会话亲和或 `expected` 按命中概率的期望；`channel_id` 是确定会落到的渠道，`channels` 是参与期望的渠道个数。`price` 仍是用户侧价格。`channel_id` 来自预览时，和使用日志里实际落到的渠道对照，就能看出预览和正式调度有没有选得不一样。
+- `pick` 只在做过比较时出现。`dimensions` 记录归一化后的策略强度，`quality_scale`、`cost_scale`、`capacity_penalty` 和 `success_penalty` 记录本次公式参数，`band` 保留历史字段名但按效用分降序排列，`utility` 是确定性选路分，`chosen` 是第一名。旧日志里的 `probability` 只作为历史字段保留。沿用上一轮模型和按列表顺序取第一个时没有 `pick`。线上日志里的数值是完整精度，不是示例里的四位小数。
+- `band` 的每一项还有 `cost_multiplier`（首次会落到的渠道的费用倍率）、`cost`（比较成本 = `price` × 倍率）、`cost_penalty`、`capacity_penalty`、`success_penalty`、`capacity`、`success`、`samples` 和 `utility`。旧日志可能只有 `cost_score` 和 `probability`。`cost_source` 为 `scheduler` 调度器预览、`affinity` 会话亲和或 `expected` 按命中概率的期望；`channel_id` 是确定会落到的渠道，`channels` 是参与期望的渠道个数。`price` 仍是用户侧价格。`channel_id` 来自预览时，和使用日志里实际落到的渠道对照，就能看出预览和正式调度有没有选得不一样。
 - 配了 Scheduler 时，`pick.preview` 记这次比价问预览的结果：`status` 为 `answered` 表示 Scheduler 回答了；其余是没拿到回答的原因，`not_scheduler_decided`（这次不由 Scheduler 定渠道：影子模式、金丝雀没命中或紧急停用）、`not_configured`、`circuit_open`、`unsupported`（地址都回 404）、`timeout`、`failed`（带 `http_status`，连不上时没有）、`bad_response`。回答了、某个模型却没用上它的答案时，`band` 里那一项的 `preview` 写原因：`not_cached`（还没加载）、`error`、`unusable_channel`（给的渠道在 new-api 这边没法报价）、`over_limit`（超过 64 个）。选路过程里，整次的原因写在候选表上方，单个模型的原因写在它的“费用倍率”下面。
 - `effort` 是第 7.2 节定出的期望档位，`applied_effort` 是按模型的渠道声明收敛后真正写进请求体的档位，`effort_action` 是 `set`（写入）、`keep`（不碰客户端字段）或 `strip`（模型不支持推理，去掉客户端字段）。`effort_override` 为 true 表示档位由这次判断定下（`leaf` 是二级类，或 `unknown` 但收益达到提档阈值），覆盖了客户端的推理字段。`effort_in_body` 为 true 表示档位写进请求体、模型名保持裸名；为 false 时档位拼在模型名后缀上（如 `gpt-5-high`）。
 
@@ -352,7 +340,6 @@ Success_i = (Successes + 4) / (Samples + 4)
 - 判断从哪来：现调了 jev、命中判断缓存、jev 刚失败过（60 秒内不重试）、jev 调用失败、会话继承、后台辅助请求、没有可分类的指令，或者根本没有模型能服务。
 - 判断合不合法：合法时按哪些榜单选（`unknown` 没有榜单）；不合法或没有判断时的原因（jev 没答、答案没有难度、任务类型不在给定选项里）。
 - 有上一轮路由时，是否延续，以及任务变化值对阈值。
-- 自适应偏好的请求：三个偏好各占的概率、期望位置、本次用的四维权重和温度，以及当时平台设的三档策略；没有可用判断时写明回退到均衡档。抽屉里只在这次真的做了四维比较时才显示这一步，沿用上一轮模型或按榜单顺序取第一个的请求没用到这套策略。
 - 难度怎么变成档位：难度对应的档位、是否被上一轮的档位抬高、是否因大模型收益再提了一档。
 - 各榜单依次试了什么，每一级的结果（四维比较选出、按列表顺序取第一个、没有可用的、沿用上一轮），以及榜单里分数够高却没被选中的模型各自的原因：令牌的模型白名单不允许、分组里没启用、没有启用的渠道、没有配价格、渠道能力不满足请求、按次计费没法比价、被客户端自己的推理设置排除、Scheduler 此刻没有能接它的渠道（强制模式下预览给出的）。每个榜单最多记 8 个，其余只计数。
 - 没有任何模型能服务时，按原因汇总所有榜单里的模型个数，并各列几个例子。
@@ -390,8 +377,8 @@ Success_i = (Successes + 4) / (Samples + 4)
 | `autorouter_setting.task_models` | 内置榜单 | 画像名 → 模型列表 |
 | `autorouter_setting.task_scores` | 内置榜单 | 画像名 → 模型 → 榜单分，第 7.3 节比较用；与 `task_models` 一起生成、一起刷新 |
 | `autorouter_setting.default_models` | 内置榜单 | 默认模型列表 |
-| `autorouter_setting.default_preference` | `balanced` | 令牌没设 auto 偏好时用的偏好：`capability`、`balanced`、`cost`、`adaptive`；不认识的值按 `balanced` |
-| `autorouter_setting.preference_weights` | 第 7.3 节三档默认原始强度 | 第 7.3 节三个固定偏好的完整策略；保存原始四维强度和独立温度，选路时归一化四维强度；JSON 里没写的偏好和维度用内置值，四维全零回退该档默认强度；直接写库的负数和 NaN 按 0，大于 1 按 1；只接受这三个键，`adaptive` 没有自己的策略，写进来会被拒绝，自适应请求从三档策略折算四维权重和温度 |
+| `autorouter_setting.default_preference` | `balanced` | 令牌没设 auto 偏好时用的偏好：`capability`、`balanced`、`cost`；不认识的值（包括已经下线的 `adaptive`）按 `balanced` |
+| `autorouter_setting.preference_weights` | 第 7.3 节三档默认强度 | 第 7.3 节三个固定偏好的效用公式参数；保存原始四维强度和兼容字段温度，选路时归一化四维强度并映射成本容忍度；JSON 里没写的偏好和维度用内置值，四维全零回退该档默认强度；直接写库的负数和 NaN 按 0，大于 1 按 1；只接受这三个键 |
 | `autorouter_setting.rank_sources` | 内置榜单 | 各来源快照日期、生成时间、`taxonomy_version`；手工编辑保存后多一项 `edited_at`，刷新和恢复内置会连同改动一起换掉 |
 | `autorouter_setting.jev_endpoint`、`jev_model`、`jev_api_key` | 空 | jev 的地址、模型和密钥；为空时分别回退到环境变量 `JEV_ENDPOINT`、`JEV_MODEL`、`JEV_API_KEY`。写入前服务端校验：地址必须是 http/https，密钥和模型不能含空白或换行 |
 | `autorouter_setting.artificial_analysis_api_key`、`design_arena_api_key`、`openrouter_api_key` | 空 | 三个榜单来源的 key；为空时回退到下面同名的环境变量 |
@@ -422,14 +409,13 @@ Success_i = (Successes + 4) / (Samples + 4)
 | `pkg/autorouter/modelrank/sources.go` | 新增 Artificial Analysis 免费接口与 Design Arena 接口加载，无 Design Arena key 时经 OpenRouter `/benchmarks` 读取；新增指标新鲜度统计；LMArena 增加 `creative_writing` 与两个 `industry_*` 分类；删除 OpenRouter 自测 benchmark（GPQA、τ-bench）、AA 指数转发、任务用量、端点延迟的加载 |
 | `pkg/autorouter/modelrank/rank.go` | 等权平均与按指标数的覆盖要求；删除用量加分；帕累托比较只看分数与价格 |
 | `pkg/autorouter/policy.go` | 按第 7.2 节的顺序选画像与列表，记录 `route_profile`、`route_fallback`；每一级列表和 `default_models` 都先按第 7.3 节比较，比不出再取第一个可用的 |
-| `pkg/autorouter/select.go`、`capacity.go` | 第 7.3 节的四维比较：质量、对数成本归一化、渠道能力剩余容量、低样本成功率；按 softmax 采样并返回各维度和概率写进日志；偏好常量 `capability`、`balanced`、`cost` |
+| `pkg/autorouter/select.go`、`capacity.go` | 第 7.3 节的统一效用评分：质量尺度、固定成本容忍度、渠道能力剩余容量和低样本成功率；按效用降序确定选中模型并写进日志；偏好常量 `capability`、`balanced`、`cost` |
 | `setting/autorouter_setting/` | 新的内置 `task_models.json`；`taxonomy_version` 校验；`task_scores` 从内置 `evidence` 播种，随 `task_models` 一起按版本退回内置；`default_preference`、`preference_weights`，`Policy(preference)` 按令牌的偏好取完整策略 |
 | `model/token.go`、`model/token_cache.go`、`controller/token.go`、`middleware/auth.go` | 令牌新增 `auto_preference` 列（可空，空为平台默认），随令牌创建/更新接口读写，更新时不传则保留原值，不认识的值返回错误；Redis 令牌缓存脚本多存一个字段；鉴权后放进请求上下文 |
 | `web/src/features/keys/` | 令牌表单新增“Auto 模型偏好”下拉，独立于“路由倾向”；审计日志的变更字段多一个标签 |
-| `pkg/autorouter/jev.go`、`select.go`、`trace.go`、`policy.go` | 自适应偏好：jev 多问一个 `mode`，`QuestionsVersion` 升到 v6；`Decision.ModeProbabilities`；`PreferenceAdaptive` 和只含三个固定偏好的 `Preferences` 之外的 `SelectablePreferences`；`PreferenceWeights.Blend` 按第 7.3 节折算四维权重和温度；`SelectRoute` 在自适应偏好下用折算的策略覆盖 `Policy.DimensionWeights`，并把过程记进 `trace.mode` |
-| `setting/autorouter_setting/`、`controller/token.go` | `Policy()` 同时带出三档策略（`Policy.Tiers`），`default_preference` 和令牌的 `auto_preference` 接受 `adaptive`，`preference_weights` 只接受三个固定偏好 |
-| `web/src/features/system-settings/autorouter/`、`web/src/features/keys/` | 令牌表单和平台默认偏好多一项“按请求判断”（`SELECTABLE_AUTO_PREFERENCES`）；“偏好与成本”页按固定三档分别编辑四维权重和温度，选路过程抽屉展示自适应请求的完整策略 |
-| `pkg/autorouter/jevexp/` | 汇总里多一行 `mode`：各偏好被选为最可能的次数、有多少条没有可用答案、期望位置的平均值，用来在切换令牌之前看真实流量里 `mode` 的分布 |
+| `pkg/autorouter/jev.go`、`select.go`、`trace.go`、`policy.go`、`jevexp/` | 去掉自适应偏好：jev 不再问 `mode`，`QuestionsVersion` 升到 v7；删除 `Decision.ModeProbabilities`、`PreferenceAdaptive`、`SelectablePreferences`、`PreferenceWeights.Blend`、`Policy.Tiers` 和 `trace.mode`；`jevexp` 汇总不再统计 `mode` |
+| `setting/autorouter_setting/`、`controller/token.go` | `default_preference` 和令牌的 `auto_preference` 只接受三个固定偏好，写 `adaptive` 返回错误；库里已存的 `adaptive` 不迁移，运行时按不认识的值处理：令牌退到平台默认，平台默认退到 `balanced` |
+| `web/src/features/system-settings/autorouter/`、`web/src/features/keys/` | 令牌表单和平台默认偏好去掉“按请求判断”；已存为 `adaptive` 的令牌显示为“跟随平台设置”，平台默认显示为“均衡”。选路过程抽屉仍能显示旧日志里的自适应策略 |
 | `controller/system_task_handlers.go` | 刷新任务的启用条件改为检查 `ARTIFICIAL_ANALYSIS_API_KEY`，以及 `DESIGN_ARENA_API_KEY` 或 `OPENROUTER_API_KEY`；刷新时同时写 `task_scores` |
 | `middleware/distributor.go`、`relay/helper/price.go` | 候选按“模型 + 渠道”判定可用；`RoutingPricer` 按用户侧价格给候选报价，只读价格配置，不写 `PriceData`、不碰额度 |
 | `service/autorouter.go`、`service/log_info_generate.go` | 调用 jev 前先检查有没有可用模型；比较过程写进 `admin_info.auto_router` |
@@ -443,9 +429,9 @@ Success_i = (Successes + 4) / (Samples + 4)
 | `model/channel_cache.go`、`model/ability.go` | `FirstAttemptChannelShares`：首次尝试落到各渠道的概率，与实际抽签共用 `retryTierLocked` / `databaseRetryTier` |
 | `service/channel_affinity.go`、`service/capability_gate.go`、`service/autorouter.go` | 只读的 `PeekPreferredChannelByAffinity`、`KeptChannels`；`AutoServingModel` 是最终解析和比价共用的服务名规则；Scheduler 的 workload 改在选路之前写 |
 | `service/scheduler_preview.go` | 调 Scheduler 的 `/v1/preview`：整次一个截止时间，只读熔断状态、失败不计入熔断；回 404 的地址一分钟内跳过、接着问下一个；一次最多问 64 个（不能比 Scheduler 的上限大，调大时先升级 Scheduler）；结果带状态写进选路留痕，问过没拿到回答时记 WARN |
-| `pkg/autorouter/select.go`、`policy.go`、`trace.go` | `Candidates.Costs`：一次取齐比较成本；`Excluded` 的模型不参与比较；跳过原因 `scheduler_no_candidate`；`band` 多出四维、Utility 和概率字段 |
+| `pkg/autorouter/select.go`、`policy.go`、`trace.go` | `Candidates.Costs`：一次取齐比较成本；`Excluded` 的模型不参与比较；跳过原因 `scheduler_no_candidate`；`band` 多出成本惩罚、容量惩罚、成功率惩罚和 Utility 字段 |
 | `middleware/auto_route_cost.go`、`middleware/distributor.go` | 实现 `Costs`：调度器预览或原生规则定渠道、按首次命中的分组报价、乘渠道费用倍率，并复用同一批渠道计算容量；预览说没有渠道的模型记进这次请求的拒绝原因 |
-| `web/src/features/system-settings/autorouter/route-log/` | 候选表显示费用倍率、比较成本、四个维度、Utility 和概率；没用上调度器预览时在表上方说明原因，单个模型没用上时写在它的倍率下面 |
+| `web/src/features/system-settings/autorouter/route-log/` | 候选表显示费用倍率、比较成本、成本惩罚、四个运行维度和 Utility；没用上调度器预览时在表上方说明原因，单个模型没用上时写在它的倍率下面 |
 | `pkg/autorouter/metrics.go`、`service/auto_model_metrics.go`、`controller/relay.go` | 按 base model 记录五分钟结果样本；Redis 跨实例共享，读取失败退回节点内存；客户端取消、参数错误、上下文超限和额度耗尽不计结果样本 |
 | `pkg/autorouter/jev.go`、`setting/autorouter_setting/ranking_edit.go`、`config.go` | 第 8.1 节：`RankingProfiles()` 列出全部画像；`EditedRanking` 校验整份手工榜单、与当前榜单比出改动，返回要写的四项榜单和关掉的定时刷新；`Ranking.Profiles()` 是读写共用的画像列表；`encodeOptions` 与恢复内置共用 |
 | `controller/autorouter.go`、`controller/audit.go`、`router/api-router.go`、`middleware/access_token_routes.go` | `PUT /api/autorouter/ranking`（刷新进行中拒绝、审计 `autorouter.rank_edit`、访问令牌作用域 `option:write`）；`GET /api/autorouter/ranking` 按全部画像列出并给每个模型加 `served` |
@@ -458,17 +444,14 @@ Success_i = (Successes + 4) / (Samples + 4)
 - **LMArena 分榜新旧不一**：文档、搜索榜可能比文本榜旧一个月以上，以 `rank_sources` 记录的日期为准。
 - **分类准确率待校准**：12 个二级类的判定标准需要用标注集验证 jev 的选择准确率。概率最高的二级类直接决定榜单，判错时就落在判错的那个榜单上。
 - **四维权重是全局的**：不同画像的榜单分尺度不同，同一个 w 对选择的影响也不同。权重需要通过真实选路日志按画像观察，按画像分别标定还没做。
-- **温度会主动探索非最优项**：温度大于 0 时，低 Utility 的候选也有非零概率；要完全确定选择最高 Utility，把温度设为 0。`band` 记录每个候选的概率，可用于复核采样结果。
-- **Capacity 是流量空闲度，不是剩余配额**：模型只有一个候选或总流量很小时，它不能表达上游拥塞；真实硬可用性仍由渠道过滤和调度预览负责。
+- **选路不再随机探索**：候选按统一效用分降序排列，第一名确定选中。容量和成功率变化会直接改变效用并触发首选换位。
+- **容量取决于渠道上限**：配置了 RPM、TPM 或并发上限时才有对应的余量信号。硬可用性由渠道过滤和调度预览确定。
 - **偏好只管选哪个模型**：思考强度由难度、上一轮的档位和大模型收益决定（第 7.2 节），不随偏好变；Scheduler 的路由倾向也与它无关。对话中途换偏好，要到下一个新任务才生效（同任务延续沿用上一次的模型）。
-- **`mode` 的线索很少**：送去判断的只有用户最近两句话，“省钱”“这是线上事故要稳”这类线索只能出自这两句话的措辞，多数请求没有，`mode` 会集中在 `balanced`，自适应偏好对普通流量的影响因此很小，值不值得开主要看三项判据怎么写。先看真实分布再把令牌切过去：选路日志默认模式 `decisions` 记下每次现调 jev 的请求，里面的 `decision.mode_probabilities` 就是 `mode` 的原始答案；有 Langfuse 导出时也可以用 `jevexp` 离线汇总。
-- **`mode` 的返回格式只在测试桩上验证过**：`mode` 是 choice 题，和 `task_type` 一样应该返回各选项的概率，但真实 jev 对这道新题是否如此还没有验证。只返回 `choice` 而没有概率时，三项都按 0 读，等于没有可用答案，自适应偏好退回均衡档，不会出错。
-- **自适应偏好每次都多问一题**：每次调 jev 多一个问题，延迟增加多少未测，上线后看选路日志的 `jev_latency_ms`。升到 v6 时已缓存的判断失效一次，之后每个仍活跃的（令牌，指令）多调一次 jev。
 - **单指标画像的分数偏薄**：`general.browser`、`general.research` 只有一个指标；`general.design`、`general.search`、`general.writing` 在 2026-10-28 的快照里因 `da.slides`、`lma.search`、`lma.document` 停更，实际只剩一到两个有效指标。用很小的分差换很大的价差，依据比多指标画像弱。
 - **提档受模型声明的档位限制**：期望档位按模型渠道声明的档位收敛，声明里最高只到 `high` 的模型，期望档位提到 `xhigh` 也按 `high` 发出。提档只改思考强度，不换更强的模型。
 - **OpenAI / Codex 渠道还受网关的推理强度上限限制**：系统设置（模型 → 推理强度策略，`global.gpt_request_policy.reasoning_policy`）设了上限时，转发层把请求体里高于上限的档位降到上限，计费和消费日志按降后的档位记，所以不会超过上限。auto 定档时不看这个上限：期望档位是 `max` 时，走 OpenAI / Codex 渠道实际按 `xhigh` 发出，选路日志里"实际发送的推理强度"记的是 auto 写进请求体的档位，不含这一步。
 - **比价用的是平台成本**：运行时按第 7.3 节比较“用户侧价格 × 首次会落到的渠道的费用倍率”。榜单文件里的 `price_per_mtok` 是 OpenRouter 的价格，只用来给 `default_models` 排序和本文示例，和运行时的价格可能差很多。
-- **成本优先替平台省钱**：倍率不同的候选之间，“成本优先”选的是平台成本低的那个，用户的扣费不一定更低（例如用户价 10 美元、倍率 0.2 的模型会胜过用户价 3 美元、倍率 1 的模型）。所有候选的倍率都一样（或都没配）时与只比用户价相同。
+- **成本优先偏向较低的平台成本**：用户价 10 美元、倍率 0.2 的模型，其比较成本是 2 美元。用户价 3 美元、倍率 1 的模型，其比较成本是 3 美元。质量和运行状态相同时，前者效用更高，用户仍按 10 美元的报价计费。
 - **只估首次尝试**：同一档里有几个渠道时用命中概率的期望，单次请求实际落到的渠道倍率可能不同；重试走原生选路、可能换渠道，不在估算里。
 - **预览与正式调度之间隔着几毫秒**：准入是只读的，这期间别的请求改了计数池用量，两次可能选不同的渠道，`band` 里的 `channel_id` 和使用日志里实际的渠道对照就能量出这个比例。预览给出的渠道不会当作偏好渠道传给正式调度（那会被 Scheduler 记成会话亲和命中）。没被 Scheduler 加载过的模型先按原生规则估，被真实流量加载后才走预览。
 - **能力收窄按撇开客户端推理字段的口径估**：档位由判断定下时，最终写进请求体的档位还会再收窄一次渠道，估算时还不知道这个档位，个别渠道可能估进去了、实际却被淘汰。

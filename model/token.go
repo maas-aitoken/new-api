@@ -309,14 +309,17 @@ func (f TokenFilter) apply(query *gorm.DB) *gorm.DB {
 	case common.TokenSceneOffice:
 		query = query.Where("(scene IS NULL OR scene <> ?)", string(common.TokenSceneBusiness))
 	}
-	// 两个分支互为补集，口径与 UsesSmartRouting 一致：空值和业务 key 都归到锁定模型。
+	// 三个分支覆盖全部有效模式，口径与 SetupContextForToken 一致：空值和业务 key 都归到锁定模型。
 	switch f.RoutingMode {
 	case common.TokenRoutingModeFixed:
-		query = query.Where("(routing_mode IS NULL OR routing_mode <> ? OR scene = ?)",
-			string(common.TokenRoutingModeSmart), string(common.TokenSceneBusiness))
+		query = query.Where("(routing_mode IS NULL OR routing_mode NOT IN ? OR scene = ?)",
+			[]string{string(common.TokenRoutingModeSmart), string(common.TokenRoutingModeHybrid)}, string(common.TokenSceneBusiness))
 	case common.TokenRoutingModeSmart:
 		query = query.Where("routing_mode = ? AND (scene IS NULL OR scene <> ?)",
 			string(common.TokenRoutingModeSmart), string(common.TokenSceneBusiness))
+	case common.TokenRoutingModeHybrid:
+		query = query.Where("routing_mode = ? AND (scene IS NULL OR scene <> ?)",
+			string(common.TokenRoutingModeHybrid), string(common.TokenSceneBusiness))
 	}
 	if f.Status != 0 {
 		query = query.Where("status = ?", f.Status)

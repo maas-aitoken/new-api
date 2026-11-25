@@ -95,8 +95,11 @@ export type RoutePickCandidate = {
   requests?: number
   /** Five-minute successful/failed outcome samples. */
   samples?: number
-  /** The four normalized routing dimensions. */
   cost_score?: number
+  /** Amounts subtracted from this candidate's utility. */
+  cost_penalty?: number
+  capacity_penalty?: number
+  success_penalty?: number
   capacity?: number
   success?: number
   utility: number
@@ -128,6 +131,10 @@ export type PickDimensions = {
 export type RoutePick = {
   chosen: string
   band: RoutePickCandidate[]
+  quality_scale?: number
+  cost_scale?: number
+  capacity_penalty?: number
+  success_penalty?: number
   /** Current four-dimensional policy; legacy quality/price logs have weight instead. */
   dimensions?: PickDimensions | null
   weight?: number
@@ -203,6 +210,7 @@ export type RouteTraceMode = {
   /** Expected position on the capability (0), balanced (1), cost (2) scale. */
   position?: number
   weight?: number
+  cost_scale?: number
   weights?: PickDimensions | null
   /** Current object policies or legacy numeric cost weights. */
   tiers?: Record<string, PickDimensions | number | null | undefined>
