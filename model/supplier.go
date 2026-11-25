@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -32,6 +33,14 @@ const (
 )
 
 const supplierMicros int64 = 1_000_000
+
+// Plain env var so a Consul KV config path can set it at startup like the database connection.
+const supplierCostDiffAccountEnv = "SUPPLIER_COST_DIFF_ACCOUNT"
+
+// SupplierCostDiffAccount is the account historical differences are billed to, empty when unset.
+func SupplierCostDiffAccount() string {
+	return strings.TrimSpace(os.Getenv(supplierCostDiffAccountEnv))
+}
 
 var (
 	ErrSupplierNotFound        = errors.New("Supplier not found")
@@ -110,6 +119,8 @@ type SupplierBillAllocation struct {
 	BillId          int    `json:"bill_id" gorm:"not null;index"`
 	ChannelId       int    `json:"channel_id" gorm:"not null;index"`
 	ChannelName     string `json:"channel_name" gorm:"size:128;not null;default:''"`
+	UserId          int    `json:"user_id" gorm:"not null;default:0;index"`
+	Username        string `json:"username" gorm:"size:64;not null;default:''"`
 	ModelName       string `json:"model_name" gorm:"size:128;not null;default:''"`
 	QuotaMicros     int64  `json:"quota_micros" gorm:"not null"`
 	ShareMicros     int64  `json:"share_micros" gorm:"not null"`
@@ -655,6 +666,8 @@ func RemoveSupplierChannel(supplierID, channelID int, operatorIDs ...int) error 
 type supplierUsageRow struct {
 	SupplierId int
 	ChannelId  int
+	UserId     int
+	Username   string
 	ModelName  string
 	Quota      int64
 	Count      int64
@@ -679,7 +692,7 @@ func supplierUsage(supplierID int, month string) ([]supplierUsageRow, error) {
 		return nil, err
 	}
 	var rows []supplierUsageRow
-	err = DB.Table("quota_data").Select("supplier_channels.supplier_id AS supplier_id, quota_data.channel_id AS channel_id, quota_data.model_name AS model_name, COALESCE(SUM(quota_data.quota),0) AS quota, COALESCE(SUM(quota_data.count),0) AS count, COALESCE(SUM(quota_data.failed_count),0) AS failed, COALESCE(SUM(quota_data.input_tokens),0) AS input, COALESCE(SUM(quota_data.completion_tokens),0) AS completion, COALESCE(SUM(quota_data.cache_read_tokens),0) AS cache_read, COALESCE(SUM(quota_data.use_time_total),0) AS use_time").Joins("JOIN supplier_channels ON supplier_channels.channel_id = quota_data.channel_id AND supplier_channels.supplier_id = ?", supplierID).Where("quota_data.created_at >= ? AND quota_data.created_at < ?", start, end).Group("supplier_channels.supplier_id, quota_data.channel_id, quota_data.model_name").Scan(&rows).Error
+	err = DB.Table("quota_data").Select("supplier_channels.supplier_id AS supplier_id, quota_data.channel_id AS channel_id, quota_data.user_id AS user_id, quota_data.username AS username, quota_data.model_name AS model_name, COALESCE(SUM(quota_data.quota),0) AS quota, COALESCE(SUM(quota_data.count),0) AS count, COALESCE(SUM(quota_data.failed_count),0) AS failed, COALESCE(SUM(quota_data.input_tokens),0) AS input, COALESCE(SUM(quota_data.completion_tokens),0) AS completion, COALESCE(SUM(quota_data.cache_read_tokens),0) AS cache_read, COALESCE(SUM(quota_data.use_time_total),0) AS use_time").Joins("JOIN supplier_channels ON supplier_channels.channel_id = quota_data.channel_id AND supplier_channels.supplier_id = ?", supplierID).Where("quota_data.created_at >= ? AND quota_data.created_at < ?", start, end).Group("supplier_channels.supplier_id, quota_data.channel_id, quota_data.user_id, quota_data.username, quota_data.model_name").Scan(&rows).Error
 	return rows, err
 }
 
@@ -705,6 +718,91 @@ func billAdjustments(tx *gorm.DB, billID int) (int64, error) {
 		}
 	}
 	return total, nil
+}
+
+// SupplierCostDiffRow is one supplier's net historical difference for FeeMonth (credits negative),
+// queryable under the month it corrects even though it was entered on a later month's bill.
+type SupplierCostDiffRow struct {
+	SupplierId   int    `json:"supplier_id"`
+	SupplierName string `json:"supplier_name"`
+	FeeMonth     string `json:"fee_month"`
+	Account      string `json:"account"`
+	AmountMicros int64  `json:"amount_micros"`
+	Remark       string `json:"remark"`
+}
+
+// GetSupplierCostDiffRows returns the net historical difference per supplier for feeMonth, billed
+// to the configured account. Empty when no account is configured or nothing corrects that month.
+func GetSupplierCostDiffRows(feeMonth string) ([]SupplierCostDiffRow, error) {
+	if _, err := parseSupplierMonth(feeMonth); err != nil {
+		return nil, err
+	}
+	account := SupplierCostDiffAccount()
+	if account == "" {
+		return nil, nil
+	}
+	var adjustments []SupplierBillAdjustment
+	if err := DB.Where("fee_month = ?", feeMonth).Find(&adjustments).Error; err != nil {
+		return nil, err
+	}
+	if len(adjustments) == 0 {
+		return nil, nil
+	}
+	billIDs := make([]int, 0, len(adjustments))
+	for _, adjustment := range adjustments {
+		billIDs = append(billIDs, adjustment.BillId)
+	}
+	var bills []SupplierBill
+	if err := DB.Select("id, supplier_id").Where("id IN ?", billIDs).Find(&bills).Error; err != nil {
+		return nil, err
+	}
+	supplierOfBill := make(map[int]int, len(bills))
+	for _, bill := range bills {
+		supplierOfBill[bill.Id] = bill.SupplierId
+	}
+	totals := make(map[int]int64)
+	order := make([]int, 0)
+	for _, adjustment := range adjustments {
+		supplierID, ok := supplierOfBill[adjustment.BillId]
+		if !ok {
+			continue
+		}
+		if _, seen := totals[supplierID]; !seen {
+			order = append(order, supplierID)
+		}
+		if adjustment.Type == SupplierAdjustmentCredit {
+			totals[supplierID] -= adjustment.CNYAmountMicros
+		} else {
+			totals[supplierID] += adjustment.CNYAmountMicros
+		}
+	}
+	if len(order) == 0 {
+		return nil, nil
+	}
+	var suppliers []Supplier
+	if err := DB.Select("id, name").Where("id IN ?", order).Find(&suppliers).Error; err != nil {
+		return nil, err
+	}
+	names := make(map[int]string, len(suppliers))
+	for _, supplier := range suppliers {
+		names[supplier.Id] = supplier.Name
+	}
+	remark := fmt.Sprintf("调整%s月差值", feeMonth)
+	rows := make([]SupplierCostDiffRow, 0, len(order))
+	for _, supplierID := range order {
+		if totals[supplierID] == 0 {
+			continue
+		}
+		rows = append(rows, SupplierCostDiffRow{
+			SupplierId:   supplierID,
+			SupplierName: names[supplierID],
+			FeeMonth:     feeMonth,
+			Account:      account,
+			AmountMicros: totals[supplierID],
+			Remark:       remark,
+		})
+	}
+	return rows, nil
 }
 
 func latestBill(tx *gorm.DB, supplierID int, month string, lock bool) (*SupplierBill, error) {
@@ -1079,7 +1177,7 @@ func createSupplierAllocations(tx *gorm.DB, billID int, usage []supplierUsageRow
 			channelName = "#" + strconv.Itoa(p.row.ChannelId)
 		}
 		estimated := decimal.NewFromInt(p.row.Quota).Div(decimal.NewFromFloat(common.QuotaPerUnit)).Mul(decimal.NewFromFloat(operation_setting.USDExchangeRate)).Mul(decimal.NewFromInt(supplierMicros)).IntPart()
-		if err := tx.Create(&SupplierBillAllocation{BillId: billID, ChannelId: p.row.ChannelId, ChannelName: channelName, ModelName: p.row.ModelName, QuotaMicros: p.row.Quota, EstimatedMicros: estimated, ActualMicros: p.floor, ShareMicros: decimal.NewFromInt(p.row.Quota).Mul(decimal.NewFromInt(supplierMicros)).Div(decimal.NewFromInt(sum)).IntPart(), CreatedAt: now}).Error; err != nil {
+		if err := tx.Create(&SupplierBillAllocation{BillId: billID, ChannelId: p.row.ChannelId, ChannelName: channelName, UserId: p.row.UserId, Username: p.row.Username, ModelName: p.row.ModelName, QuotaMicros: p.row.Quota, EstimatedMicros: estimated, ActualMicros: p.floor, ShareMicros: decimal.NewFromInt(p.row.Quota).Mul(decimal.NewFromInt(supplierMicros)).Div(decimal.NewFromInt(sum)).IntPart(), CreatedAt: now}).Error; err != nil {
 			return err
 		}
 	}
@@ -1088,7 +1186,7 @@ func createSupplierAllocations(tx *gorm.DB, billID int, usage []supplierUsageRow
 
 func GetSupplierBillAllocations(billID int) ([]SupplierBillAllocation, error) {
 	var rows []SupplierBillAllocation
-	return rows, DB.Where("bill_id = ?", billID).Order("channel_id, model_name").Find(&rows).Error
+	return rows, DB.Where("bill_id = ?", billID).Order("channel_id, model_name, user_id").Find(&rows).Error
 }
 
 func supplierLogStatusCodeExpr() (string, bool) {
@@ -1223,6 +1321,40 @@ type SupplierBillDetail struct {
 	Operations  []SupplierOperationLog   `json:"operations"`
 }
 
+// aggregateAllocationsByChannelModel collapses the stored user+channel+model rows to one row per
+// bill+channel+model, summing the amounts. UserId/Username are left zero/empty on the result.
+func aggregateAllocationsByChannelModel(rows []SupplierBillAllocation) []SupplierBillAllocation {
+	type key struct {
+		billID    int
+		channelID int
+		modelName string
+	}
+	order := make([]key, 0, len(rows))
+	merged := make(map[key]*SupplierBillAllocation, len(rows))
+	for _, row := range rows {
+		k := key{billID: row.BillId, channelID: row.ChannelId, modelName: row.ModelName}
+		existing, ok := merged[k]
+		if !ok {
+			copied := row
+			copied.Id = 0
+			copied.UserId = 0
+			copied.Username = ""
+			merged[k] = &copied
+			order = append(order, k)
+			continue
+		}
+		existing.QuotaMicros += row.QuotaMicros
+		existing.ShareMicros += row.ShareMicros
+		existing.EstimatedMicros += row.EstimatedMicros
+		existing.ActualMicros += row.ActualMicros
+	}
+	result := make([]SupplierBillAllocation, 0, len(order))
+	for _, k := range order {
+		result = append(result, *merged[k])
+	}
+	return result
+}
+
 func GetSupplierBillDetail(supplierID int, month string) (*SupplierBillDetail, error) {
 	if _, err := parseSupplierMonth(month); err != nil {
 		return nil, err
@@ -1242,10 +1374,13 @@ func GetSupplierBillDetail(supplierID int, month string) (*SupplierBillDetail, e
 	if err := DB.Where("bill_id IN ?", ids).Order("created_at DESC").Find(&adjustments).Error; err != nil {
 		return nil, err
 	}
-	var allocations []SupplierBillAllocation
-	if err := DB.Where("bill_id IN ?", ids).Order("channel_id, model_name").Find(&allocations).Error; err != nil {
+	var rawAllocations []SupplierBillAllocation
+	if err := DB.Where("bill_id IN ?", ids).Order("channel_id, model_name").Find(&rawAllocations).Error; err != nil {
 		return nil, err
 	}
+	// Allocations are stored per user + channel + model; the bill detail view is per channel + model,
+	// so collapse the user dimension here. The finest-grain rows stay available via GetSupplierBillAllocations.
+	allocations := aggregateAllocationsByChannelModel(rawAllocations)
 	operations, err := GetSupplierOperationLogsForBills(supplierID, ids, 200)
 	if err != nil {
 		return nil, err
