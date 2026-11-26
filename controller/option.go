@@ -95,6 +95,11 @@ func GetOptions(c *gin.Context) {
 			channelModelWeComBotWebhookKeyConfigured = strings.TrimSpace(value) != ""
 			continue
 		}
+		// The WeCom group bot URL carries the bot key; the resource pool page
+		// reads it masked through its own endpoint.
+		if k == "resource_pool_alert.webhook_url" {
+			continue
+		}
 		isSensitiveKey := strings.HasSuffix(k, "Token") ||
 			strings.HasSuffix(k, "Secret") ||
 			strings.HasSuffix(k, "Key") ||

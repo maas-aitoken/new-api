@@ -27,4 +27,5 @@ export const SYSTEM_TASK_TYPE_LABEL: Record<string, string> = {
   midjourney_poll: 'Drawing task polling',
   async_task_poll: 'Async task polling',
   autorouter_rank: 'Auto router model ranking',
+  resource_pool_alert: 'Resource pool water level check',
 }

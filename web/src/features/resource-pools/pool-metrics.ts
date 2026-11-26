@@ -271,6 +271,15 @@ export function accountGroup(account: ResourcePoolAccount): string {
   );
 }
 
+/**
+ * Every group an account belongs to, as its account-detail row lists them;
+ * a single empty string stands for an ungrouped account.
+ */
+export function accountGroups(account: ResourcePoolAccount): string[] {
+  const groups = (account.groups ?? []).filter((group) => group.trim());
+  return groups.length ? groups : [accountGroup(account)];
+}
+
 export type GroupRow = {
   group: string;
   accounts: ResourcePoolAccount[];

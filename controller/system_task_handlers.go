@@ -39,6 +39,31 @@ func RegisterScheduledSystemTasks() {
 	service.RegisterSystemTaskHandler(ssoUserSyncHandler{})
 	service.RegisterSystemTaskHandler(externalUsageSyncHandler{})
 	service.RegisterSystemTaskHandler(subscriptionUsageAlertHandler{})
+	service.RegisterSystemTaskHandler(resourcePoolAlertHandler{})
+}
+
+// resourcePoolAlertHandler checks the resource pool water levels once per
+// wall-clock hour inside the configured notification period and notifies the
+// WeCom group bot about targets that crossed their threshold.
+type resourcePoolAlertHandler struct{}
+
+func (resourcePoolAlertHandler) Type() string { return model.SystemTaskTypeResourcePoolAlert }
+
+func (resourcePoolAlertHandler) Enabled() bool { return service.ResourcePoolAlertDue(time.Now()) }
+
+func (resourcePoolAlertHandler) Interval() time.Duration {
+	return service.ResourcePoolAlertInterval(time.Now())
+}
+
+func (resourcePoolAlertHandler) NewPayload() any { return nil }
+
+func (resourcePoolAlertHandler) Run(ctx context.Context, task *model.SystemTask, runnerID string) {
+	result, err := service.CheckResourcePoolWaterLevels(ctx)
+	status := model.SystemTaskStatusSucceeded
+	if err != nil {
+		status = model.SystemTaskStatusFailed
+	}
+	finishSystemTaskHandler(task, runnerID, status, result, err)
 }
 
 type subscriptionUsageAlertHandler struct{}

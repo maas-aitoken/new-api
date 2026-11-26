@@ -99,8 +99,8 @@ export function ResourcePoolOverview(props: {
   );
 
   return (
-    <div className="space-y-4">
-      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+    <div className="space-y-3">
+      <div className="grid grid-cols-2 gap-2 xl:grid-cols-4">
         <Metric
           icon={<Users className="size-3.5" />}
           label={t("Total accounts")}
@@ -140,7 +140,7 @@ export function ResourcePoolOverview(props: {
         />
       </div>
 
-      <div className="grid gap-4 lg:grid-cols-2">
+      <div className="grid gap-3 lg:grid-cols-2">
         {summaries.map(({ meta, state, summary }) => (
           <PoolCard
             key={meta.key}
@@ -167,45 +167,69 @@ function PoolCard(props: {
 }) {
   const { t } = useTranslation();
   const { meta, state, summary } = props;
-  const refreshedAt = state.data?.refreshed_at
-    ? state.data.refreshed_at * 1000
-    : undefined;
+  const updated = state.data?.refreshed_at
+    ? t("Updated {{time}}", {
+        time: formatResetDistance(
+          new Date(state.data.refreshed_at * 1000).toISOString(),
+          props.now,
+          props.locale,
+        ),
+      })
+    : t("Loading...");
+  const reachable = t("{{ok}}/{{total}} sources reachable", {
+    ok: summary.sourcesOk,
+    total: summary.sourcesTotal,
+  });
+  const status = summary.sourcesTotal ? `${reachable} · ${updated}` : updated;
 
   return (
-    <Card className="overflow-hidden">
+    <Card className="@container gap-0 py-0">
       <div className="h-1" style={{ background: meta.color }} />
-      <CardContent className="space-y-4 p-5">
-        <div className="flex items-start justify-between gap-3">
-          <div className="flex min-w-0 items-center gap-3">
-            <ProviderIcon meta={meta} size="md" />
-            <div className="min-w-0">
-              <div className="flex items-center gap-2">
-                <span className="font-semibold">{meta.label}</span>
-                <Badge variant="outline" className="text-[11px]">
-                  {summary.windowed ? t("7d window") : t("Quota-based")}
-                </Badge>
-              </div>
-              <p className="text-muted-foreground truncate text-xs">
-                {refreshedAt
-                  ? t("Updated {{time}}", {
-                      time: formatResetDistance(
-                        new Date(refreshedAt).toISOString(),
-                        props.now,
-                        props.locale,
-                      ),
-                    })
-                  : t("Loading...")}
-              </p>
-            </div>
+      <CardContent className="space-y-3 p-4">
+        <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1 @sm:flex-nowrap">
+          <div className="flex min-w-0 items-center gap-2">
+            <ProviderIcon meta={meta} />
+            <span className="shrink-0 font-semibold">{meta.label}</span>
+            <Badge variant="outline" className="shrink-0 text-[11px]">
+              {summary.windowed ? t("7d window") : t("Quota-based")}
+            </Badge>
+            <span
+              className={cn(
+                "inline-flex min-w-0 items-center gap-1.5 text-xs",
+                summary.sourcesFailed
+                  ? LEVEL_TEXT_TONE.exhausted
+                  : "text-muted-foreground",
+              )}
+              title={status}
+            >
+              {summary.sourcesTotal > 0 && (
+                <span
+                  className={cn(
+                    "size-1.5 shrink-0 rounded-full",
+                    summary.sourcesFailed ? "bg-red-500" : "bg-emerald-500",
+                  )}
+                />
+              )}
+              <span className="hidden truncate @sm:block">{status}</span>
+            </span>
           </div>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => props.onOpen("channels")}
-          >
-            {t("View details")}
-            <ArrowRight />
-          </Button>
+          <div className="ml-auto flex shrink-0 items-center">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => props.onOpen("channels")}
+            >
+              {t("Channel stats")}
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => props.onOpen("accounts")}
+            >
+              {t("Account details")}
+              <ArrowRight />
+            </Button>
+          </div>
         </div>
 
         <PoolCardBody {...props} />
@@ -226,8 +250,8 @@ function PoolCardBody(props: {
 
   if (!state.data && state.isPending) {
     return (
-      <div className="flex items-center gap-5">
-        <Skeleton className="size-28 rounded-full" />
+      <div className="flex items-center gap-4">
+        <Skeleton className="size-[84px] rounded-full" />
         <div className="flex-1 space-y-2">
           <Skeleton className="h-4 w-3/4" />
           <Skeleton className="h-4 w-1/2" />
@@ -248,9 +272,9 @@ function PoolCardBody(props: {
   }
   if (!summary.sourcesTotal) {
     return (
-      <div className="text-muted-foreground flex flex-col items-center gap-2 py-6 text-sm">
-        <Layers className="size-6" />
-        {t("No sources yet")}
+      <div className="text-muted-foreground flex items-center gap-2 text-sm">
+        <Layers className="size-4 shrink-0" />
+        <span className="min-w-0 flex-1 truncate">{t("No sources yet")}</span>
         <Button
           variant="outline"
           size="sm"
@@ -264,81 +288,73 @@ function PoolCardBody(props: {
 
   return (
     <>
-      <div className="flex items-center gap-5">
+      <div className="flex items-center gap-4">
         <WaterRing
           percent={summary.level}
           label={summary.windowed ? t("Usage (7d)") : t("Pool water level")}
         />
-        <dl className="grid flex-1 grid-cols-2 gap-x-4 gap-y-3 text-sm">
-          <PoolStat
-            label={t("Available accounts")}
-            value={`${summary.available}/${summary.total}`}
-            tone={summary.available ? undefined : "exhausted"}
-          />
-          <PoolStat
-            label={t("High usage accounts")}
-            value={String(summary.high)}
-            hint={
-              summary.exhausted
-                ? t("{{count}} exhausted", { count: summary.exhausted })
-                : undefined
-            }
-            tone={summary.high ? "high" : undefined}
-          />
-          <PoolStat
-            label={t("Unhealthy accounts")}
-            value={String(summary.unhealthy)}
-            tone={summary.unhealthy ? "exhausted" : undefined}
-          />
-          <PoolStat
-            label={t("Next reset")}
-            value={formatResetAt(summary.nextReset, props.locale)}
-            hint={
-              formatResetDistance(summary.nextReset, props.now, props.locale) ||
-              undefined
-            }
-          />
-        </dl>
+        <div className="min-w-0 flex-1 space-y-2.5">
+          <dl className="grid grid-cols-2 items-end gap-x-3 gap-y-2 text-sm @lg:grid-cols-[1fr_1fr_1fr_1.7fr]">
+            <PoolStat
+              label={t("Available accounts")}
+              value={`${summary.available}/${summary.total}`}
+              tone={summary.available ? undefined : "exhausted"}
+            />
+            <PoolStat
+              label={t("High usage accounts")}
+              value={String(summary.high)}
+              hint={
+                summary.exhausted
+                  ? t("{{count}} exhausted", { count: summary.exhausted })
+                  : undefined
+              }
+              tone={summary.high ? "high" : undefined}
+            />
+            <PoolStat
+              label={t("Unhealthy accounts")}
+              value={String(summary.unhealthy)}
+              tone={summary.unhealthy ? "exhausted" : undefined}
+            />
+            <PoolStat
+              label={t("Next reset")}
+              value={formatResetAt(summary.nextReset, props.locale)}
+              hint={
+                formatResetDistance(
+                  summary.nextReset,
+                  props.now,
+                  props.locale,
+                ) || undefined
+              }
+            />
+          </dl>
+          <UsageBandBar bands={summary.bands} />
+        </div>
       </div>
 
       {summary.fiveHour && (
-        <div className="space-y-1.5 rounded-lg border p-3">
-          <div className="flex items-center justify-between gap-2 text-xs">
-            <span className="text-muted-foreground">{t("Usage (5h)")}</span>
-            <span className="text-muted-foreground">
-              {t("Next reset")}{" "}
-              <span className="text-foreground font-medium">
-                {formatResetAt(summary.fiveHour.nextReset, props.locale)}
-              </span>
-              {summary.fiveHour.nextReset && (
-                <span className="ml-1">
-                  {formatResetDistance(
-                    summary.fiveHour.nextReset,
-                    props.now,
-                    props.locale,
-                  )}
-                </span>
-              )}
-            </span>
-          </div>
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+          <span className="text-muted-foreground shrink-0">
+            {t("Usage (5h)")}
+          </span>
           <UsageBar
             percent={summary.fiveHour.average}
             digits={1}
             muted={!summary.fiveHour.live}
+            className="min-w-32 flex-1"
           />
-          <p className="text-muted-foreground text-xs">
+          <span className="text-muted-foreground">
             {t("Peak {{percent}}%, {{count}} accounts at or above {{high}}%", {
               percent: summary.fiveHour.peak.toFixed(0),
               count: summary.fiveHour.high,
               high: HIGH_USAGE_PERCENT,
             })}
-          </p>
+            {summary.fiveHour.nextReset &&
+              ` · ${t("Next reset")} ${formatResetAt(summary.fiveHour.nextReset, props.locale)}`}
+          </span>
         </div>
       )}
 
-      <UsageBandBar bands={summary.bands} />
-
-      <div className="space-y-2">
+      <div className="space-y-1">
         <p className="text-muted-foreground text-xs">
           {t("Highest usage accounts")}
         </p>
@@ -349,7 +365,7 @@ function PoolCardBody(props: {
               className="flex items-center gap-3"
             >
               <span
-                className="w-40 shrink-0 truncate text-xs"
+                className="w-44 shrink-0 truncate text-xs"
                 title={account.email}
               >
                 {account.email || account.name || account.id}
@@ -363,36 +379,6 @@ function PoolCardBody(props: {
           </p>
         )}
       </div>
-
-      <div className="flex flex-wrap items-center justify-between gap-2 border-t pt-3 text-xs">
-        <span
-          className={cn(
-            "inline-flex items-center gap-1.5",
-            summary.sourcesFailed
-              ? LEVEL_TEXT_TONE.exhausted
-              : "text-muted-foreground",
-          )}
-        >
-          <span
-            className={cn(
-              "size-1.5 rounded-full",
-              summary.sourcesFailed ? "bg-red-500" : "bg-emerald-500",
-            )}
-          />
-          {t("{{ok}}/{{total}} sources reachable", {
-            ok: summary.sourcesOk,
-            total: summary.sourcesTotal,
-          })}
-        </span>
-        <Button
-          variant="link"
-          size="sm"
-          className="h-auto p-0 text-xs"
-          onClick={() => props.onOpen("accounts")}
-        >
-          {t("Account details")}
-        </Button>
-      </div>
     </>
   );
 }
@@ -405,12 +391,15 @@ function PoolStat(props: {
 }) {
   return (
     <div className="min-w-0">
-      <dt className="text-muted-foreground text-xs">{props.label}</dt>
+      <dt className="text-muted-foreground text-xs leading-tight">
+        {props.label}
+      </dt>
       <dd
         className={cn(
           "truncate font-medium tabular-nums",
           props.tone && LEVEL_TEXT_TONE[props.tone],
         )}
+        title={props.hint ? `${props.value} ${props.hint}` : props.value}
       >
         {props.value}
         {props.hint && (

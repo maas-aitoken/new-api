@@ -313,3 +313,80 @@ export async function getCapacityPoolCapacity(
   }>(`${CAPACITY_POOLS_URL}/capacity`, { params: { provider } });
   return requireServerSuccess(response.data).data;
 }
+
+/** 一个 provider 的水位告警规则：阈值是百分比，范围 (0, 100]。 */
+export type ResourcePoolAlertRule = {
+  enabled: boolean;
+  threshold: number;
+};
+
+/** 正处于告警中的目标：某个渠道（来源）；Claude 是整体（pool，name 为空）、分组，开启渠道监控后还有渠道。 */
+export type ResourcePoolAlertTarget = {
+  provider: ResourcePoolProvider;
+  kind: "source" | "group" | "pool";
+  name: string;
+  level: number;
+  /** 首次超过阈值的时间，Unix 秒。 */
+  since: number;
+};
+
+export type ResourcePoolAlertConfig = {
+  enabled: boolean;
+  /** 读取时是脱敏后的地址；保存时留空表示保留已存的地址。 */
+  webhook_url: string;
+  webhook_configured: boolean;
+  mentions: string;
+  /** 通知时间段，服务器时区的 HH:MM。 */
+  notify_start: string;
+  notify_end: string;
+  rules: Record<ResourcePoolProvider, ResourcePoolAlertRule>;
+  /** 是否还单独检测每个 Claude 渠道；默认关闭，只检测整体和分组。 */
+  claude_source_enabled: boolean;
+  alerting: ResourcePoolAlertTarget[];
+  /** 服务器时区相对 UTC 的偏移，例如 "+08:00"。 */
+  utc_offset: string;
+};
+
+export type ResourcePoolAlertInput = Pick<
+  ResourcePoolAlertConfig,
+  | "enabled"
+  | "webhook_url"
+  | "mentions"
+  | "notify_start"
+  | "notify_end"
+  | "rules"
+  | "claude_source_enabled"
+>;
+
+const RESOURCE_POOL_ALERT_URL = "/api/channel/resource_pools/alert";
+
+export async function getResourcePoolAlert(): Promise<ResourcePoolAlertConfig> {
+  const response = await api.get<{
+    success: boolean;
+    data: ResourcePoolAlertConfig;
+  }>(RESOURCE_POOL_ALERT_URL);
+  return requireServerSuccess(response.data).data;
+}
+
+/** 返回保存后的配置。 */
+export async function saveResourcePoolAlert(
+  config: ResourcePoolAlertInput,
+): Promise<ResourcePoolAlertConfig> {
+  const response = await api.post<{
+    success: boolean;
+    data: ResourcePoolAlertConfig;
+  }>(RESOURCE_POOL_ALERT_URL, config);
+  return requireServerSuccess(response.data).data;
+}
+
+/** 向企业微信群发一条测试消息；webhookUrl 留空时用已保存的地址。 */
+export async function testResourcePoolAlert(
+  webhookUrl: string,
+  mentions: string,
+): Promise<void> {
+  const response = await api.post<{ success: boolean }>(
+    `${RESOURCE_POOL_ALERT_URL}/test`,
+    { webhook_url: webhookUrl, mentions },
+  );
+  requireServerSuccess(response.data);
+}

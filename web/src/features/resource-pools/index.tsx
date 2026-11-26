@@ -24,6 +24,9 @@ import {
 } from "@tanstack/react-query";
 import {
   AlertTriangle,
+  ArrowDown,
+  ArrowUp,
+  ChevronsUpDown,
   CircleCheck,
   CircleX,
   Plus,
@@ -68,6 +71,7 @@ import {
   type ResourcePoolSource,
 } from "./api";
 import { CapacityPoolsTab } from "./components/capacity-pools-tab";
+import { WaterLevelAlertButton } from "./components/water-level-alert-dialog";
 import { ResourcePoolOverview, type PoolDetailTab } from "./overview";
 import {
   HIGH_USAGE_PERCENT,
@@ -92,7 +96,7 @@ import {
   LEVEL_TEXT_TONE,
   formatResetAt,
   formatResetDistance,
-  accountGroup,
+  accountGroups,
   nextQuotaReset,
   summarizeByGroup,
 } from "./pool-metrics";
@@ -150,6 +154,21 @@ const ENDPOINT_PLACEHOLDERS: Record<ResourcePoolProvider, string> = {
   grok: "https://tokenproxy.intsig.net/api/admin/accounts?channel=grok",
 };
 
+/** Pool tables use 36px rows instead of the 60px table default. */
+const DENSE_TABLE = "[&_tbody>tr]:h-9 [&_td]:py-1 [&_th]:h-8";
+/** A card that only wraps a table drops the card's own vertical padding. */
+const TABLE_CARD = "gap-0 py-0";
+
+/**
+ * Sort states of the quota pool's water-level column. Clicking the header
+ * cycles unsorted → fullest first → emptiest first → unsorted.
+ */
+const LEVEL_SORT = {
+  none: { next: "desc", aria: "none", icon: ChevronsUpDown },
+  desc: { next: "asc", aria: "descending", icon: ArrowDown },
+  asc: { next: "none", aria: "ascending", icon: ArrowUp },
+} as const;
+
 /** Placeholder rows while a provider's first poll is in flight. */
 function LoadingRows(props: { columns: number }) {
   return Array.from({ length: 4 }, (_, row) => (
@@ -177,6 +196,10 @@ export function ResourcePools() {
     "all",
   );
   const [accountKeyword, setAccountKeyword] = useState("");
+  // Account-detail filters and sort for quota pools; null means no filter.
+  const [groupFilter, setGroupFilter] = useState<string | null>(null);
+  const [sourceFilter, setSourceFilter] = useState<number | null>(null);
+  const [levelSort, setLevelSort] = useState<keyof typeof LEVEL_SORT>("none");
 
   const sourcesQuery = useQuery({
     queryKey: ["resource-pools", "sources", provider],
@@ -312,6 +335,43 @@ export function ResourcePools() {
           .includes(keyword),
     );
   });
+  const groupOptions = [...new Set(accounts.flatMap(accountGroups))].sort(
+    (a, b) => a.localeCompare(b),
+  );
+  const sourceOptions = [
+    ...new Map(
+      accounts.map((account) => [account.source_id, account.source_name]),
+    ),
+  ];
+  // A filter whose group or channel is no longer in the poll matches nothing
+  // the select can show, so it is ignored instead of emptying the table.
+  const activeGroup =
+    groupFilter !== null && groupOptions.includes(groupFilter)
+      ? groupFilter
+      : null;
+  const activeSource =
+    sourceFilter !== null && sourceOptions.some(([id]) => id === sourceFilter)
+      ? sourceFilter
+      : null;
+  const quotaAccounts = accounts.filter((account) => {
+    if (activeGroup !== null && !accountGroups(account).includes(activeGroup))
+      {return false;}
+    if (activeSource !== null && account.source_id !== activeSource)
+      {return false;}
+    if (!keyword) return true;
+    return [account.email, account.name, account.id].some((value) =>
+      String(value ?? "")
+        .toLowerCase()
+        .includes(keyword),
+    );
+  });
+  if (levelSort !== "none") {
+    const direction = levelSort === "asc" ? 1 : -1;
+    quotaAccounts.sort(
+      (a, b) => (quotaUsagePercent(a) - quotaUsagePercent(b)) * direction,
+    );
+  }
+  const LevelSortIcon = LEVEL_SORT[levelSort].icon;
   const endpointPlaceholder = ENDPOINT_PLACEHOLDERS[provider];
   const refreshedAt = usageQuery.data?.refreshed_at;
 
@@ -357,6 +417,7 @@ export function ResourcePools() {
             })}
           </span>
         ) : null}
+        <WaterLevelAlertButton />
         <Button
           variant="outline"
           size="sm"
@@ -377,54 +438,67 @@ export function ResourcePools() {
             value={view}
             onValueChange={(value) => setView(value as PoolView)}
           >
-            <TabsList variant="line" className="w-full justify-start border-b">
-              <TabsTrigger value="overview">{t("Overview")}</TabsTrigger>
-              <TabsTrigger value="channels">{t("Channel stats")}</TabsTrigger>
-              <TabsTrigger value="accounts">{t("Account details")}</TabsTrigger>
-              <TabsTrigger value="sources">{t("Interface config")}</TabsTrigger>
-              <TabsTrigger value="capacity">{t("Capacity pools")}</TabsTrigger>
-            </TabsList>
+            <div className="flex flex-wrap items-end justify-between gap-x-6 gap-y-2 border-b">
+              <TabsList
+                variant="line"
+                className="w-full justify-start sm:w-fit"
+              >
+                <TabsTrigger value="overview" className="sm:flex-none sm:px-3">
+                  {t("Overview")}
+                </TabsTrigger>
+                <TabsTrigger value="channels" className="sm:flex-none sm:px-3">
+                  {t("Channel stats")}
+                </TabsTrigger>
+                <TabsTrigger value="accounts" className="sm:flex-none sm:px-3">
+                  {t("Account details")}
+                </TabsTrigger>
+                <TabsTrigger value="sources" className="sm:flex-none sm:px-3">
+                  {t("Interface config")}
+                </TabsTrigger>
+                <TabsTrigger value="capacity" className="sm:flex-none sm:px-3">
+                  {t("Capacity pools")}
+                </TabsTrigger>
+              </TabsList>
 
-            {view !== "overview" && (
-              <div className="flex flex-wrap gap-3">
-                {PROVIDERS.map((item, index) => {
-                  const active = provider === item.key;
-                  const level = summarizePool(
-                    item.key,
-                    poolQueries[index].data,
-                    now,
-                  ).level;
-                  return (
-                    <button
-                      key={item.key}
-                      type="button"
-                      onClick={() => switchProvider(item.key)}
-                      aria-pressed={active}
-                      className={cn(
-                        "bg-card flex cursor-pointer items-center gap-2 rounded-lg border py-1.5 pr-4 pl-1.5 text-sm transition-all",
-                        active
-                          ? "text-foreground font-medium shadow-md"
-                          : "text-muted-foreground hover:bg-accent/50 hover:shadow-sm",
-                      )}
-                      style={active ? { borderColor: item.color } : undefined}
-                    >
-                      <ProviderIcon meta={item} />
-                      <span className="flex flex-col items-start leading-tight">
+              {view !== "overview" && (
+                <div className="flex flex-wrap gap-1.5 pb-1.5">
+                  {PROVIDERS.map((item, index) => {
+                    const active = provider === item.key;
+                    const level = summarizePool(
+                      item.key,
+                      poolQueries[index].data,
+                      now,
+                    ).level;
+                    return (
+                      <button
+                        key={item.key}
+                        type="button"
+                        onClick={() => switchProvider(item.key)}
+                        aria-pressed={active}
+                        className={cn(
+                          "bg-card flex h-7 cursor-pointer items-center gap-1.5 rounded-md border pr-2.5 pl-1 text-sm transition-all",
+                          active
+                            ? "text-foreground font-medium shadow-sm"
+                            : "text-muted-foreground hover:bg-accent/50",
+                        )}
+                        style={active ? { borderColor: item.color } : undefined}
+                      >
+                        <ProviderIcon meta={item} size="xs" />
                         {item.label}
                         <span
                           className={cn(
-                            "text-[11px] tabular-nums",
+                            "text-xs tabular-nums",
                             LEVEL_TEXT_TONE[levelTone(level)],
                           )}
                         >
                           {level === null ? "-" : `${level.toFixed(0)}%`}
                         </span>
-                      </span>
-                    </button>
-                  );
-                })}
-              </div>
-            )}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
 
             <TabsContent value="overview">
               <ResourcePoolOverview
@@ -450,7 +524,7 @@ export function ResourcePools() {
               />
             </TabsContent>
 
-            <TabsContent value="sources" className="space-y-3">
+            <TabsContent value="sources" className="space-y-2">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <p className="text-muted-foreground text-sm">
                   {t("{{enabled}} of {{total}} sources enabled", {
@@ -480,9 +554,9 @@ export function ResourcePools() {
                 </div>
               </div>
 
-              <Card>
+              <Card className={TABLE_CARD}>
                 <CardContent className="p-0">
-                  <Table>
+                  <Table className={DENSE_TABLE}>
                     <TableHeader>
                       <TableRow>
                         <TableHead className="w-56">{t("Channel")}</TableHead>
@@ -584,10 +658,10 @@ export function ResourcePools() {
               </Card>
             </TabsContent>
 
-            <TabsContent value="channels" className="space-y-3">
+            <TabsContent value="channels" className="space-y-2">
               <div
                 className={cn(
-                  "grid gap-3 sm:grid-cols-2",
+                  "grid grid-cols-2 gap-2",
                   poolFiveHour ? "xl:grid-cols-5" : "xl:grid-cols-4",
                 )}
               >
@@ -685,7 +759,7 @@ export function ResourcePools() {
               </div>
 
               {failedCount > 0 && (
-                <div className="space-y-1 rounded-lg border border-amber-500/40 bg-amber-500/5 p-3 text-sm">
+                <div className="space-y-1 rounded-lg border border-amber-500/40 bg-amber-500/5 px-3 py-2 text-sm">
                   {statuses
                     .filter((item) => item.status === "failed")
                     .map((item) => (
@@ -704,9 +778,9 @@ export function ResourcePools() {
               )}
 
               {isWindowedPool ? (
-                <Card>
+                <Card className={TABLE_CARD}>
                   <CardContent className="p-0">
-                    <Table>
+                    <Table className={DENSE_TABLE}>
                       <TableHeader>
                         <TableRow>
                           <TableHead>{t("Channel")}</TableHead>
@@ -803,16 +877,16 @@ export function ResourcePools() {
               ) : (
                 <>
                   {groupRows.length > 0 && (
-                    <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                    <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
                       {groupRows.map((row) => (
-                        <Card key={row.group || "-"}>
-                          <CardContent className="space-y-3 p-4">
+                        <Card key={row.group || "-"} className="gap-0 py-0">
+                          <CardContent className="space-y-1.5 px-3 py-2">
                             <div className="flex items-center justify-between gap-2">
-                              <div className="flex items-center gap-2">
-                                <span className="inline-flex rounded bg-indigo-500/10 px-2 py-0.5 text-xs font-medium text-indigo-600 dark:text-indigo-400">
+                              <div className="flex min-w-0 items-center gap-2">
+                                <span className="inline-flex rounded bg-indigo-500/10 px-1.5 py-0.5 text-xs font-medium text-indigo-600 dark:text-indigo-400">
                                   {row.group || t("Ungrouped")}
                                 </span>
-                                <span className="text-muted-foreground text-xs">
+                                <span className="text-muted-foreground truncate text-xs">
                                   {t("{{enabled}}/{{total}} enabled", {
                                     enabled: row.enabled,
                                     total: row.accounts.length,
@@ -821,44 +895,44 @@ export function ResourcePools() {
                               </div>
                               <span
                                 className={cn(
-                                  "text-lg font-semibold tabular-nums",
+                                  "text-base leading-5 font-semibold tabular-nums",
                                   LEVEL_TEXT_TONE[levelTone(row.level)],
                                 )}
                               >
                                 {row.level.toFixed(1)}%
                               </span>
                             </div>
-                            <UsageBar percent={row.level} digits={0} />
-                            <div className="text-muted-foreground grid grid-cols-3 gap-2 text-xs">
-                              <div>
-                                <div>{t("Credits")}</div>
-                                <div className="text-foreground font-medium tabular-nums">
+                            <UsageBar percent={row.level} digits={0} hideValue />
+                            <dl className="text-muted-foreground flex flex-wrap gap-x-3 gap-y-0.5 text-xs">
+                              <div className="flex gap-1">
+                                <dt>{t("Credits")}</dt>
+                                <dd className="text-foreground font-medium tabular-nums">
                                   {formatCompactNumber(row.usage, locale)} /{" "}
                                   {formatCompactNumber(row.limit, locale)}
-                                </div>
+                                </dd>
                               </div>
-                              <div>
-                                <div>RPM</div>
-                                <div className="text-foreground font-medium tabular-nums">
+                              <div className="flex gap-1">
+                                <dt>RPM</dt>
+                                <dd className="text-foreground font-medium tabular-nums">
                                   {formatNumber(row.rpmCurrent, locale)} /{" "}
                                   {formatNumber(row.rpmLimit, locale)}
-                                </div>
+                                </dd>
                               </div>
-                              <div>
-                                <div>{t("Next reset")}</div>
-                                <div className="text-foreground font-medium">
+                              <div className="flex gap-1">
+                                <dt>{t("Next reset")}</dt>
+                                <dd className="text-foreground font-medium">
                                   {formatResetAt(row.nextReset, locale)}
-                                </div>
+                                </dd>
                               </div>
-                            </div>
+                            </dl>
                           </CardContent>
                         </Card>
                       ))}
                     </div>
                   )}
-                  <Card>
+                  <Card className={TABLE_CARD}>
                     <CardContent className="p-0">
-                      <Table>
+                      <Table className={DENSE_TABLE}>
                         <TableHeader>
                           <TableRow>
                             <TableHead>{t("Channel")}</TableHead>
@@ -946,15 +1020,15 @@ export function ResourcePools() {
               )}
             </TabsContent>
 
-            <TabsContent value="accounts" className="space-y-3">
+            <TabsContent value="accounts" className="space-y-2">
               {isWindowedPool && (
-                <div className="flex flex-wrap items-center gap-3">
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
                   <Input
                     value={accountKeyword}
                     onChange={(event) => setAccountKeyword(event.target.value)}
                     placeholder={t("Search account")}
                     aria-label={t("Search account")}
-                    className="h-8 w-60"
+                    className="h-7 w-56"
                   />
                   <NativeSelect
                     size="sm"
@@ -1004,16 +1078,87 @@ export function ResourcePools() {
                   </span>
                 </div>
               )}
-              <Card>
+              {!isWindowedPool && (
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+                  <Input
+                    value={accountKeyword}
+                    onChange={(event) => setAccountKeyword(event.target.value)}
+                    placeholder={t("Search account")}
+                    aria-label={t("Search account")}
+                    className="h-7 w-56"
+                  />
+                  <label className="flex items-center gap-2 text-sm">
+                    {t("Group")}
+                    <NativeSelect
+                      size="sm"
+                      value={
+                        activeGroup === null
+                          ? -1
+                          : groupOptions.indexOf(activeGroup)
+                      }
+                      onChange={(event) =>
+                        setGroupFilter(
+                          groupOptions[Number(event.target.value)] ?? null,
+                        )
+                      }
+                    >
+                      <NativeSelectOption value={-1}>
+                        {t("All")}
+                      </NativeSelectOption>
+                      {groupOptions.map((group, index) => (
+                        <NativeSelectOption key={group} value={index}>
+                          {group || t("Ungrouped")}
+                        </NativeSelectOption>
+                      ))}
+                    </NativeSelect>
+                  </label>
+                  <label className="flex items-center gap-2 text-sm">
+                    {t("Channel")}
+                    <NativeSelect
+                      size="sm"
+                      value={
+                        activeSource === null
+                          ? -1
+                          : sourceOptions.findIndex(
+                              ([id]) => id === activeSource,
+                            )
+                      }
+                      onChange={(event) =>
+                        setSourceFilter(
+                          sourceOptions[Number(event.target.value)]?.[0] ??
+                            null,
+                        )
+                      }
+                    >
+                      <NativeSelectOption value={-1}>
+                        {t("All")}
+                      </NativeSelectOption>
+                      {sourceOptions.map(([id, name], index) => (
+                        <NativeSelectOption key={id} value={index}>
+                          {name}
+                        </NativeSelectOption>
+                      ))}
+                    </NativeSelect>
+                  </label>
+                  <span className="text-muted-foreground ml-auto text-xs">
+                    {t("Showing {{shown}} of {{total}} accounts", {
+                      shown: quotaAccounts.length,
+                      total: accounts.length,
+                    })}
+                  </span>
+                </div>
+              )}
+              <Card className={TABLE_CARD}>
                 <CardContent className="p-0">
-                  <Table>
+                  <Table className={DENSE_TABLE}>
                     {isWindowedPool ? (
                       <>
                         <TableHeader>
                           <TableRow>
                             <TableHead>{t("Account")}</TableHead>
+                            <TableHead>{t("Channel")}</TableHead>
                             <TableHead>{t("Plan")}</TableHead>
-                            <TableHead className="w-48">
+                            <TableHead className="w-56">
                               {t("Usage (7d)")}
                             </TableHead>
                             <TableHead>{t("Next reset")}</TableHead>
@@ -1036,7 +1181,7 @@ export function ResourcePools() {
                         </TableHeader>
                         <TableBody>
                           {usageLoading && (
-                            <LoadingRows columns={poolFiveHour ? 9 : 7} />
+                            <LoadingRows columns={poolFiveHour ? 10 : 8} />
                           )}
                           {visibleAccounts.map((account) => {
                             const live = isWindowLive(account, now);
@@ -1048,14 +1193,19 @@ export function ResourcePools() {
                               >
                                 <TableCell>
                                   <div
-                                    className="max-w-56 truncate font-medium"
+                                    className="max-w-64 truncate"
                                     title={account.email}
                                   >
                                     {account.email ||
                                       account.name ||
                                       account.id}
                                   </div>
-                                  <div className="text-muted-foreground text-xs">
+                                </TableCell>
+                                <TableCell>
+                                  <div
+                                    className="text-muted-foreground max-w-40 truncate"
+                                    title={account.source_name}
+                                  >
                                     {account.source_name}
                                   </div>
                                 </TableCell>
@@ -1069,16 +1219,22 @@ export function ResourcePools() {
                                   )}
                                 </TableCell>
                                 <TableCell>
-                                  <UsageBar
-                                    percent={windowUsagePercent(account)}
-                                    digits={0}
-                                    muted={!live}
-                                  />
-                                  {!live && (
-                                    <div className="text-muted-foreground mt-0.5 text-xs">
-                                      {t("Not refreshed")}
-                                    </div>
-                                  )}
+                                  <div className="flex items-center gap-2">
+                                    <UsageBar
+                                      percent={windowUsagePercent(account)}
+                                      digits={0}
+                                      muted={!live}
+                                      className="flex-1"
+                                    />
+                                    {!live && (
+                                      <span
+                                        data-table-text="secondary"
+                                        className="text-muted-foreground"
+                                      >
+                                        {t("Not refreshed")}
+                                      </span>
+                                    )}
+                                  </div>
                                 </TableCell>
                                 <TableCell>
                                   <ResetAt
@@ -1139,7 +1295,7 @@ export function ResourcePools() {
                           {!usageLoading && !visibleAccounts.length && (
                             <TableRow>
                               <TableCell
-                                colSpan={poolFiveHour ? 9 : 7}
+                                colSpan={poolFiveHour ? 10 : 8}
                                 className="text-muted-foreground h-24 text-center"
                               >
                                 {t(
@@ -1157,6 +1313,7 @@ export function ResourcePools() {
                         <TableHeader>
                           <TableRow>
                             <TableHead>{t("Account")}</TableHead>
+                            <TableHead>{t("Plan")}</TableHead>
                             <TableHead>{t("Channel")}</TableHead>
                             <TableHead>{t("Group")}</TableHead>
                             <TableHead className="text-right">
@@ -1165,8 +1322,24 @@ export function ResourcePools() {
                             <TableHead className="text-right">
                               {t("Quota limit")}
                             </TableHead>
-                            <TableHead className="w-40">
-                              {t("Pool water level")}
+                            <TableHead
+                              className="w-40"
+                              aria-sort={LEVEL_SORT[levelSort].aria}
+                            >
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="-ms-2.5 h-7"
+                                title={t("Sort by {{field}}", {
+                                  field: t("Pool water level"),
+                                })}
+                                onClick={() =>
+                                  setLevelSort(LEVEL_SORT[levelSort].next)
+                                }
+                              >
+                                {t("Pool water level")}
+                                <LevelSortIcon />
+                              </Button>
                             </TableHead>
                             <TableHead className="text-right">RPM</TableHead>
                             <TableHead>{t("Next reset")}</TableHead>
@@ -1175,8 +1348,8 @@ export function ResourcePools() {
                           </TableRow>
                         </TableHeader>
                         <TableBody>
-                          {usageLoading && <LoadingRows columns={10} />}
-                          {accounts.map((account) => {
+                          {usageLoading && <LoadingRows columns={11} />}
+                          {quotaAccounts.map((account) => {
                             const percent = quotaUsagePercent(account);
                             return (
                               <TableRow
@@ -1184,19 +1357,26 @@ export function ResourcePools() {
                               >
                                 <TableCell>
                                   <div
-                                    className="max-w-56 truncate font-medium"
+                                    className="max-w-64 truncate"
                                     title={account.email}
                                   >
                                     {account.email ||
                                       account.name ||
                                       account.id}
                                   </div>
-                                  {(account.subscription_title ||
-                                    account.subscription_type) && (
-                                    <span className="mt-0.5 inline-flex rounded bg-violet-500/10 px-1.5 py-0.5 text-[11px] text-violet-600 dark:text-violet-400">
+                                </TableCell>
+                                <TableCell>
+                                  {account.subscription_title ||
+                                  account.subscription_type ? (
+                                    <span
+                                      data-table-text="secondary"
+                                      className="inline-flex rounded bg-violet-500/10 px-1.5 py-0.5 text-violet-600 dark:text-violet-400"
+                                    >
                                       {account.subscription_title ||
                                         account.subscription_type}
                                     </span>
+                                  ) : (
+                                    "-"
                                   )}
                                 </TableCell>
                                 <TableCell>
@@ -1208,13 +1388,7 @@ export function ResourcePools() {
                                   </div>
                                 </TableCell>
                                 <TableCell>
-                                  <GroupChips
-                                    groups={
-                                      account.groups?.length
-                                        ? account.groups
-                                        : [accountGroup(account)]
-                                    }
-                                  />
+                                  <GroupChips groups={accountGroups(account)} />
                                 </TableCell>
                                 <TableCell className="text-right">
                                   {formatCompactNumber(
@@ -1277,13 +1451,17 @@ export function ResourcePools() {
                               </TableRow>
                             );
                           })}
-                          {!usageLoading && !accounts.length && (
+                          {!usageLoading && !quotaAccounts.length && (
                             <TableRow>
                               <TableCell
-                                colSpan={10}
+                                colSpan={11}
                                 className="text-muted-foreground h-24 text-center"
                               >
-                                {t("No accounts")}
+                                {t(
+                                  accounts.length
+                                    ? "No matching resource pool accounts"
+                                    : "No accounts",
+                                )}
                               </TableCell>
                             </TableRow>
                           )}
