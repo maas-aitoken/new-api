@@ -3,8 +3,10 @@ package service
 import (
 	"testing"
 
+	"github.com/QuantumNous/new-api/common"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relaykit/dto"
+	"github.com/QuantumNous/new-api/relaykit/relayconvert"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -107,6 +109,52 @@ func TestStreamResponseConverterFacadesAcceptTypedNilRelayInfo(t *testing.T) {
 	require.NotNil(t, geminiResp)
 	require.Len(t, geminiResp.Candidates, 1)
 	assert.Zero(t, geminiResp.UsageMetadata.PromptTokenCount)
+}
+
+// TestConvertRequestWithoutGinContextResolvesInlineImage reproduces a panic
+// seen with DEBUG=true: converting a Claude request with an inline base64
+// image to Gemini, without a *gin.Context (c == nil, as in the facades
+// above), used to crash in logger.LogDebug. relayconvert wraps the
+// context.Context it is given with its own context.WithValue (diagnostics
+// collector), which changed its dynamic type; a bare ctx.(*gin.Context)
+// assertion on that wrapped context then failed and silently produced a
+// nil *gin.Context, which later panicked when passed to logger.LogDebug.
+func TestConvertRequestWithoutGinContextResolvesInlineImage(t *testing.T) {
+	previousDebug := common.DebugEnabled
+	common.DebugEnabled = true
+	t.Cleanup(func() { common.DebugEnabled = previousDebug })
+
+	// A minimal valid 1x1 PNG, base64-encoded.
+	const inlinePNGBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+
+	request := &dto.ClaudeRequest{
+		Model: "test-model",
+		Messages: []dto.ClaudeMessage{
+			{
+				Role: "user",
+				Content: []dto.ClaudeMediaMessage{
+					{
+						Type: "image",
+						Source: &dto.ClaudeMessageSource{
+							Type:      "base64",
+							MediaType: "image/png",
+							Data:      inlinePNGBase64,
+						},
+					},
+				},
+			},
+		},
+	}
+
+	var result *relayconvert.RequestResult
+	var err error
+	target := types.RelayFormat(types.RelayFormatGemini)
+	require.NotPanics(t, func() {
+		result, err = ConvertRequest(nil, &relaycommon.RelayInfo{}, target, request)
+	})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.Equal(t, target, result.To)
 }
 
 func ptrValue[T any](value T) *T {
