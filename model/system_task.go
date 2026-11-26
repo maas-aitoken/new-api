@@ -28,6 +28,7 @@ const (
 	SystemTaskTypeSSOUserSync          = "sso_user_sync"
 	SystemTaskTypeExternalUsageSync    = "external_usage_sync"
 	SystemTaskTypeSubscriptionUsage    = "subscription_usage_alert"
+	SystemTaskTypeResourcePoolAlert    = "resource_pool_alert"
 )
 
 var ErrSystemTaskLockLost = errors.New("system task lock lost")

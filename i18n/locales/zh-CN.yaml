@@ -93,6 +93,16 @@ notify.quota_increased_first: "【Maas平台用户提额通知】{{.Name}}申请
 notify.quota_unlimited: "不限"
 notify.quota_usage_alert: "【Maas平台提额使用提醒】当前使用额度已超过{{.Percent}}%，已使用 {{.Used}}，还剩余 {{.Remaining}}。超额后只能使用智能路由模型（只用智能路由可忽略本提醒；需要继续使用其他模型，请到Maas平台申请提额）"
 
+# Resource pool water level notices sent to the WeCom group bot
+resource_pool.alert_header: "【资源池水位告警】{{.Site}} {{.Time}}"
+resource_pool.alert_exceeded: "[告警] {{.Target}} 水位 {{.Level}}%，已达到阈值 {{.Threshold}}%"
+resource_pool.alert_recovered: "[恢复] {{.Target}} 水位 {{.Level}}%，已回落到阈值 {{.Threshold}}% 以下"
+resource_pool.alert_target_source: "{{.Provider}} 渠道 {{.Name}}"
+resource_pool.alert_target_group: "{{.Provider}} 分组 {{.Name}}"
+resource_pool.alert_target_pool: "{{.Provider}} 整体"
+resource_pool.alert_target_window: "{{.Provider}} 渠道 {{.Name}}（7 天窗口平均）"
+resource_pool.alert_test: "【资源池水位告警】{{.Site}} 测试消息：Webhook 配置可用。"
+
 # Channel notices sent to administrators who receive them and to model update watchers
 channel.notify_disabled_subject: "通道「{{.Name}}」（#{{.Id}}）已被禁用"
 channel.notify_disabled_content: "通道「{{.Name}}」（#{{.Id}}）已被禁用，原因：{{.Reason}}"

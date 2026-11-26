@@ -115,6 +115,19 @@ const (
 	MsgNotifyQuotaUsageAlert     = "notify.quota_usage_alert"
 )
 
+// Resource pool water level notices sent to the WeCom group bot, in
+// DEFAULT_LANGUAGE
+const (
+	MsgResourcePoolAlertHeader       = "resource_pool.alert_header"
+	MsgResourcePoolAlertExceeded     = "resource_pool.alert_exceeded"
+	MsgResourcePoolAlertRecovered    = "resource_pool.alert_recovered"
+	MsgResourcePoolAlertTargetSource = "resource_pool.alert_target_source"
+	MsgResourcePoolAlertTargetGroup  = "resource_pool.alert_target_group"
+	MsgResourcePoolAlertTargetPool   = "resource_pool.alert_target_pool"
+	MsgResourcePoolAlertTargetWindow = "resource_pool.alert_target_window"
+	MsgResourcePoolAlertTest         = "resource_pool.alert_test"
+)
+
 // Channel notices sent to administrators who receive them and to model update
 // watchers
 const (

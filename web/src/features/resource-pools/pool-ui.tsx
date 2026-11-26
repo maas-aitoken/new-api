@@ -40,15 +40,21 @@ const LEVEL_BAR_TONE = {
   exhausted: "bg-red-500",
 } as const;
 
+const PROVIDER_ICON_SIZE = {
+  xs: "size-5",
+  sm: "size-7",
+  md: "size-9",
+} as const;
+
 export function ProviderIcon(props: {
   meta: ProviderMeta;
-  size?: "sm" | "md";
+  size?: "xs" | "sm" | "md";
 }) {
   return (
     <span
       className={cn(
         "flex shrink-0 items-center justify-center rounded-md",
-        props.size === "md" ? "size-9" : "size-7",
+        PROVIDER_ICON_SIZE[props.size ?? "sm"],
       )}
       style={{ background: props.meta.color }}
     >
@@ -57,33 +63,31 @@ export function ProviderIcon(props: {
   );
 }
 
-/** Reset time with its relative distance; a reset already in the past is flagged. */
+/** Reset time and its relative distance on one line; a reset already in the past is flagged. */
 export function ResetAt(props: { iso?: string; now: number; locale?: string }) {
   const { t } = useTranslation();
   if (!props.iso)
     {return <span className="text-muted-foreground text-xs">-</span>;}
   const overdue = new Date(props.iso).getTime() <= props.now;
   return (
-    <div className="text-xs whitespace-nowrap">
-      <div
-        className={
-          overdue ? "text-muted-foreground line-through" : "font-medium"
-        }
-      >
+    <span className="inline-flex items-baseline gap-1.5 whitespace-nowrap">
+      <span className={overdue ? "text-muted-foreground line-through" : ""}>
         {formatResetAt(props.iso, props.locale)}
-      </div>
-      <div
-        className={
+      </span>
+      <span
+        data-table-text="secondary"
+        className={cn(
+          "text-xs",
           overdue
             ? "text-amber-600 dark:text-amber-400"
-            : "text-muted-foreground"
-        }
+            : "text-muted-foreground",
+        )}
       >
         {overdue
           ? t("Expired")
           : formatResetDistance(props.iso, props.now, props.locale)}
-      </div>
-    </div>
+      </span>
+    </span>
   );
 }
 
@@ -92,6 +96,8 @@ export function UsageBar(props: {
   percent: number;
   digits: number;
   muted?: boolean;
+  /** Draw the bar only; the caller shows the figure itself. */
+  hideValue?: boolean;
   className?: string;
 }) {
   const percent = Math.min(100, Math.max(0, props.percent));
@@ -107,33 +113,42 @@ export function UsageBar(props: {
           style={{ width: `${percent}%` }}
         />
       </div>
-      <span
-        className={cn(
-          "w-12 shrink-0 text-right text-xs font-medium tabular-nums",
-          LEVEL_TEXT_TONE[tone],
-        )}
-      >
-        {percent.toFixed(props.digits)}%
-      </span>
+      {!props.hideValue && (
+        <span
+          className={cn(
+            "w-12 shrink-0 text-right text-xs font-medium tabular-nums",
+            LEVEL_TEXT_TONE[tone],
+          )}
+        >
+          {percent.toFixed(props.digits)}%
+        </span>
+      )}
     </div>
   );
 }
 
-/** Circular water-level gauge; null renders an empty ring with a dash. */
+/**
+ * Circular water-level gauge; null renders an empty ring with a dash. The
+ * label names the gauge for assistive tech and as a tooltip.
+ */
 export function WaterRing(props: {
   percent: number | null;
   label: string;
   size?: number;
 }) {
-  const size = props.size ?? 112;
-  const strokeWidth = 10;
+  const size = props.size ?? 84;
+  const strokeWidth = 8;
   const radius = (size - strokeWidth) / 2;
   const circumference = 2 * Math.PI * radius;
   const percent =
     props.percent === null ? 0 : Math.min(100, Math.max(0, props.percent));
   const tone = levelTone(props.percent);
   return (
-    <div className="relative shrink-0" style={{ width: size, height: size }}>
+    <div
+      className="relative shrink-0"
+      style={{ width: size, height: size }}
+      title={props.label}
+    >
       <svg
         width={size}
         height={size}
@@ -163,16 +178,14 @@ export function WaterRing(props: {
           className="transition-[stroke-dashoffset] duration-700"
         />
       </svg>
-      <div className="absolute inset-0 flex flex-col items-center justify-center">
-        <span
-          className={cn(
-            "text-2xl font-semibold tabular-nums",
-            LEVEL_TEXT_TONE[tone],
-          )}
-        >
-          {props.percent === null ? "-" : `${percent.toFixed(0)}%`}
-        </span>
-        <span className="text-muted-foreground text-[11px]">{props.label}</span>
+      <div
+        aria-hidden="true"
+        className={cn(
+          "absolute inset-0 flex items-center justify-center text-xl font-semibold tabular-nums",
+          LEVEL_TEXT_TONE[tone],
+        )}
+      >
+        {props.percent === null ? "-" : `${percent.toFixed(0)}%`}
       </div>
     </div>
   );
@@ -180,11 +193,10 @@ export function WaterRing(props: {
 
 /** Stacked bar of how many accounts sit in each usage band. */
 export function UsageBandBar(props: { bands: number[] }) {
-  const { t } = useTranslation();
   const total = props.bands.reduce((sum, count) => sum + count, 0);
   return (
-    <div className="space-y-1.5">
-      <div className="bg-muted flex h-2 overflow-hidden rounded-full">
+    <div className="space-y-1">
+      <div className="bg-muted flex h-1.5 overflow-hidden rounded-full">
         {total > 0 &&
           USAGE_BANDS.map((band, index) =>
             props.bands[index] ? (
@@ -203,7 +215,7 @@ export function UsageBandBar(props: { bands: number[] }) {
             <span className={cn("size-2 rounded-full", band.tone)} />
             {band.label}
             <span className="text-foreground font-medium tabular-nums">
-              {t("{{count}} accounts", { count: props.bands[index] })}
+              {props.bands[index]}
             </span>
           </span>
         ))}
@@ -262,20 +274,27 @@ export function Metric(props: {
   tone?: keyof typeof LEVEL_TEXT_TONE;
 }) {
   return (
-    <div className="bg-muted/50 rounded-lg px-4 py-3">
+    <div className="bg-muted/50 min-w-0 rounded-lg px-3 py-2">
       <p className="text-muted-foreground flex items-center gap-1.5 text-xs">
         {props.icon}
-        {props.label}
+        <span className="truncate">{props.label}</span>
       </p>
-      <p
-        className={cn(
-          "my-1 text-xl font-medium tabular-nums",
-          props.tone && LEVEL_TEXT_TONE[props.tone],
-        )}
-      >
-        {props.value}
+      <p className="mt-0.5 flex min-w-0 items-baseline gap-2">
+        <span
+          className={cn(
+            "shrink-0 text-lg leading-6 font-semibold tabular-nums",
+            props.tone && LEVEL_TEXT_TONE[props.tone],
+          )}
+        >
+          {props.value}
+        </span>
+        <span
+          className="text-muted-foreground truncate text-xs"
+          title={props.hint}
+        >
+          {props.hint}
+        </span>
       </p>
-      <p className="text-muted-foreground/80 text-xs">{props.hint}</p>
     </div>
   );
 }

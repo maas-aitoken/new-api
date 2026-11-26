@@ -943,4 +943,10 @@ export const STATIC_I18N_KEYS = [
   'Channel priorities changed. Refresh and try again.',
   'Invalid channel priority move',
   'Channel priority is outside the sortable range',
+  // Resource pool water level alert: form validation and API errors, task label.
+  'Enter a time in HH:MM format',
+  'Enter a valid WeCom group bot webhook URL',
+  'Set the webhook URL before enabling alerts',
+  'Enable alerts for at least one provider',
+  'Resource pool water level check',
 ] as const

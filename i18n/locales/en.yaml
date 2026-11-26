@@ -92,6 +92,16 @@ notify.quota_increased_first: "[Maas quota increase notice] {{.Name}} requested 
 notify.quota_unlimited: "Unlimited"
 notify.quota_usage_alert: "[Maas quota usage reminder] More than {{.Percent}}% of the quota is used: {{.Used}} used, {{.Remaining}} left. Past the quota only smart routing models are available (ignore this if smart routing is enough; to keep using other models, request a quota increase on the Maas platform)"
 
+# Resource pool water level notices sent to the WeCom group bot
+resource_pool.alert_header: "[Resource pool water level alert] {{.Site}} {{.Time}}"
+resource_pool.alert_exceeded: "[Alert] {{.Target}} is at {{.Level}}%, at or above the {{.Threshold}}% threshold"
+resource_pool.alert_recovered: "[Recovered] {{.Target}} is at {{.Level}}%, back below the {{.Threshold}}% threshold"
+resource_pool.alert_target_source: "{{.Provider}} channel {{.Name}}"
+resource_pool.alert_target_group: "{{.Provider}} group {{.Name}}"
+resource_pool.alert_target_pool: "{{.Provider}} overall"
+resource_pool.alert_target_window: "{{.Provider}} channel {{.Name}} (7d window average)"
+resource_pool.alert_test: "[Resource pool water level alert] {{.Site}} test message: the webhook works."
+
 # Channel notices sent to administrators who receive them and to model update watchers
 channel.notify_disabled_subject: "Channel \"{{.Name}}\" (#{{.Id}}) has been disabled"
 channel.notify_disabled_content: "Channel \"{{.Name}}\" (#{{.Id}}) has been disabled. Reason: {{.Reason}}"

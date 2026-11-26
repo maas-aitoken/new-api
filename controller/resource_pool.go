@@ -169,3 +169,42 @@ func DeleteResourcePoolSource(c *gin.Context) {
 	service.InvalidateResourcePoolUsage("")
 	common.ApiSuccess(c, nil)
 }
+
+// GetResourcePoolAlert returns the water level alert configuration. The
+// webhook URL is masked.
+func GetResourcePoolAlert(c *gin.Context) {
+	common.ApiSuccess(c, service.GetResourcePoolAlertConfig())
+}
+
+// SaveResourcePoolAlert stores the water level alert configuration. An empty
+// webhook URL keeps the stored one.
+func SaveResourcePoolAlert(c *gin.Context) {
+	var config service.ResourcePoolAlertConfig
+	if err := common.DecodeJson(c.Request.Body, &config); err != nil {
+		common.ApiErrorMsg(c, "invalid request body")
+		return
+	}
+	if err := service.SaveResourcePoolAlertConfig(config); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, service.GetResourcePoolAlertConfig())
+}
+
+// TestResourcePoolAlert sends a test message to the submitted webhook URL, or
+// to the stored one when the URL is empty.
+func TestResourcePoolAlert(c *gin.Context) {
+	var request struct {
+		WebhookURL string `json:"webhook_url"`
+		Mentions   string `json:"mentions"`
+	}
+	if err := common.DecodeJson(c.Request.Body, &request); err != nil {
+		common.ApiErrorMsg(c, "invalid request body")
+		return
+	}
+	if err := service.SendResourcePoolAlertTest(c.Request.Context(), request.WebhookURL, request.Mentions); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	common.ApiSuccess(c, nil)
+}
