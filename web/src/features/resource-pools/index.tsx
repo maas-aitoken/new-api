@@ -825,16 +825,10 @@ export function ResourcePools() {
                                   LEVEL_TEXT_TONE[levelTone(row.level)],
                                 )}
                               >
-                                {row.level === null
-                                  ? "-"
-                                  : `${row.level.toFixed(1)}%`}
+                                {row.level.toFixed(1)}%
                               </span>
                             </div>
-                            <UsageBar
-                              percent={row.level ?? 0}
-                              digits={0}
-                              muted={row.level === null}
-                            />
+                            <UsageBar percent={row.level} digits={0} />
                             <div className="text-muted-foreground grid grid-cols-3 gap-2 text-xs">
                               <div>
                                 <div>{t("Credits")}</div>

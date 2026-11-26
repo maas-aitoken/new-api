@@ -4,8 +4,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/relaykit/dto"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -130,6 +133,80 @@ func TestFetchResourcePoolSourceParsesCamelCaseUpstream(t *testing.T) {
 	assert.Equal(t, int64(1000), a.RpMLimit)
 	assert.Equal(t, int64(3), a.RpmCurrent)
 	assert.Equal(t, int64(1792562535), a.LastRefresh)
+}
+
+// tokenmanagement reports a disabled Kiro account with no plan and 0 / 0
+// credits. The console and capacity pools count it as a used-up KIRO POWER
+// account.
+func TestFetchResourcePoolSourceCountsDisabledKiroAccountsAsUsedUp(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"accounts":[
+			{"id":"1","email":"off@example.com","enabled":false,"groups":["aws2"],"rpmLimit":1000,
+			 "subscriptionType":"","subscriptionTitle":"","usageCurrent":0,"usageLimit":0,
+			 "usagePercent":0,"usagePercentage":0,"nextResetDate":""},
+			{"id":"2","email":"kept@example.com","enabled":false,"groups":["aws2"],
+			 "subscriptionType":"PRO","subscriptionTitle":"KIRO PRO","usageCurrent":100,"usageLimit":1000,
+			 "nextResetDate":"2026-12-01"},
+			{"id":"3","email":"on@example.com","enabled":true,"groups":["aws2"],
+			 "subscriptionType":"POWER","subscriptionTitle":"KIRO POWER","usageCurrent":2500,"usageLimit":10000,
+			 "nextResetDate":"2026-12-01"},
+			{"id":"4","email":"new@example.com","enabled":true,"groups":["aws2"]}
+		]}`))
+	}))
+	defer server.Close()
+
+	accounts, status := fetchResourcePoolSource(&model.ResourcePoolSource{
+		Id: 4, Provider: model.ResourcePoolClaude, Endpoint: server.URL, GroupName: "aws2",
+	})
+	require.Equal(t, "success", status.Status)
+	require.Len(t, accounts, 4)
+
+	off := accounts[0]
+	assert.False(t, off.Enabled)
+	assert.Equal(t, "POWER", off.SubscriptionType)
+	assert.Equal(t, "KIRO POWER", off.SubscriptionTitle)
+	assert.Equal(t, 10000.0, off.UsageCurrent)
+	assert.Equal(t, 10000.0, off.UsageLimit)
+	assert.Equal(t, 100.0, off.UsagePercentage)
+	assert.Equal(t, int64(1000), off.RpMLimit)
+
+	// A disabled account that still reports a quota, and enabled accounts with
+	// or without one, keep what the upstream said.
+	kept := accounts[1]
+	assert.Equal(t, "PRO", kept.SubscriptionType)
+	assert.Equal(t, "KIRO PRO", kept.SubscriptionTitle)
+	assert.Equal(t, 100.0, kept.UsageCurrent)
+	assert.Equal(t, 1000.0, kept.UsageLimit)
+	assert.InDelta(t, 10.0, kept.UsagePercentage, 0.001)
+	assert.Equal(t, 2500.0, accounts[2].UsageCurrent)
+	assert.Empty(t, accounts[3].SubscriptionType)
+	assert.Zero(t, accounts[3].UsageLimit)
+
+	// Capacity pools see the same figures: the account is a POWER account
+	// counted in credits, and stays excluded because it is disabled.
+	now := time.Date(2026, 11, 26, 0, 0, 0, 0, time.UTC)
+	views := make([]capacityAccount, 0, len(accounts))
+	for _, account := range accounts[:3] {
+		views = append(views, capacityAccountOf(account, false))
+	}
+	assert.Equal(t, "POWER", views[0].plan)
+	assert.Equal(t, 10000.0, views[0].used)
+	assert.Equal(t, 10000.0, views[0].limit)
+	assert.True(t, views[0].creditUnit)
+	config := model.CapacityPoolConfig{ThresholdPercent: 95, PlanRates: map[string]dto.ModelLimit{"POWER": {RPM: 60}}}
+	limit, detail := computeCapacityPoolLimit(config, views, nil, now)
+	assert.Equal(t, int64(60), limit.RPM)
+	assert.Equal(t, []CapacityPlanDetail{{Plan: "POWER", Total: 2, Usable: 1}, {Plan: "PRO", Total: 1}}, detail.Plans)
+	assert.Equal(t, map[string]int{"disabled": 2}, detail.Excluded)
+
+	// The windowed pools (codex2api) are left alone.
+	accounts, status = fetchResourcePoolSource(&model.ResourcePoolSource{
+		Id: 5, Provider: model.ResourcePoolGPT, Endpoint: server.URL,
+	})
+	require.Equal(t, "success", status.Status)
+	assert.Empty(t, accounts[0].SubscriptionType)
+	assert.Zero(t, accounts[0].UsageLimit)
+	assert.Zero(t, accounts[0].UsagePercentage)
 }
 
 func TestFetchResourcePoolSourceParsesCodex2apiShape(t *testing.T) {

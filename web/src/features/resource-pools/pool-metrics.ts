@@ -277,8 +277,8 @@ export type GroupRow = {
   enabled: number;
   usage: number;
   limit: number;
-  /** Quota water level of the enabled accounts; null when none is enabled. */
-  level: number | null;
+  /** Quota water level of every account of the group, disabled ones included. */
+  level: number;
   rpmCurrent: number;
   rpmLimit: number;
   nextReset?: string;
@@ -295,7 +295,11 @@ export function nextQuotaReset(
   );
 }
 
-/** Aggregates quota-based (Kiro) accounts per account group. */
+/**
+ * Aggregates quota-based (Kiro) accounts per account group. Credits and the
+ * water level cover disabled accounts as well; RPM is what the enabled
+ * accounts can still serve.
+ */
 export function summarizeByGroup(
   accounts: ResourcePoolAccount[],
   now: number,
@@ -310,15 +314,15 @@ export function summarizeByGroup(
   return [...buckets.entries()]
     .map(([group, list]) => {
       const enabled = list.filter((account) => account.enabled);
-      const usage = enabled.reduce((sum, a) => sum + a.usage_current, 0);
-      const limit = enabled.reduce((sum, a) => sum + a.usage_limit, 0);
+      const usage = list.reduce((sum, a) => sum + a.usage_current, 0);
+      const limit = list.reduce((sum, a) => sum + a.usage_limit, 0);
       return {
         group,
         accounts: list,
         enabled: enabled.length,
         usage,
         limit,
-        level: enabled.length ? waterLevel(enabled) : null,
+        level: waterLevel(list),
         rpmCurrent: enabled.reduce((sum, a) => sum + (a.rpm_current ?? 0), 0),
         rpmLimit: enabled.reduce((sum, a) => sum + (a.rpm_limit ?? 0), 0),
         nextReset: nextQuotaReset(list, now),
@@ -403,7 +407,7 @@ export type PoolSummary = {
   total: number;
   /** Accounts whose usage numbers are current (enabled, not stale or expired). */
   reporting: number;
-  /** Reporting accounts still below the exhaustion threshold. */
+  /** Enabled accounts still below the exhaustion threshold. */
   available: number;
   high: number;
   exhausted: number;
@@ -431,7 +435,10 @@ export function summarizePool(
   const reporting = windowed
     ? accounts.filter((account) => isWindowLive(account, now))
     : accounts.filter((account) => account.enabled);
-  const usages: PoolAccountUsage[] = reporting.map((account) => ({
+  // Quota pools count disabled accounts too: the backend reports them as
+  // used-up accounts, the same figures their account-detail row shows.
+  const counted = windowed ? reporting : accounts;
+  const usages: PoolAccountUsage[] = counted.map((account) => ({
     account,
     percent: windowed
       ? windowUsagePercent(account)
@@ -458,8 +465,9 @@ export function summarizePool(
     level,
     total: accounts.length,
     reporting: reporting.length,
-    available: usages.filter((item) => item.percent < EXHAUSTED_USAGE_PERCENT)
-      .length,
+    available: usages.filter(
+      (item) => item.account.enabled && item.percent < EXHAUSTED_USAGE_PERCENT,
+    ).length,
     high: usages.filter((item) => item.percent >= HIGH_USAGE_PERCENT).length,
     exhausted: usages.filter((item) => item.percent >= EXHAUSTED_USAGE_PERCENT)
       .length,
@@ -469,7 +477,11 @@ export function summarizePool(
         ).length
       : accounts.filter((account) => !account.enabled).length,
     bands,
-    top: [...usages].sort((a, b) => b.percent - a.percent).slice(0, 3),
+    // Disabled accounts all sit at 100% and would crowd out the ones in use.
+    top: usages
+      .filter((item) => item.account.enabled)
+      .sort((a, b) => b.percent - a.percent)
+      .slice(0, 3),
     nextReset: earliestFutureReset(resets, now),
     fiveHour: windowed ? summarizeFiveHour(accounts, now) : undefined,
     sourcesOk: statuses.filter((status) => status.status === "success").length,

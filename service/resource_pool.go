@@ -21,6 +21,16 @@ import (
 // resourcePoolFetchTimeout bounds one upstream admin request.
 const resourcePoolFetchTimeout = 10 * time.Second
 
+// tokenmanagement stops reporting plan and quota once a Kiro account is
+// disabled, so the account arrives with no plan and 0 / 0 credits. It is
+// counted as a used-up KIRO POWER account instead, in the console and in
+// capacity pools alike.
+const (
+	disabledKiroPlan      = "POWER"
+	disabledKiroPlanTitle = "KIRO POWER"
+	disabledKiroCredits   = 10000.0
+)
+
 // resourcePoolAPIReply is the upstream payload shape. Verticals in this fleet
 // answer either {accounts:[...]} or {data:[...]}.
 type resourcePoolAPIReply struct {
@@ -279,6 +289,18 @@ func fetchResourcePoolSource(source *model.ResourcePoolSource) ([]*model.Resourc
 		// token total so the console can rank accounts by load.
 		if account.UsageCurrent == 0 && account.Tokens7d > 0 {
 			account.UsageCurrent = float64(account.Tokens7d)
+		}
+		// A disabled Kiro account that still reports a quota keeps its own
+		// numbers and plan.
+		if source.Provider == model.ResourcePoolClaude && !account.Enabled && account.UsageLimit <= 0 {
+			if account.SubscriptionType == "" && account.SubscriptionTitle == "" {
+				account.SubscriptionType = disabledKiroPlan
+				account.SubscriptionTitle = disabledKiroPlanTitle
+			}
+			account.UsageCurrent = disabledKiroCredits
+			account.UsageLimit = disabledKiroCredits
+			account.UsagePercent = 1
+			account.UsagePercentage = 100
 		}
 		// codex2api marks account health via status strings rather than an
 		// enabled flag on some rows; treat empty status as enabled=true only
