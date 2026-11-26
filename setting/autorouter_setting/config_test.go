@@ -47,6 +47,18 @@ func TestDefaultsFromTaskModelsJSON(t *testing.T) {
 		assert.Equal(t, 0.2, weights.Capacity, preference)
 		assert.Equal(t, 0.2, weights.Success, preference)
 	}
+	// 均衡按难度在三档之间滑动：最简单等于成本优先，中等等于原均衡，最难等于能力优先。
+	for need, preference := range map[float64]string{0: autorouter.PreferenceCost, 0.5: autorouter.PreferenceBalanced, 1: autorouter.PreferenceCapability} {
+		want := DefaultPreferenceWeights[preference]
+		got := autorouter.AdaptiveWeights(need, DefaultPreferenceWeights[autorouter.PreferenceBalanced])
+		assert.InDelta(t, want.Quality, got.Quality, 1e-9, preference)
+		assert.InDelta(t, want.Cost, got.Cost, 1e-9, preference)
+		assert.Equal(t, want.Capacity, got.Capacity, preference)
+		assert.Equal(t, want.Success, got.Success, preference)
+	}
+	for _, preference := range autorouter.Preferences {
+		assert.Equal(t, preference == autorouter.PreferenceBalanced, s.Policy(preference).Adaptive, preference)
+	}
 }
 
 // 质量/成本选择需要每个画像下各模型的榜单分，首次启动用内嵌文件里的 evidence 播种。

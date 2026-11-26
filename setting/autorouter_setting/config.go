@@ -86,6 +86,8 @@ type AutoRouterSetting struct {
 	// PreferenceWeights maps a preference to the utility formula strengths.
 	// Temperature remains in the stored shape for compatibility and is ignored
 	// by deterministic model selection. A preference missing from the map uses its built-in policy.
+	// The balanced preference only uses capacity and success: task difficulty sets its
+	// quality and cost weights, so its stored quality and cost are ignored.
 	PreferenceWeights autorouter.PreferenceWeights `json:"preference_weights"`
 	// RouteLogMode decides which auto requests leave a routing log: off, decisions
 	// (a request that called the classifier, or found no model at all) or all.
@@ -257,6 +259,7 @@ func (s *AutoRouterSetting) Policy(preference string) autorouter.Policy {
 		TaskScores:             ranking.TaskScores,
 		Preference:             preference,
 		DimensionWeights:       s.preferenceWeights(preference),
+		Adaptive:               preference == autorouter.PreferenceBalanced,
 	}
 }
 

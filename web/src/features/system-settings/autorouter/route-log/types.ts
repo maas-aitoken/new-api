@@ -138,6 +138,10 @@ export type RoutePick = {
   /** Current four-dimensional policy; legacy quality/price logs have weight instead. */
   dimensions?: PickDimensions | null
   weight?: number
+  /** Balanced only: the capability need from task difficulty that set the quality and cost weights. */
+  need?: number
+  /** False when no difficulty was available and the neutral need applied. */
+  need_from_difficulty?: boolean
   /** 没配调度器、或这次没估算比较成本时没有。 */
   preview?: RoutePreviewOutcome
 }

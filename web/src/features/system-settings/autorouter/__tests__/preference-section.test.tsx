@@ -97,12 +97,18 @@ test('a stored adaptive default is shown as balanced, the preference the server 
 })
 
 test.each(['balanced', 'cost'])(
-  'with %s as the default the four weights are edited for exactly the three weighted preferences',
+  'with %s as the default the fixed preferences edit four weights and balanced edits only capacity and success',
   async (defaultPreference) => {
     const user = userEvent.setup()
     renderSection(defaultPreference)
 
-    expect(screen.getAllByRole('spinbutton')).toHaveLength(4)
+    expect(screen.getAllByRole('spinbutton')).toHaveLength(2)
+    expect(
+      screen.queryByRole('spinbutton', { name: 'Capability weight' })
+    ).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole('spinbutton', { name: 'Cost weight' })
+    ).not.toBeInTheDocument()
     await user.click(screen.getByRole('tab', { name: 'Capability first' }))
     expect(screen.getAllByRole('spinbutton')).toHaveLength(4)
     expect(screen.getByRole('spinbutton', { name: 'Cost weight' })).toHaveValue(
@@ -116,7 +122,17 @@ test.each(['balanced', 'cost'])(
   }
 )
 
-test('a stored preference policy fills its four fields', async () => {
+test('the balanced tab explains that task difficulty sets capability and cost', () => {
+  renderSection()
+
+  expect(
+    screen.getByText(
+      'Task difficulty sets the capability and cost weights: easy tasks are weighed like cost first, hard tasks like capability first.'
+    )
+  ).toBeVisible()
+})
+
+test('a stored balanced policy fills its capacity and success fields', async () => {
   const user = userEvent.setup()
   const settings = {
     'autorouter_setting.default_preference': 'balanced',
@@ -129,12 +145,6 @@ test('a stored preference policy fills its four fields', async () => {
     </QueryClientProvider>
   )
 
-  expect(
-    screen.getByRole('spinbutton', { name: 'Capability weight' })
-  ).toHaveValue(0.4)
-  expect(screen.getByRole('spinbutton', { name: 'Cost weight' })).toHaveValue(
-    0.1
-  )
   expect(
     screen.getByRole('spinbutton', { name: 'Capacity weight' })
   ).toHaveValue(0.2)
@@ -151,6 +161,7 @@ test('editing one preference writes the complete policy for all preferences', as
   const user = userEvent.setup()
   renderSection()
 
+  await user.click(screen.getByRole('tab', { name: 'Capability first' }))
   fireEvent.change(
     screen.getByRole('spinbutton', { name: 'Capability weight' }),
     {
@@ -163,7 +174,7 @@ test('editing one preference writes the complete policy for all preferences', as
   expect(api.put).toHaveBeenCalledWith('/api/option/', {
     key: 'autorouter_setting.preference_weights',
     value:
-      '{"capability":{"quality":0.6,"cost":0,"capacity":0.2,"success":0.2},"balanced":{"quality":0.8,"cost":0.2,"capacity":0.2,"success":0.2},"cost":{"quality":0.2,"cost":0.4,"capacity":0.2,"success":0.2}}',
+      '{"capability":{"quality":0.8,"cost":0,"capacity":0.2,"success":0.2},"balanced":{"quality":0.4,"cost":0.2,"capacity":0.2,"success":0.2},"cost":{"quality":0.2,"cost":0.4,"capacity":0.2,"success":0.2}}',
   })
 })
 
@@ -171,6 +182,7 @@ test('each weight exposes its explanation from the question mark button', async 
   const user = userEvent.setup()
   renderSection()
 
+  await user.click(screen.getByRole('tab', { name: 'Capability first' }))
   await user.click(screen.getAllByRole('button', { name: 'Learn more' })[0])
 
   expect(
