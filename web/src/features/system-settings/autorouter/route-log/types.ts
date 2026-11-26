@@ -195,6 +195,8 @@ export type RouteTraceContinuation = {
   task_change: number
   threshold: number
   continued: boolean
+  /** The previous route was a fallback, so a classified request ranked again. */
+  previous_fallback?: boolean
 }
 
 /** Legacy pool pressure that forced a previous route to be compared again. */

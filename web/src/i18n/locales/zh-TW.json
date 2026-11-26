@@ -7091,6 +7091,7 @@
     "The new token will only be shown once. Copy it and store it securely.": "新令牌僅顯示一次。請複製並妥善保存。",
     "The OAuth account does not match the account linked to your profile.": "此 OAuth 帳號與已綁定的帳號不一致。",
     "The previous model can no longer serve": "The previous model can no longer serve",
+    "The previous model was a fallback, so the task was ranked again": "上一輪的模型是兜底選出的，本輪重新按榜單選擇",
     "The plugin no longer offers this model": "外掛已不再提供這個模型",
     "The price uses usage the plugin no longer provides": "價格用到了外掛不再提供的用量",
     "The public URL of your server, used for OAuth callbacks, webhooks, and other external integrations": "伺服器的公開URL，用於OAuthCallback、Webhook和其他外部整合",

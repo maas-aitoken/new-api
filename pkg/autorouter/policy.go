@@ -103,6 +103,14 @@ func validateDecision(decision *Decision) (profiles []string, validity Validity)
 	return validity.Profiles, validity
 }
 
+// Classified reports whether the decision is valid and names a task type, so the
+// route it leads to comes from a ranking instead of a fallback. Only the route of a
+// classified instruction can be continued by the next one.
+func (d *Decision) Classified() bool {
+	profiles, _ := validateDecision(d)
+	return profiles != nil
+}
+
 // SelectRoute maps a jev decision to a route. decision is nil when jev failed;
 // previous is the route of the previous instruction, nil when unknown.
 // inherited reports that the decision was not used and the route came from

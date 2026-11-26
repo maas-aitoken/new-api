@@ -110,6 +110,10 @@ type Continuation struct {
 	// Continued is false both when the task changed and when the previous model can
 	// no longer serve; the task change against the threshold tells which.
 	Continued bool `json:"continued"`
+	// PreviousFallback means the previous route came from no classification (jev
+	// failed, its answer was invalid, or the task type was unknown), so a classified
+	// request ranks again instead of continuing it.
+	PreviousFallback bool `json:"previous_fallback,omitempty"`
 }
 
 // EffortTrace is how difficulty became the reasoning effort. The effort a model

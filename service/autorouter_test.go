@@ -197,6 +197,69 @@ func TestResolveAutoModelFollowsPreviousRoute(t *testing.T) {
 	assert.True(t, retried.EffortOverride, "档位由这次判断定下，覆盖客户端的推理字段")
 }
 
+// 只有上一轮的模型出自正确分类时，本轮的分类才延续它。上一轮 jev 失败、判断不合法或任务类型是
+// unknown 时那个模型是兜底来的，本轮分类出任务类型就按本轮的榜单选；本轮仍没有分类时照旧沿用。
+func TestResolveAutoModelContinuesOnlyAClassifiedPreviousRoute(t *testing.T) {
+	var calls atomic.Int32
+	jev := fakeJev(t, &calls, 0).URL
+	failing := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "boom", http.StatusInternalServerError)
+	}))
+	t.Cleanup(failing.Close)
+	useAutoRouterSetting(t, jev, 1000)
+	setting := autorouter_setting.GetAutoRouterSetting()
+	setting.ContinuationTaskChange = 0.5
+	turn := func(previous, current string) string {
+		return `{"messages":[{"role":"user","content":"` + previous + `"},{"role":"assistant","content":"done"},{"role":"user","content":"` + current + `"}]}`
+	}
+
+	t.Run("a classified request after an unknown one ranks again", func(t *testing.T) {
+		first, err := ResolveAutoModel(newAutoRouterContext(9261, `{"messages":[{"role":"user","content":"ok"}]}`), allModelsAvailable)
+		require.NoError(t, err)
+		require.Equal(t, "general-medium", first.ResolvedModel)
+
+		next, err := ResolveAutoModel(newAutoRouterContext(9261, turn("ok", "rename it")), allModelsAvailable)
+		require.NoError(t, err)
+		assert.Equal(t, autorouter.Route{Profile: "general.chat", Model: "chat", Effort: "low"}, next.Route, "task_change 低也不延续兜底来的 general")
+		assert.Equal(t, autorouter.SourceJev, next.Source)
+		require.NotNil(t, next.Trace.Continuation)
+		assert.True(t, next.Trace.Continuation.PreviousFallback)
+		assert.False(t, next.Trace.Continuation.Continued)
+
+		again, err := ResolveAutoModel(newAutoRouterContext(9261, turn("ok", "ok")), allModelsAvailable)
+		require.NoError(t, err)
+		assert.Equal(t, "general-medium", again.ResolvedModel, "本轮仍是 unknown 时照旧沿用上一轮的兜底模型")
+		assert.Equal(t, autorouter.SourceInherit, again.Source)
+	})
+
+	t.Run("a classified request after a jev failure ranks again", func(t *testing.T) {
+		t.Setenv("JEV_ENDPOINT", failing.URL)
+		first, err := ResolveAutoModel(newAutoRouterContext(9262, `{"messages":[{"role":"user","content":"hard"}]}`), allModelsAvailable)
+		t.Setenv("JEV_ENDPOINT", jev)
+		require.NoError(t, err)
+		require.Equal(t, "general-medium", first.ResolvedModel)
+
+		next, err := ResolveAutoModel(newAutoRouterContext(9262, turn("hard", "rename it")), allModelsAvailable)
+		require.NoError(t, err)
+		assert.Equal(t, "chat-low", next.ResolvedModel)
+		assert.True(t, next.Trace.Continuation.PreviousFallback)
+	})
+
+	t.Run("a model an unknown request kept from a classified one can still be continued", func(t *testing.T) {
+		_, err := ResolveAutoModel(newAutoRouterContext(9263, `{"messages":[{"role":"user","content":"hard"}]}`), allModelsAvailable)
+		require.NoError(t, err)
+		unknown, err := ResolveAutoModel(newAutoRouterContext(9263, turn("hard", "ok")), allModelsAvailable)
+		require.NoError(t, err)
+		require.Equal(t, "coder-xhigh", unknown.ResolvedModel)
+
+		next, err := ResolveAutoModel(newAutoRouterContext(9263, turn("ok", "rename it")), allModelsAvailable)
+		require.NoError(t, err)
+		assert.Equal(t, "coder-xhigh", next.ResolvedModel, "coder 出自 hard 的正确分类，unknown 一轮只是沿用它")
+		require.NotNil(t, next.Trace.Continuation)
+		assert.True(t, next.Trace.Continuation.Continued)
+	})
+}
+
 // 概率最高的叶子哪怕只有 0.4，也按它的榜单选模型，code 下两个叶子加起来更高也不改走大类。
 // 档位由 auto 定，会覆盖客户端自己写的推理字段。
 func TestResolveAutoModelRoutesByTheMostProbableTaskType(t *testing.T) {

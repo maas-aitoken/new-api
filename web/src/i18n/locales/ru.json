@@ -7091,6 +7091,7 @@
     "The new token will only be shown once. Copy it and store it securely.": "Новый токен будет показан только один раз. Скопируйте его и сохраните в безопасном месте.",
     "The OAuth account does not match the account linked to your profile.": "Этот аккаунт OAuth не совпадает с аккаунтом, привязанным к профилю.",
     "The previous model can no longer serve": "The previous model can no longer serve",
+    "The previous model was a fallback, so the task was ranked again": "Предыдущая модель была резервной, поэтому выбор сделан заново",
     "The plugin no longer offers this model": "Плагин больше не предоставляет эту модель",
     "The price uses usage the plugin no longer provides": "Цена использует данные об использовании, которые плагин больше не передаёт",
     "The public URL of your server, used for OAuth callbacks, webhooks, and other external integrations": "Публичный URL вашего сервера, используемый для OAuth-перенаправлений, вебхуков и других внешних интеграций",

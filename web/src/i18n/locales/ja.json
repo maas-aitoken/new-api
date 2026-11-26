@@ -7091,6 +7091,7 @@
     "The new token will only be shown once. Copy it and store it securely.": "新しいトークンは一度だけ表示されます。コピーして安全に保管してください。",
     "The OAuth account does not match the account linked to your profile.": "このOAuthアカウントは連携済みのアカウントと一致しません。",
     "The previous model can no longer serve": "The previous model can no longer serve",
+    "The previous model was a fallback, so the task was ranked again": "前回のモデルはフォールバックだったため、ランキングから選び直しました",
     "The plugin no longer offers this model": "プラグインはこのモデルを提供しなくなりました",
     "The price uses usage the plugin no longer provides": "価格が、プラグインで提供されなくなった使用量を使っています",
     "The public URL of your server, used for OAuth callbacks, webhooks, and other external integrations": "OAuthコールバック、Webhook、その他の外部統合に使用されるサーバーの公開URL",

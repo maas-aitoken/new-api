@@ -38,7 +38,9 @@ const (
 //   - d: 键只存 jev 的判断（Decision），或"刚失败过"的标记（Failed）。
 //   - r: 键由令牌、会话和当前指令组成，存这条指令最近一轮的路由（Route），
 //     同一轮的后续请求直接复用它，下一条指令"沿用上一轮模型"时也读它；
-//     Previous 用来确认缓存是否属于当前轮次。
+//     Previous 用来确认缓存是否属于当前轮次；Classified 记这条路由的模型是否出自
+//     一次正确分类（本轮分类出了任务类型，或沿用的上一轮模型本身出自正确分类），
+//     只有这样的模型才能被下一条已分类的指令延续。
 //   - s: 键存会话最近一次算出的路由，供没有可读文字的子 agent 继承；还记着这条路由
 //     的档位是否由 jev 判断定下（EffortOverride），子 agent 继承时据此决定能不能覆盖
 //     客户端的推理字段。
@@ -48,6 +50,7 @@ type autoRouterEntry struct {
 	Failed         bool                 `json:"failed,omitempty"`
 	EffortOverride bool                 `json:"effort_override,omitempty"`
 	Previous       string               `json:"previous,omitempty"`
+	Classified     bool                 `json:"classified,omitempty"`
 }
 
 var (
@@ -156,7 +159,9 @@ type AutoCandidates struct {
 
 // rememberAutoRoute records the route the next instruction and its sub-agents inherit.
 // The caller decides whether the route is initial or actually answered successfully.
-func rememberAutoRoute(c *gin.Context, instruction autorouter.Instruction, result *autorouter.Result) {
+// classified reports that the route's model came from a correct classification, so
+// the next classified instruction may continue it instead of ranking again.
+func rememberAutoRoute(c *gin.Context, instruction autorouter.Instruction, result *autorouter.Result, classified bool) {
 	if result == nil || instruction.Auxiliary {
 		return
 	}
@@ -169,6 +174,7 @@ func rememberAutoRoute(c *gin.Context, instruction autorouter.Instruction, resul
 			Decision:       result.Decision,
 			EffortOverride: result.EffortOverride,
 			Previous:       instruction.Previous,
+			Classified:     classified,
 		}, ttl)
 	}
 	if instruction.Session != "" && !instruction.Agent {
@@ -261,9 +267,11 @@ func ResolveAutoModel(c *gin.Context, candidates AutoCandidates) (*autorouter.Re
 		routeKey := autoRouterCacheKey("r", tokenID, instruction.Session, instruction.Text)
 
 		var previous *autorouter.Route
+		previousClassified := false
 		if instruction.Previous != "" {
 			if entry, found, _ := cache.Get(autoRouterCacheKey("r", tokenID, instruction.Session, instruction.Previous)); found {
 				previous = &entry.Route
+				previousClassified = entry.Classified || entry.Decision.Classified()
 			}
 		}
 		routeInput["previous_route"] = previous
@@ -332,7 +340,7 @@ func ResolveAutoModel(c *gin.Context, candidates AutoCandidates) (*autorouter.Re
 			otelRuntime.FinishObservation(jevSpan, jev)
 		}
 
-		var inherited bool
+		var inherited, classified bool
 		result.Decision = decision
 		// 调度器的 workload 在选路前就定下来：比价时的调度器预览和选定后的正式调度用同一个值，
 		// 两边按同一份评分排序。客户端自己带了 workload 时以客户端为准。
@@ -345,8 +353,18 @@ func ResolveAutoModel(c *gin.Context, candidates AutoCandidates) (*autorouter.Re
 			result.EffortOverride = current.EffortOverride
 			result.Source = autorouter.SourceCache
 			trace.Ladder = append(trace.Ladder, autorouter.LadderStep{Profile: current.Route.Profile, Outcome: autorouter.OutcomeInherited, Model: current.Route.Model})
+			classified = current.Classified || current.Decision.Classified()
 			ok = true
 		} else {
+			// 只有上一轮的路由来自正确分类时，本轮的分类才能延续它。上一轮 jev 失败、判断不合法
+			// 或任务类型是 unknown 时，那个模型是兜底来的；本轮分类出了任务类型就按本轮的榜单选，
+			// 本轮仍没有分类时照旧沿用它，agent 循环不会来回换模型。
+			if previous != nil && !previousClassified && decision.Classified() {
+				if decision.TaskChange != nil {
+					trace.Continuation = &autorouter.Continuation{Previous: previous.Model, TaskChange: *decision.TaskChange, Threshold: policy.ContinuationTaskChange, PreviousFallback: true}
+				}
+				previous = nil
+			}
 			result.Route, inherited, ok, result.Pick = autorouter.SelectRoute(decision, previous, policy, routing, trace)
 			result.EffortOverride = !inherited
 			switch {
@@ -357,10 +375,11 @@ func ResolveAutoModel(c *gin.Context, candidates AutoCandidates) (*autorouter.Re
 			case previous != nil && result.Route == *previous:
 				result.Source = autorouter.SourceInherit
 			}
+			classified = decision.Classified() || (previousClassified && previous != nil && result.Model == previous.Model)
 		}
 		// 兜底路由也记下来，下一条指令才能沿用同一个模型，agent 循环不会来回换模型。
 		if ok {
-			rememberAutoRoute(c, instruction, result)
+			rememberAutoRoute(c, instruction, result, classified)
 		}
 	}
 	if !ok {

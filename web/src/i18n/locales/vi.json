@@ -7091,6 +7091,7 @@
     "The new token will only be shown once. Copy it and store it securely.": "Token mới chỉ được hiển thị một lần. Hãy sao chép và lưu trữ an toàn.",
     "The OAuth account does not match the account linked to your profile.": "Tài khoản OAuth không khớp với tài khoản đã liên kết với hồ sơ của bạn.",
     "The previous model can no longer serve": "The previous model can no longer serve",
+    "The previous model was a fallback, so the task was ranked again": "Mô hình trước là dự phòng nên đã chọn lại theo bảng xếp hạng",
     "The plugin no longer offers this model": "Plugin không còn cung cấp mô hình này",
     "The price uses usage the plugin no longer provides": "Giá dùng mức sử dụng mà plugin không còn cung cấp",
     "The public URL of your server, used for OAuth callbacks, webhooks, and other external integrations": "URL công khai của máy chủ, dùng cho callback OAuth, webhook và các tích hợp bên ngoài khác",

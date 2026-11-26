@@ -7091,6 +7091,7 @@
     "The new token will only be shown once. Copy it and store it securely.": "Le nouveau jeton ne sera affiché qu’une seule fois. Copiez-le et conservez-le en lieu sûr.",
     "The OAuth account does not match the account linked to your profile.": "Ce compte OAuth ne correspond pas au compte associé à votre profil.",
     "The previous model can no longer serve": "The previous model can no longer serve",
+    "The previous model was a fallback, so the task was ranked again": "Le modèle précédent était un repli, la tâche a été reclassée",
     "The plugin no longer offers this model": "Le plugin ne propose plus ce modèle",
     "The price uses usage the plugin no longer provides": "Le prix utilise un usage que le plugin ne fournit plus",
     "The public URL of your server, used for OAuth callbacks, webhooks, and other external integrations": "L'URL publique de votre serveur, utilisée pour les rappels OAuth, les webhooks et autres intégrations externes",

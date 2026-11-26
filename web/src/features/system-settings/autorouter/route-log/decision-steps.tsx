@@ -74,6 +74,12 @@ function continuationVerdict(
   if (continuation.continued) {
     return { tone: 'success', label: t('Continued the previous task') }
   }
+  if (continuation.previous_fallback) {
+    return {
+      tone: 'info',
+      label: t('The previous model was a fallback, so the task was ranked again'),
+    }
+  }
   if (pressure && !pressure.reused) {
     return {
       tone: 'warning',

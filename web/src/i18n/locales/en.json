@@ -7104,6 +7104,7 @@
     "The new token will only be shown once. Copy it and store it securely.": "The new token will only be shown once. Copy it and store it securely.",
     "The OAuth account does not match the account linked to your profile.": "The OAuth account does not match the account linked to your profile.",
     "The previous model can no longer serve": "The previous model can no longer serve",
+    "The previous model was a fallback, so the task was ranked again": "The previous model was a fallback, so the task was ranked again",
     "The plugin no longer offers this model": "The plugin no longer offers this model",
     "The price uses usage the plugin no longer provides": "The price uses usage the plugin no longer provides",
     "The public URL of your server, used for OAuth callbacks, webhooks, and other external integrations": "The public URL of your server, used for OAuth callbacks, webhooks, and other external integrations",

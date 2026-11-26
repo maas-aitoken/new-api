@@ -92,7 +92,7 @@ func RememberAutoRetrySuccess(c *gin.Context) {
 	if err != nil {
 		return
 	}
-	rememberAutoRoute(c, autorouter.ExtractInstruction(body), result)
+	rememberAutoRoute(c, autorouter.ExtractInstruction(body), result, result.Decision.Classified())
 }
 
 // ExcludeAutoModel remembers the ranked base model for this request only.
