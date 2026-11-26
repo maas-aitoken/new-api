@@ -266,6 +266,21 @@ export function PickTable(props: {
             : null}
         </p>
       )}
+      {schema === 'current' &&
+        typeof pick.need === 'number' &&
+        Number.isFinite(pick.need) && (
+          <p className='text-muted-foreground text-xs'>
+            {pick.need_from_difficulty
+              ? t(
+                  'Capability need {{need}} from task difficulty sets the capability and cost weights.',
+                  { need: formatScore(pick.need) }
+                )
+              : t(
+                  'No task difficulty was available, so the neutral capability need {{need}} applies.',
+                  { need: formatScore(pick.need) }
+                )}
+          </p>
+        )}
       {schema === 'current' && deterministic && (
         <p className='text-muted-foreground text-xs'>
           {t(

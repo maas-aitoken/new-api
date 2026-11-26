@@ -393,6 +393,67 @@ func TestPickByQualityCostComparesThePlatformCost(t *testing.T) {
 	assert.False(t, ok, "nothing left to compare")
 }
 
+// 均衡偏好的质量和成本权重由难度决定：简单任务按成本优先选，难任务按能力优先选，
+// 没有可用难度时取中间值；手动配置的质量和成本不起作用，其余偏好不受难度影响。
+func TestSelectRouteBalancedWeighsByDifficulty(t *testing.T) {
+	policy := Policy{
+		TaskModels:        map[string][]string{"code.build": {"top", "mid", "budget"}},
+		TaskScores:        map[string]map[string]float64{"code.build": {"top": 1, "mid": 0.85, "budget": 0.7}, "general": {"top": 1, "mid": 0.85, "budget": 0.7}},
+		DefaultModels:     []string{"top", "mid", "budget"},
+		DifficultyEfforts: []string{"low", "medium", "high", "xhigh"},
+		DefaultEffort:     "medium",
+		UpgradeBenefit:    0.5,
+		Preference:        PreferenceBalanced,
+		// 质量和成本故意配成能力优先，验证均衡不再使用它们。
+		DimensionWeights: DimensionWeights{Quality: 1, Capacity: 0.2, Success: 0.2},
+		Adaptive:         true,
+	}
+	prices := map[string]float64{"top": 8, "mid": 2, "budget": 0.1}
+	all := func(string) bool { return true }
+	priced := Candidates{Available: all, Overridable: all, Price: func(model string) (float64, bool) { return prices[model], true }}
+	one := 1.0
+	decide := func(score float64) *Decision {
+		return &Decision{TaskType: "code.build", TaskTypeProbability: 0.9, Difficulty: int(score) + 1, DifficultyScore: &score, TaskChange: &one}
+	}
+
+	for _, tc := range []struct {
+		name     string
+		decision *Decision
+		want     string
+		need     float64
+		fromJev  bool
+		cost     float64
+	}{
+		{"the easiest task picks like cost first", decide(0), "budget", 0, true, 0.4},
+		{"a middling task picks like the former balanced", decide(1.5), "mid", 0.5, true, 0.2},
+		{"the hardest task picks like capability first", decide(3), "top", 1, true, 0},
+		{"the rung is used when jev gave no score", &Decision{TaskType: "code.build", Difficulty: 4, TaskChange: &one}, "top", 1, true, 0},
+		{"no decision takes the neutral need", nil, "mid", NeutralNeed, false, 0.2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			route, _, ok, pick := SelectRoute(tc.decision, nil, policy, priced, nil)
+			require.True(t, ok)
+			assert.Equal(t, tc.want, route.Model)
+			require.NotNil(t, pick)
+			require.NotNil(t, pick.Need)
+			assert.InDelta(t, tc.need, *pick.Need, 1e-9)
+			assert.Equal(t, tc.fromJev, pick.NeedFromDifficulty)
+			assert.InDelta(t, tc.cost, pick.Dimensions.Cost, 1e-9)
+		})
+	}
+
+	t.Run("fixed preferences ignore difficulty", func(t *testing.T) {
+		cost := policy
+		cost.Preference, cost.Adaptive = PreferenceCost, false
+		cost.DimensionWeights = DimensionWeights{Quality: 0.2, Cost: 0.4, Capacity: 0.2, Success: 0.2}
+		route, _, ok, pick := SelectRoute(decide(3), nil, cost, priced, nil)
+		require.True(t, ok)
+		assert.Equal(t, "budget", route.Model)
+		require.NotNil(t, pick)
+		assert.Nil(t, pick.Need)
+	})
+}
+
 // 按榜单选模型时在同一榜单的候选里一次比较质量、成本、容量和成功率；沿用上一轮模型、
 // 默认模型以外的退路和没有价格时都不做这个比较。
 func TestSelectRoutePicksByQualityAndPrice(t *testing.T) {

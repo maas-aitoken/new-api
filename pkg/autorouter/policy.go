@@ -44,6 +44,12 @@ type Policy struct {
 	// DimensionWeights holds the preference's configured strengths; pickModels
 	// normalizes the four dimensions and leaves Temperature independent.
 	DimensionWeights DimensionWeights
+	// Adaptive 表示质量和成本权重由任务难度决定（均衡偏好），DimensionWeights 只提供容量和成功率。
+	Adaptive bool
+
+	// need 和 needFromDifficulty 是 SelectRoute 为这次请求算出的能力需求，只在 Adaptive 时有意义。
+	need               float64
+	needFromDifficulty bool
 }
 
 // DefaultProfile is the ranking DefaultModels follow when no task-specific
@@ -97,6 +103,14 @@ func validateDecision(decision *Decision) (profiles []string, validity Validity)
 	return validity.Profiles, validity
 }
 
+// Classified reports whether the decision is valid and names a task type, so the
+// route it leads to comes from a ranking instead of a fallback. Only the route of a
+// classified instruction can be continued by the next one.
+func (d *Decision) Classified() bool {
+	profiles, _ := validateDecision(d)
+	return profiles != nil
+}
+
 // SelectRoute maps a jev decision to a route. decision is nil when jev failed;
 // previous is the route of the previous instruction, nil when unknown.
 // inherited reports that the decision was not used and the route came from
@@ -126,6 +140,15 @@ func SelectRoute(decision *Decision, previous *Route, policy Policy, candidates 
 	available, overridable := candidates.Available, candidates.Overridable
 	profiles, validity := validateDecision(decision)
 	trace.Validity = &validity
+	if policy.Adaptive {
+		policy.need, policy.needFromDifficulty = NeutralNeed, false
+		if validity.Error == "" {
+			if need, ok := DifficultyNeed(decision); ok {
+				policy.need, policy.needFromDifficulty = need, true
+			}
+		}
+		policy.DimensionWeights = AdaptiveWeights(policy.need, policy.DimensionWeights)
+	}
 	upgrade := decision != nil && decision.LargerModelBenefit != nil && *decision.LargerModelBenefit >= policy.UpgradeBenefit
 	// 任务类型是 unknown 时没有榜单可选，但大模型收益够高说明这条消息本身需要更强的推理
 	// （多是对上一轮结果不满、要求重做），档位仍由这次判断来定。
@@ -210,6 +233,10 @@ func (p Policy) choose(profile string, models []string, available func(string) b
 		pick, ok := pickModels(models, scores, p.DimensionWeights, servable, candidates.Price, costs, candidates.Metrics, candidates.Why)
 		step.Skipped, step.SkippedMore = pick.skipped, pick.skippedMore
 		if ok {
+			if p.Adaptive {
+				need := p.need
+				pick.Need, pick.NeedFromDifficulty = &need, p.needFromDifficulty
+			}
 			picked, model, found = &pick, pick.Chosen, true
 			step.Outcome = OutcomeCompared
 		}

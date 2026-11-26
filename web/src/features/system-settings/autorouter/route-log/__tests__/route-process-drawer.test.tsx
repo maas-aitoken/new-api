@@ -905,6 +905,54 @@ test('a deterministic adaptive comparison shows the cost penalty and utility ran
   expect(screen.queryByText('Sampling temperature')).not.toBeInTheDocument()
 })
 
+test.each([
+  {
+    fromDifficulty: true,
+    text: 'Capability need 0.8333 from task difficulty sets the capability and cost weights.',
+  },
+  {
+    fromDifficulty: false,
+    text: 'No task difficulty was available, so the neutral capability need 0.8333 applies.',
+  },
+])(
+  'a balanced comparison with need_from_difficulty $fromDifficulty explains where its capability need came from',
+  async ({ fromDifficulty, text }) => {
+    const log = adaptiveLog({
+      shares: { balanced: 1 },
+      position: 1,
+      cost_scale: 8.5,
+      weights: balancedWeights,
+      tiers,
+    })
+    const pick = log.detail?.result?.pick
+    if (!pick) throw new Error('the fixture has no comparison')
+    pick.cost_scale = 8.5
+    pick.need = 0.8333
+    pick.need_from_difficulty = fromDifficulty
+    mockLog(log)
+    renderDrawer({})
+
+    expect(await screen.findByText(text)).toBeVisible()
+  }
+)
+
+test('a comparison without a capability need shows no need line', async () => {
+  const log = adaptiveLog({
+    shares: { balanced: 1 },
+    position: 1,
+    cost_scale: 8.5,
+    weights: balancedWeights,
+    tiers,
+  })
+  mockLog(log)
+  renderDrawer({})
+
+  expect(
+    await screen.findByRole('columnheader', { name: 'Utility' })
+  ).toBeVisible()
+  expect(screen.queryByText(/capability need/i)).not.toBeInTheDocument()
+})
+
 const legacyPick = {
   chosen: 'sonnet',
   weight: 0.07,

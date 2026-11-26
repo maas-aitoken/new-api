@@ -109,6 +109,12 @@ const DIMENSIONS: ReadonlyArray<{
   },
 ]
 
+/** Task difficulty sets the balanced preference's capability and cost weights. */
+const DIFFICULTY_SET_DIMENSIONS: ReadonlySet<keyof RoutingWeights> = new Set([
+  'quality',
+  'cost',
+])
+
 /** The default key preference and the model scoring policy of each fixed preference. */
 export function PreferenceSection(props: PreferenceSectionProps) {
   const { t } = useTranslation()
@@ -193,8 +199,19 @@ export function PreferenceSection(props: PreferenceSectionProps) {
             </TabsList>
             {tiers.map((tier) => (
               <TabsContent key={tier.value} value={tier.value}>
+                {tier.value === 'balanced' && (
+                  <p className='text-muted-foreground mb-3 text-sm'>
+                    {t(
+                      'Task difficulty sets the capability and cost weights: easy tasks are weighed like cost first, hard tasks like capability first.'
+                    )}
+                  </p>
+                )}
                 <SettingsFormGrid>
-                  {DIMENSIONS.map((dimension) => (
+                  {DIMENSIONS.filter(
+                    (dimension) =>
+                      tier.value !== 'balanced' ||
+                      !DIFFICULTY_SET_DIMENSIONS.has(dimension.name)
+                  ).map((dimension) => (
                     <NumberSettingField
                       key={dimension.name}
                       control={form.control}

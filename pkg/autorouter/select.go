@@ -45,6 +45,47 @@ func (w DimensionWeights) Normalized() DimensionWeights {
 	return w
 }
 
+// 均衡偏好的质量与成本权重由任务难度决定：need 为 0 时与成本优先相同，0.5 时与原均衡相同，
+// 1 时与能力优先相同，三者的质量加成本合计都是 adaptiveQualityCostShare。
+const (
+	adaptiveQualityCostShare = 0.6
+	adaptiveMaxCost          = 0.4
+	// NeutralNeed 是没有可用难度时的 need，对应原来的均衡权重。
+	NeutralNeed = 0.5
+)
+
+// DifficultyNeed 把 jev 的难度换算成 0 到 1 的能力需求：优先用概率加权的连续分数，
+// 避免最可能档位在两档之间跳变；没有分数时用最可能档位。ok 为 false 表示判断里没有难度。
+func DifficultyNeed(decision *Decision) (need float64, ok bool) {
+	if decision == nil {
+		return 0, false
+	}
+	top := float64(difficultyRungs - 1)
+	switch {
+	case decision.DifficultyScore != nil && !math.IsNaN(*decision.DifficultyScore):
+		need = *decision.DifficultyScore / top
+	case decision.Difficulty > 0:
+		need = float64(decision.Difficulty-1) / top
+	default:
+		return 0, false
+	}
+	return min(max(need, 0), 1), true
+}
+
+// AdaptiveWeights 是均衡偏好在能力需求 need 下的权重：成本权重随 need 从 0.4 线性降到 0，
+// 质量权重补足其余份额；容量和成功率沿用平台配置。
+func AdaptiveWeights(need float64, base DimensionWeights) DimensionWeights {
+	need = min(max(need, 0), 1)
+	cost := adaptiveMaxCost * (1 - need)
+	return DimensionWeights{
+		Quality:     adaptiveQualityCostShare - cost,
+		Cost:        cost,
+		Capacity:    base.Capacity,
+		Success:     base.Success,
+		Temperature: base.Temperature,
+	}
+}
+
 // Candidates 回答一个候选模型在当前请求下的可用性和价格，由分发中间件提供。
 type Candidates struct {
 	// Available 按客户端原样的请求判定；兜底路径不碰客户端的推理字段，用它。
@@ -149,6 +190,10 @@ type Pick struct {
 	SuccessPenalty  float64          `json:"success_penalty"`
 	// Preview 是这次比较问调度器预览的结果；没配调度器、或没有估算比较成本时为 nil。
 	Preview *PreviewOutcome `json:"preview,omitempty"`
+	// Need 是均衡偏好按任务难度换算的能力需求，质量和成本权重由它决定；其余偏好为 nil。
+	Need *float64 `json:"need,omitempty"`
+	// NeedFromDifficulty 为 false 表示没有可用难度，Need 取了 NeutralNeed。
+	NeedFromDifficulty bool `json:"need_from_difficulty,omitempty"`
 
 	// skipped 是比较时跳过的模型，只进选路留痕；消费日志里的摘要不带它，免得每条日志都变大。
 	skipped     []Skipped

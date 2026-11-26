@@ -22,7 +22,9 @@ import (
 // v5: general.search covers live fact lookups apart from general.research.
 // v6: the mode question judges whether the request weighs capability or cost.
 // v7: the mode question is removed.
-const QuestionsVersion = "autorouter_v7"
+// v8: difficulty judges the model capability the request needs instead of its
+// scope.
+const QuestionsVersion = "autorouter_v8"
 
 // TaxonomyVersion changes whenever the task types change, so a stored ranking
 // keyed by older task types is never used for the new ones.
@@ -94,6 +96,19 @@ type jevQuestion struct {
 	Criteria     any    `json:"criteria,omitempty"`
 }
 
+// difficultyCriteria are the difficulty rungs, weakest first. The balanced
+// preference turns the rung position into the capability need, so a rung must
+// describe how strong a model the request needs, not how much work it is.
+var difficultyCriteria = []string{
+	"基础：常规知识或模板化操作，主流模型都能做对，如寒暄、简单问答、格式转换、机械性的批量替换",
+	"中等：需要一定推理或领域知识，普通模型多数能做好，如常规功能实现、普通文章写作、一般数据统计",
+	"较高：需要多步推理、在多个约束之间权衡或理解较大的上下文，普通模型容易遗漏或出错",
+	"很高：需要深度推理、调研与反复验证，或出错代价高，只有最强的模型能可靠完成，如疑难缺陷定位、架构设计、严谨论证",
+}
+
+// difficultyRungs is the number of difficulty rungs jev chooses among.
+var difficultyRungs = len(difficultyCriteria)
+
 // questions is the routing question set. It sees only the instruction, so
 // every question is phrased to be answerable from that text alone.
 var questions = map[string]jevQuestion{
@@ -104,13 +119,8 @@ var questions = map[string]jevQuestion{
 	},
 	"difficulty": {
 		Type:         "score",
-		Instructions: "只根据这条消息描述的工作范围判断完成整个请求的复杂度，不要根据消息长度判断。",
-		Criteria: []string{
-			"简单：一句话就能回答，或者是单一、明确的小改动",
-			"中等：需要少量推理，或一两步操作",
-			"复杂：涉及多个文件、多个步骤或多个约束",
-			"很复杂：跨系统、链路长、需要调研和反复验证，或者失败风险高",
-		},
+		Instructions: "判断完成这条请求需要多强的模型能力，看推理深度、专业程度和出错代价，不要根据消息长度或涉及的文件数量判断。",
+		Criteria:     difficultyCriteria,
 	},
 	"task_change": {
 		Type:         "noul",
