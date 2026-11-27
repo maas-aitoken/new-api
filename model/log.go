@@ -901,7 +901,9 @@ func streamLogs(tx *gorm.DB, order string, fn func(*Log) error) error {
 }
 
 type Stat struct {
-	Quota     int     `json:"quota"`
+	Quota int `json:"quota"`
+	// ListQuota is Quota before the channel model multiplier.
+	ListQuota int64   `json:"list_quota"`
 	Rpm       int     `json:"rpm"`
 	Tpm       int     `json:"tpm"`
 	Total     int64   `json:"total_count"`
@@ -909,7 +911,7 @@ type Stat struct {
 	FastRatio float64 `json:"fast_ratio"`
 }
 
-func buildConsumeLogStatQuery(startTimestamp int64, endTimestamp int64, modelName string, username string, tokenName string, channel int, group string, streamError bool, retry bool, autoRouted *bool) (*gorm.DB, error) {
+func buildConsumeLogStatQuery(startTimestamp int64, endTimestamp int64, modelName string, username string, tokenName string, channel int, group string, streamError bool, retry bool, autoRouted *bool, requestId string) (*gorm.DB, error) {
 	tx := LOG_DB.Table("logs").Where("type = ?", LogTypeConsume)
 	var err error
 	if tx, err = applyExplicitLogTextFilter(tx, "username", username); err != nil {
@@ -920,6 +922,9 @@ func buildConsumeLogStatQuery(startTimestamp int64, endTimestamp int64, modelNam
 	}
 	if tokenName != "" {
 		tx = tx.Where("token_name = ?", tokenName)
+	}
+	if requestId != "" {
+		tx = tx.Where("request_id = ?", requestId)
 	}
 	if startTimestamp != 0 {
 		tx = tx.Where("created_at >= ?", startTimestamp)
@@ -939,18 +944,23 @@ func buildConsumeLogStatQuery(startTimestamp int64, endTimestamp int64, modelNam
 	return tx, nil
 }
 
-func SumUsedQuota(logType int, startTimestamp int64, endTimestamp int64, modelName string, username string, tokenName string, channel int, group string, streamError bool, retry bool, autoRouted *bool) (stat Stat, err error) {
+func SumUsedQuota(logType int, startTimestamp int64, endTimestamp int64, modelName string, username string, tokenName string, channel int, group string, streamError bool, retry bool, autoRouted *bool, requestId string) (stat Stat, err error) {
 	newStatQuery := func() (*gorm.DB, error) {
 		// Build a fresh statement for every aggregate. GORM sessions can still
 		// share statement clauses after chained Select/Where calls, which causes
 		// one aggregate query to overwrite another.
-		return buildConsumeLogStatQuery(startTimestamp, endTimestamp, modelName, username, tokenName, channel, group, streamError, retry, autoRouted)
+		return buildConsumeLogStatQuery(startTimestamp, endTimestamp, modelName, username, tokenName, channel, group, streamError, retry, autoRouted, requestId)
 	}
 	tx, err := newStatQuery()
 	if err != nil {
 		return stat, err
 	}
-	tx = tx.Select("COALESCE(sum(quota), 0) quota")
+	// A log database that cannot read logs.other reports the charged amount as the list price.
+	listQuota := "quota"
+	if _, _, _, listQuotaDelta, ok := logOtherUsageExprs("logs.other"); ok {
+		listQuota = "quota + " + listQuotaDelta
+	}
+	tx = tx.Select("COALESCE(sum(quota), 0) quota, COALESCE(sum(" + listQuota + "), 0) list_quota")
 
 	// 为rpm和tpm创建单独的查询
 	rpmTpmQuery, err := newStatQuery()

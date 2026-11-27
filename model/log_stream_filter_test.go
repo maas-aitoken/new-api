@@ -137,7 +137,7 @@ func TestAutoRoutedFilterKeepsRowsFromBeforeTheColumn(t *testing.T) {
 			assert.EqualValues(t, len(tt.models), userTotal)
 			assert.Len(t, userLogs, len(tt.models))
 
-			stat, err := SumUsedQuota(0, now-1, now+1, "", "", "", 0, "", false, false, tt.filter)
+			stat, err := SumUsedQuota(0, now-1, now+1, "", "", "", 0, "", false, false, tt.filter, "")
 			require.NoError(t, err)
 			assert.Equal(t, tt.quota, stat.Quota)
 			assert.EqualValues(t, len(tt.models), stat.Total)
