@@ -165,19 +165,22 @@ func resetSchedulerCircuit() {
 }
 
 func schedulerCircuitAllows(now time.Time) bool {
+	allowed, _ := schedulerCircuitAcquire(now)
+	return allowed
+}
+
+// schedulerCircuitAcquire reports whether this call owns the half-open probe.
+func schedulerCircuitAcquire(now time.Time) (bool, bool) {
 	schedulerCircuitState.Lock()
 	defer schedulerCircuitState.Unlock()
 	if schedulerCircuitState.openedAt.IsZero() {
-		return true
+		return true, false
 	}
-	if now.Sub(schedulerCircuitState.openedAt) < schedulerCircuitProbeInterval {
-		return false
-	}
-	if schedulerCircuitState.halfOpen {
-		return false
+	if now.Sub(schedulerCircuitState.openedAt) < schedulerCircuitProbeInterval || schedulerCircuitState.halfOpen {
+		return false, false
 	}
 	schedulerCircuitState.halfOpen = true
-	return true
+	return true, true
 }
 
 func schedulerCircuitFailure(now time.Time) {
@@ -603,6 +606,9 @@ func schedulerDoRequestWithFallback(ctx context.Context, config SchedulerClientC
 		}
 		if resp.StatusCode >= 500 {
 			if decisionErr := schedulerDecisionError(resp.StatusCode, body); decisionErr != nil {
+				// A valid business rejection proves the service is reachable.
+				schedulerEndpointCircuitSuccess(endpoint, time.Now())
+				schedulerCircuitSuccess(time.Now())
 				lastErr = decisionErr
 				logger.LogWarn(ctx, "scheduler request rejected: path=%s endpoint=%s attempt=%d/%d phase=response_status status=%d error=%v fallback_available=%t", path, endpoint, attempt, len(endpoints), resp.StatusCode, decisionErr, hasFallback)
 				continue
@@ -904,9 +910,22 @@ func RunSchedulerShadow(c *gin.Context, modelName, group string) (err error) {
 		}
 		otelRuntime.FinishObservation(decideSpan, decide)
 	}()
-	if !schedulerCircuitAllows(time.Now()) {
+	allowed, probe := schedulerCircuitAcquire(time.Now())
+	if !allowed {
 		return ErrSchedulerTemporarilyUnavailable
 	}
+	// Local validation and other early exits must also release a probe slot.
+	defer func() {
+		if !probe {
+			return
+		}
+		schedulerCircuitState.Lock()
+		defer schedulerCircuitState.Unlock()
+		if schedulerCircuitState.halfOpen {
+			schedulerCircuitState.halfOpen = false
+			schedulerCircuitState.openedAt = time.Now()
+		}
+	}()
 	if config.Timeout <= 0 {
 		config.Timeout = 100 * time.Millisecond
 	}

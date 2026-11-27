@@ -357,6 +357,10 @@ func Distribute() func(c *gin.Context) {
 				}
 				capabilityGate.LogSummary(c)
 			}
+			if len(allowedChannels) == 0 && service.SchedulerEnforcedForRequest(c) {
+				abortWithOpenAiMessage(c, http.StatusServiceUnavailable, "no candidate endpoint", types.ErrorCodeModelNotFound)
+				return
+			}
 			if service.SchedulerClient().Enabled {
 				common.SetContextKey(c, constant.ContextKeySchedulerAllowedChannelIDs, allowedChannels)
 			}

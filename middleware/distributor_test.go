@@ -1447,3 +1447,18 @@ func TestDistributeAutoPricesTieredModelsAtTheirOwnEstimatedLength(t *testing.T)
 	assert.Equal(t, "claude-sonnet-4-5-tier", originalModel,
 		"opus 的 tokenizer 把同一段文本切得更长，落进 10 倍价格的长档；两者分数只差 0.01，所以选便宜的 sonnet")
 }
+
+func TestDistributeRejectsEmptyChannelsBeforeScheduler(t *testing.T) {
+	setupAutoRoutingDistribute(t, []string{"gpt-5"}, map[int][]string{1: {"other"}})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("empty channel scope must not reach Scheduler")
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+	service.ConfigureSchedulerClientForTest(service.SchedulerClientConfig{Enabled: true, Mode: "enforced", BaseURL: server.URL, Token: "test", Timeout: time.Second})
+	t.Cleanup(func() { service.ConfigureSchedulerClientForTest(service.SchedulerClientConfig{}) })
+	_, _, recorder := serveAutoRoutingRequest(t, "/v1/chat/completions", 9670,
+		`{"model":"gpt-5","messages":[{"role":"user","content":"hello"}]}`)
+	require.Equal(t, http.StatusServiceUnavailable, recorder.Code)
+	require.Contains(t, recorder.Body.String(), "no candidate endpoint")
+}

@@ -798,3 +798,42 @@ func TestResetSchedulerAttemptMetricsClearsPriorRetryState(t *testing.T) {
 		t.Fatal("retry state was not cleared")
 	}
 }
+
+func TestSchedulerBusinessRejectionReleasesHalfOpenProbe(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		var request schedulerRequest
+		require.NoError(t, common.DecodeJson(r.Body, &request))
+		if request.Model == "healthy-model" {
+			_, _ = w.Write([]byte(`{"decision_id":"healthy","catalog_version":"v1","candidates":[{"endpoint_id":"ep1","channel_id":1,"model":"healthy-model","reason":["available"]}]}`))
+			return
+		}
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"error":"no candidate endpoint"}`))
+	}))
+	defer server.Close()
+	ConfigureSchedulerClientForTest(SchedulerClientConfig{Enabled: true, BaseURL: server.URL, Token: "test", Timeout: time.Second})
+	t.Cleanup(func() { ConfigureSchedulerClientForTest(SchedulerClientConfig{}) })
+	for range 2 {
+		schedulerCircuitState.Lock()
+		schedulerCircuitState.openedAt = time.Now().Add(-2 * schedulerCircuitProbeInterval)
+		schedulerCircuitState.Unlock()
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/embeddings", nil)
+		err := RunSchedulerShadow(c, "text-embedding-3-small", "default")
+		message, ok := SchedulerDecisionErrorMessage(err)
+		require.True(t, ok, "%v", err)
+		require.Equal(t, "no candidate endpoint", message)
+		schedulerCircuitState.Lock()
+		halfOpen := schedulerCircuitState.halfOpen
+		schedulerCircuitState.Unlock()
+		require.False(t, halfOpen)
+	}
+	require.True(t, schedulerCircuitClosed(), "business responses must allow other models to recover")
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	common.SetContextKey(c, constant.ContextKeySchedulerAllowedChannelIDs, []int{1})
+	require.NoError(t, RunSchedulerShadow(c, "healthy-model", "default"))
+	require.Equal(t, "healthy", common.GetContextKeyString(c, constant.ContextKeySchedulerDecisionID))
+}
