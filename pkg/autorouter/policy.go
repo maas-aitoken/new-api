@@ -32,8 +32,8 @@ type Policy struct {
 	// counts as the raise. It applies even when the task type is unknown.
 	UpgradeBenefit float64
 	// ContinuationTaskChange is the task_change below which the request
-	// continues the previous task: the model stays, so the prompt cache
-	// survives, and the effort may go up but never down.
+	// continues the previous task: the model stays, and the effort follows
+	// the current difficulty when larger-model benefit is explicitly low.
 	ContinuationTaskChange float64
 	// TaskScores maps a task type to the quality score of its models. A decision
 	// that routes by a ranking scores every scored, servable model by quality, cost,
@@ -183,8 +183,13 @@ func SelectRoute(decision *Decision, previous *Route, policy Policy, candidates 
 		}
 	}
 	if keep && slices.Index(effortLadder, previous.Effort) > slices.Index(effortLadder, effort) {
-		effort = previous.Effort
-		trace.Effort.Floored = true
+		// 同一任务变简单且 JEV 明确判断更强模型收益不高时，允许采用本轮难度给出的较低档位。
+		// 没有收益判断时继续保守地沿用上一轮档位。
+		canLower := decision.LargerModelBenefit != nil && *decision.LargerModelBenefit < policy.UpgradeBenefit
+		if !canLower {
+			effort = previous.Effort
+			trace.Effort.Floored = true
+		}
 	}
 	// 提升按上一轮算：沿用上一轮的模型时要比上一轮的档位高一档，难度给的档位已经到了就不再加；
 	// 没有沿用时比难度给的档位高一档。

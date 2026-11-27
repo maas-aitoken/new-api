@@ -62,7 +62,7 @@ func TestSelectRoute(t *testing.T) {
 		{"the most probable task type routes however low its probability", spread(map[string]float64{"general.chat": 0.3, "code.build": 0.25, "code.ops": 0.25, "unknown": 0.2}), nil, nil, Route{Profile: "general.chat", Model: "chat", Effort: "low"}, false, true},
 		{"the most probable unknown inherits even when a class sums higher", spread(map[string]float64{"unknown": 0.4, "code.build": 0.3, "code.ops": 0.3}), coderHigh, nil, *coderHigh, true, true},
 		{"unknown without previous uses defaults", spread(map[string]float64{"unknown": 0.9, "code.build": 0.1}), nil, nil, Route{Model: "general", Effort: "medium"}, true, true},
-		{"continuation keeps model and effort", decide("general.chat", 1, 0.1, 0.1), coderHigh, nil, *coderHigh, false, true},
+		{"continuation lowers model effort when the current task is easier and a larger model has little benefit", decide("general.chat", 1, 0.1, 0.1), coderHigh, nil, Route{Profile: "code.build", Model: "coder", Effort: "low"}, false, true},
 		{"continuation may raise effort", decide("code.ops", 4, 0.1, 0.1), coderHigh, nil, Route{Profile: "code.build", Model: "coder", Effort: "xhigh"}, false, true},
 		{"larger model benefit raises a continuation above the previous effort", decide("general.chat", 1, 0.1, 0.7), coderHigh, nil, Route{Profile: "code.build", Model: "coder", Effort: "xhigh"}, false, true},
 		{"repeated dissatisfaction keeps raising above the previous effort", decide("general.chat", 1, 0.1, 0.7), &Route{Profile: "code.build", Model: "coder", Effort: "xhigh"}, nil, Route{Profile: "code.build", Model: "coder", Effort: "max"}, false, true},
@@ -676,13 +676,21 @@ func TestSelectRouteTrace(t *testing.T) {
 		}
 	})
 
-	t.Run("a continuation keeps the previous model and never lowers its effort", func(t *testing.T) {
+	t.Run("a continuation lowers effort when the current task is easier and a larger model has little benefit", func(t *testing.T) {
 		previous := &Route{Profile: "code.build", Model: "top", Effort: "xhigh"}
 		route, trace := run(decide("general.chat", 1, 0.1, 0.1), previous, candidates)
-		assert.Equal(t, Route{Profile: "code.build", Model: "top", Effort: "xhigh"}, route)
+		assert.Equal(t, Route{Profile: "code.build", Model: "top", Effort: "low"}, route)
 		assert.Equal(t, &Continuation{Previous: "top", TaskChange: 0.1, Threshold: 0.5, Continued: true}, trace.Continuation)
-		assert.Equal(t, &EffortTrace{Difficulty: 1, Base: "low", Benefit: ptr(0.1), Threshold: 0.5, Floored: true}, trace.Effort)
+		assert.False(t, trace.Effort.Floored)
 		assert.Empty(t, trace.Ladder, "续用不再排榜单")
+	})
+
+	t.Run("a continuation without a benefit judgment keeps the previous effort", func(t *testing.T) {
+		previous := &Route{Profile: "code.build", Model: "top", Effort: "xhigh"}
+		decision := &Decision{TaskType: "general.chat", Difficulty: 1, TaskChange: ptr(0.1)}
+		route, trace := run(decision, previous, candidates)
+		assert.Equal(t, *previous, route)
+		assert.Equal(t, &EffortTrace{Difficulty: 1, Base: "low", Threshold: 0.5, Floored: true}, trace.Effort)
 	})
 
 	t.Run("a new task leaves the previous model and ranks again", func(t *testing.T) {

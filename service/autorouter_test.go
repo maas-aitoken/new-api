@@ -182,7 +182,7 @@ func TestResolveAutoModelFollowsPreviousRoute(t *testing.T) {
 	continued, err := ResolveAutoModel(newAutoRouterContext(9201, `{"messages":[
 		{"role":"user","content":"hard"},{"role":"assistant","content":"done"},{"role":"user","content":"rename it"}]}`), allModelsAvailable)
 	require.NoError(t, err)
-	assert.Equal(t, "coder-xhigh", continued.ResolvedModel, "a continuation keeps the model and never lowers the effort")
+	assert.Equal(t, "coder-low", continued.ResolvedModel, "a continuation keeps the model and lowers the effort when the current task is easier and larger-model benefit is low")
 	assert.Equal(t, autorouter.SourceJev, continued.Source)
 	assert.Equal(t, "general.chat", continued.Decision.TaskType)
 	assert.True(t, continued.EffortOverride)
@@ -254,7 +254,7 @@ func TestResolveAutoModelContinuesOnlyAClassifiedPreviousRoute(t *testing.T) {
 
 		next, err := ResolveAutoModel(newAutoRouterContext(9263, turn("ok", "rename it")), allModelsAvailable)
 		require.NoError(t, err)
-		assert.Equal(t, "coder-xhigh", next.ResolvedModel, "coder 出自 hard 的正确分类，unknown 一轮只是沿用它")
+		assert.Equal(t, "coder-low", next.ResolvedModel, "coder 出自 hard 的正确分类，unknown 一轮只是沿用它；本轮变简单且收益低时保留模型并降档")
 		require.NotNil(t, next.Trace.Continuation)
 		assert.True(t, next.Trace.Continuation.Continued)
 	})
