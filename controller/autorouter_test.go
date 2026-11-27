@@ -309,7 +309,7 @@ func callAutoRouteLogHandler(t *testing.T, handler gin.HandlerFunc, target strin
 func TestAutoRouteLogEndpointsListWithoutDetailAndReturnTheProcessByRequestId(t *testing.T) {
 	setupAutoRouterControllerTest(t)
 	require.NoError(t, model.BatchInsertAutoRouteLogs([]*model.AutoRouteLog{
-		{CreatedAt: 100, RequestId: "req-ok", UserId: 1, Model: "coder", Outcome: model.AutoRouteOutcomeRouted, Detail: `{"result":{"resolved_model":"coder-high"},"trace":{"judgment":"live"}}`},
+		{CreatedAt: 100, RequestId: "req-ok", UserId: 1, Model: "coder", Outcome: model.AutoRouteOutcomeRouted, Detail: `{"result":{"resolved_model":"coder-high"},"trace":{"judgment":"live"},"langfuse_trace_url":"https://langfuse.example/project/p/traces/t?observation=o"}`},
 		{CreatedAt: 200, RequestId: "req-failed", RequestParams: `{"experiment_id":"exp-1"}`, UserId: 2, Outcome: model.AutoRouteOutcomeFailed, Detail: `{"error":"no model"}`},
 		{CreatedAt: 300, RequestId: "req-broken", UserId: 2, Outcome: model.AutoRouteOutcomeRouted, Detail: `not json`},
 	}))
@@ -349,6 +349,7 @@ func TestAutoRouteLogEndpointsListWithoutDetailAndReturnTheProcessByRequestId(t 
 	assert.Equal(t, "req-ok", entry.RequestId)
 	assert.Equal(t, "coder", entry.Model)
 	assert.Equal(t, "live", entry.Detail["trace"].(map[string]any)["judgment"], "detail 是对象，不是一段 JSON 文本")
+	assert.Equal(t, "https://langfuse.example/project/p/traces/t?observation=o", entry.Detail["langfuse_trace_url"])
 
 	broken := callAutoRouteLogHandler(t, GetAutoRouteLog, "/api/auto-route-logs/req-broken", gin.Params{{Key: "request_id", Value: "req-broken"}})
 	require.True(t, broken.Success, broken.Message)
@@ -384,7 +385,7 @@ func callSelfLogEngine(t *testing.T, router *gin.Engine, target string) tokenAPI
 func TestSelfLogEndpointsOnlyReturnTheUsersOwnRows(t *testing.T) {
 	setupAutoRouterControllerTest(t)
 	require.NoError(t, model.BatchInsertAutoRouteLogs([]*model.AutoRouteLog{
-		{CreatedAt: 100, RequestId: "req-mine", UserId: 7, Model: "coder", Outcome: model.AutoRouteOutcomeRouted, Detail: `{"result":{"resolved_model":"coder"}}`},
+		{CreatedAt: 100, RequestId: "req-mine", UserId: 7, Model: "coder", Outcome: model.AutoRouteOutcomeRouted, Detail: `{"result":{"resolved_model":"coder"},"langfuse_trace_url":"https://langfuse.example/project/p/traces/t?observation=o"}`},
 		{CreatedAt: 200, RequestId: "req-others", UserId: 8, Model: "coder", Outcome: model.AutoRouteOutcomeRouted, Detail: `{"result":{}}`},
 	}))
 	require.NoError(t, model.BatchInsertCapabilityGateEvents([]*model.CapabilityGateEvent{
@@ -407,6 +408,8 @@ func TestSelfLogEndpointsOnlyReturnTheUsersOwnRows(t *testing.T) {
 	own := callSelfLogEngine(t, router, "/api/auto-route-logs/self/req-mine")
 	require.True(t, own.Success, own.Message)
 	assert.Contains(t, string(own.Data), `"request_id":"req-mine"`, "自己的留痕可以看到过程")
+	assert.Contains(t, string(own.Data), `"resolved_model":"coder"`)
+	assert.NotContains(t, string(own.Data), "langfuse_trace_url")
 
 	others := callSelfLogEngine(t, router, "/api/auto-route-logs/self/req-others")
 	require.True(t, others.Success, others.Message)

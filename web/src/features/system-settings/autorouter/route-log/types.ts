@@ -271,6 +271,7 @@ export type RouteLogTruncation = {
 export type RouteLogDetail = {
   result?: RouteResult
   trace?: RouteTrace
+  langfuse_trace_url?: string
   error?: string
   truncated?: RouteLogTruncation
 }

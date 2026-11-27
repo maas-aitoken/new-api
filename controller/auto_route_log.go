@@ -12,7 +12,7 @@ import (
 // autoRouteLogView 是单条选路日志的响应：detail 是解码后的对象，而不是一段 JSON 文本。
 type autoRouteLogView struct {
 	model.AutoRouteLog
-	Detail any `json:"detail"`
+	Detail map[string]any `json:"detail"`
 }
 
 // GetAutoRouteLogs 返回 auto 请求的选路日志列表（管理员），列表不带 detail。
@@ -54,12 +54,13 @@ func GetAutoRouteLogs(c *gin.Context) {
 // 记录模式没覆盖这类请求、已过保留期），此时 data 为 null，由前端退回消费日志里的摘要。
 // /self 路由只能看自己的留痕：别人的 request_id 与"没有这条日志"一样返回 null，不暴露它存在。
 func GetAutoRouteLog(c *gin.Context) {
+	self := c.FullPath() == "/api/auto-route-logs/self/:request_id"
 	log, found, err := model.GetAutoRouteLogByRequestId(c.Param("request_id"))
 	if err != nil {
 		common.ApiError(c, err)
 		return
 	}
-	if found && c.FullPath() == "/api/auto-route-logs/self/:request_id" && log.UserId != c.GetInt("id") {
+	if found && self && log.UserId != c.GetInt("id") {
 		found = false
 	}
 	if !found {
@@ -71,6 +72,9 @@ func GetAutoRouteLog(c *gin.Context) {
 	// 这条日志的其余列照样返回，只是没有过程。
 	if err := common.UnmarshalJsonStr(log.Detail, &view.Detail); err != nil {
 		view.Detail = nil
+	}
+	if self {
+		delete(view.Detail, "langfuse_trace_url")
 	}
 	common.ApiSuccess(c, view)
 }

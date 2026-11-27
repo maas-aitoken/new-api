@@ -1254,6 +1254,9 @@ func TestFinishObservationExportsLangfuseFields(t *testing.T) {
 	runtime := FromContext(ContextWithRuntimeForTest(context.Background(), provider))
 
 	routeCtx, routeSpan := runtime.StartAutoRouter(context.Background())
+	require.Empty(t, runtime.LangfuseObservationURL(routeSpan))
+	runtime.langfuseHost = "https://langfuse.example"
+	runtime.langfuseProject = "p"
 	_, jevSpan := runtime.StartJevClassify(routeCtx)
 	runtime.FinishObservation(jevSpan, Observation{Input: map[string]string{"questions_version": "v"}, Model: "jev-27b", Err: errors.New("timeout")})
 	runtime.FinishObservation(routeSpan, Observation{
@@ -1273,6 +1276,7 @@ func TestFinishObservationExportsLangfuseFields(t *testing.T) {
 	require.Equal(t, codes.Error, jev.Status.Code)
 
 	require.Equal(t, autoRouterSpanName, route.Name)
+	require.Equal(t, "https://langfuse.example/project/p/traces/"+route.SpanContext.TraceID().String()+"?observation="+route.SpanContext.SpanID().String(), runtime.LangfuseObservationURL(routeSpan))
 	require.Equal(t, "span", attributeValue(route.Attributes, "langfuse.observation.type").AsString())
 	require.JSONEq(t, `{"tier":"mid"}`, attributeValue(route.Attributes, "langfuse.observation.output").AsString())
 	require.Equal(t, "mid", attributeValue(route.Attributes, "langfuse.observation.metadata.tier").AsString())

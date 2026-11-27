@@ -30,16 +30,17 @@ func StopAutoRouteLogWriter() {
 // autoRouteDetail 是选路日志里完整的选路过程。Result 与消费日志 admin_info.auto_router
 // 里的摘要是同一份数据，详情页可以读同样的字段；Trace 是只属于选路日志的部分。
 type autoRouteDetail struct {
-	Result    *autorouter.Result   `json:"result,omitempty"`
-	Trace     *autorouter.Trace    `json:"trace,omitempty"`
-	Error     string               `json:"error,omitempty"`
-	Truncated *autoRouteTruncation `json:"truncated,omitempty"`
+	Result           *autorouter.Result   `json:"result,omitempty"`
+	Trace            *autorouter.Trace    `json:"trace,omitempty"`
+	Error            string               `json:"error,omitempty"`
+	Truncated        *autoRouteTruncation `json:"truncated,omitempty"`
+	LangfuseTraceURL string               `json:"langfuse_trace_url,omitempty"`
 }
 
 // recordAutoRoute 按 route_log_mode 决定这次 auto 请求要不要留选路日志。
 // decisions 只记真正做了决定的请求：这次现调了 jev（无论成败），或者找不到任何模型。
 // 命中判断缓存的后续请求、辅助请求、会话继承得到的结果都是重复的，量大，只有 all 才记。
-func recordAutoRoute(c *gin.Context, result *autorouter.Result, resolveErr error) {
+func recordAutoRoute(c *gin.Context, result *autorouter.Result, resolveErr error, langfuseTraceURL string) {
 	writer := autoRouteLogs.Load()
 	if writer == nil {
 		return
@@ -54,12 +55,12 @@ func recordAutoRoute(c *gin.Context, result *autorouter.Result, resolveErr error
 	default:
 		return
 	}
-	writer.enqueue(newAutoRouteLog(c, result, resolveErr))
+	writer.enqueue(newAutoRouteLog(c, result, resolveErr, langfuseTraceURL))
 }
 
 // newAutoRouteLog 把一次选路的结果整理成日志行。可能被外部影响长度的列先按列宽截断，
 // 一行写不进会让整批 INSERT 失败。
-func newAutoRouteLog(c *gin.Context, result *autorouter.Result, resolveErr error) *model.AutoRouteLog {
+func newAutoRouteLog(c *gin.Context, result *autorouter.Result, resolveErr error, langfuseTraceURL string) *model.AutoRouteLog {
 	entry := &model.AutoRouteLog{
 		CreatedAt:  common.GetTimestamp(),
 		RequestId:  truncateStr(c.GetString(common.RequestIdKey), 64),
@@ -70,7 +71,7 @@ func newAutoRouteLog(c *gin.Context, result *autorouter.Result, resolveErr error
 		Judgment:   result.Trace.Judgment,
 		Source:     result.Source,
 		Preference: result.Preference,
-		Detail:     encodeAutoRouteDetail(result, resolveErr),
+		Detail:     encodeAutoRouteDetail(result, resolveErr, langfuseTraceURL),
 	}
 	if result.Decision != nil {
 		entry.TaskType = truncateStr(result.Decision.TaskType, 64)

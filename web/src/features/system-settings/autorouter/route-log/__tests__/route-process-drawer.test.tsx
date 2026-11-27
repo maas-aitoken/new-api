@@ -186,6 +186,26 @@ test('a recorded log shows its steps in order, from the request to the result', 
   expect(api.get).toHaveBeenCalledWith('/api/auto-route-logs/req-1')
 })
 
+test('classification shows the Langfuse observation link from the recorded detail', async () => {
+  mockLog({
+    ...routed,
+    detail: {
+      ...routed.detail,
+      langfuse_trace_url:
+        'https://langfuse.example/project/p/traces/t?observation=o',
+    },
+  })
+  renderDrawer({})
+
+  const link = await screen.findByRole('link', { name: 'Open Langfuse Trace' })
+  expect(link).toHaveAttribute(
+    'href',
+    'https://langfuse.example/project/p/traces/t?observation=o'
+  )
+  expect(link).toHaveAttribute('target', '_blank')
+  expect(link).toHaveAttribute('rel', 'noreferrer')
+})
+
 test('self scope reads the process from the /self endpoint', async () => {
   mockLog(routed)
   renderDrawer({ scope: 'self' })

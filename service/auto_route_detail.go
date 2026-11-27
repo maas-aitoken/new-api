@@ -69,8 +69,8 @@ func marshalAutoRouteDetailWithinLimit(detail autoRouteDetail) (string, bool, er
 }
 
 // encodeAutoRouteDetail 保留完整选路结果；确需压缩时只修改日志副本，并明确记录省略内容。
-func encodeAutoRouteDetail(result *autorouter.Result, resolveErr error) string {
-	detail := autoRouteDetail{Result: result, Trace: result.Trace}
+func encodeAutoRouteDetail(result *autorouter.Result, resolveErr error, langfuseTraceURL string) string {
+	detail := autoRouteDetail{Result: result, Trace: result.Trace, LangfuseTraceURL: langfuseTraceURL}
 	if resolveErr != nil {
 		detail.Error = resolveErr.Error()
 	}
@@ -551,7 +551,7 @@ func autoRouteUTF8Prefix(value string, limit int) string {
 
 // minimalAutoRouteDetail 是极端输入下的最后降级，仍保留核心路由、判断和真实错误。
 func minimalAutoRouteDetail(detail autoRouteDetail) autoRouteDetail {
-	minimal := autoRouteDetail{Error: detail.Error, Truncated: detail.Truncated}
+	minimal := autoRouteDetail{Error: detail.Error, Truncated: detail.Truncated, LangfuseTraceURL: detail.LangfuseTraceURL}
 	if minimal.Truncated == nil {
 		minimal.Truncated = &autoRouteTruncation{}
 	}

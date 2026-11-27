@@ -88,6 +88,22 @@ func (r *Runtime) RecordsContent(err error) bool {
 	return r.Enabled() && r.shouldRecordContent(err)
 }
 
+// LangfuseObservationURL links to a sampled observation within its trace.
+func (r *Runtime) LangfuseObservationURL(span trace.Span) string {
+	if !r.Enabled() || span == nil {
+		return ""
+	}
+	spanContext := span.SpanContext()
+	if !spanContext.IsValid() || !spanContext.IsSampled() {
+		return ""
+	}
+	traceURL := r.langfuseTraceURL(spanContext.TraceID().String())
+	if traceURL == "" {
+		return ""
+	}
+	return traceURL + "?observation=" + spanContext.SpanID().String()
+}
+
 func (r *Runtime) FinishObservation(span trace.Span, observation Observation) {
 	if !r.Enabled() || span == nil {
 		return

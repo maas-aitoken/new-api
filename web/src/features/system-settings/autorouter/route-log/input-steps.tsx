@@ -73,6 +73,7 @@ export function RequestStep(props: { request: RouteTrace['request'] }) {
 export function JudgmentStep(props: {
   trace: RouteTrace
   result?: RouteResult
+  langfuseTraceUrl?: string
 }) {
   const { t } = useTranslation()
   const judgment = props.trace.judgment
@@ -114,6 +115,16 @@ export function JudgmentStep(props: {
         <p className='text-destructive font-mono text-xs break-words'>
           {jev.error}
         </p>
+      )}
+      {props.langfuseTraceUrl && (
+        <a
+          href={props.langfuseTraceUrl}
+          target='_blank'
+          rel='noreferrer'
+          className='text-primary text-xs underline underline-offset-2'
+        >
+          {t('Open Langfuse Trace')}
+        </a>
       )}
     </StepFrame>
   )

@@ -77,13 +77,19 @@ function ProcessStep(props: {
   id: RouteProcessStepId
   detail: RouteLogDetail
 }) {
-  const { result, trace, error, truncated } = props.detail
+  const { result, trace, error, truncated, langfuse_trace_url } = props.detail
   switch (props.id) {
     case 'request':
       // trace.request 缺失（detail 被改库改坏）时跳过这一步，不让整个抽屉崩掉。
       return trace?.request ? <RequestStep request={trace.request} /> : null
     case 'judgment':
-      return trace ? <JudgmentStep trace={trace} result={result} /> : null
+      return trace ? (
+        <JudgmentStep
+          trace={trace}
+          result={result}
+          langfuseTraceUrl={langfuse_trace_url}
+        />
+      ) : null
     case 'validity':
       return trace?.validity ? <ValidityStep validity={trace.validity} /> : null
     case 'continuation':

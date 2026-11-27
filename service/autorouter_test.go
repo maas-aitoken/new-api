@@ -1107,17 +1107,17 @@ func TestNewAutoRouteLogDerivesEffortLatencyAndColumnWidths(t *testing.T) {
 	}
 	c := newAutoRouterContext(9961, "{}")
 	for _, tt := range tests {
-		assert.Equal(t, tt.want, newAutoRouteLog(c, &tt.result, nil).Effort, tt.name)
+		assert.Equal(t, tt.want, newAutoRouteLog(c, &tt.result, nil, "").Effort, tt.name)
 	}
 
 	calledJev := route("coder", "coder")
 	calledJev.Jev = &autorouter.JevCall{LatencyMs: 37}
-	assert.Equal(t, int64(37), newAutoRouteLog(c, &calledJev, nil).JevLatencyMs)
-	assert.Zero(t, newAutoRouteLog(c, &inBody, nil).JevLatencyMs, "没调 jev 的请求没有延迟")
+	assert.Equal(t, int64(37), newAutoRouteLog(c, &calledJev, nil, "").JevLatencyMs)
+	assert.Zero(t, newAutoRouteLog(c, &inBody, nil, "").JevLatencyMs, "没调 jev 的请求没有延迟")
 
 	long := route(strings.Repeat("长", 300), "x")
 	long.Decision = &autorouter.Decision{TaskType: strings.Repeat("t", 100)}
-	entry := newAutoRouteLog(c, &long, nil)
+	entry := newAutoRouteLog(c, &long, nil, "")
 	assert.Len(t, []rune(entry.Model), 255, "超出列宽的值要截断，否则整批 INSERT 会失败")
 	assert.Len(t, entry.TaskType, 64)
 }
@@ -1132,16 +1132,16 @@ func TestNewAutoRouteLogKeepsTheRequestParametersButNotTheConversation(t *testin
 		return c
 	}
 
-	chat := newAutoRouteLog(newContext("/v1/chat/completions", `{"model":"auto","experiment_id":"tau3_bench_1","run":{"team":"search"},"messages":[{"role":"user","content":"secret prompt"}]}`), result, nil)
+	chat := newAutoRouteLog(newContext("/v1/chat/completions", `{"model":"auto","experiment_id":"tau3_bench_1","run":{"team":"search"},"messages":[{"role":"user","content":"secret prompt"}]}`), result, nil, "")
 	assert.JSONEq(t, `{"model":"auto","experiment_id":"tau3_bench_1","run":{"team":"search"}}`, chat.RequestParams)
 
-	claude := newAutoRouteLog(newContext("/v1/messages", `{"system":"secret","messages":[],"max_tokens":8}`), result, nil)
+	claude := newAutoRouteLog(newContext("/v1/messages", `{"system":"secret","messages":[],"max_tokens":8}`), result, nil, "")
 	assert.Equal(t, `{"max_tokens":8}`, claude.RequestParams)
 
-	unknown := newAutoRouteLog(newContext("/v1/embeddings", `{"model":"auto"}`), result, nil)
+	unknown := newAutoRouteLog(newContext("/v1/embeddings", `{"model":"auto"}`), result, nil, "")
 	assert.Empty(t, unknown.RequestParams)
 
-	oversized := newAutoRouteLog(newContext("/v1/chat/completions", `{"keep":1,"big":"`+strings.Repeat("x", model.AutoRouteLogParamsMax)+`"}`), result, nil)
+	oversized := newAutoRouteLog(newContext("/v1/chat/completions", `{"keep":1,"big":"`+strings.Repeat("x", model.AutoRouteLogParamsMax)+`"}`), result, nil, "")
 	assert.Equal(t, `{"keep":1}`, oversized.RequestParams, "a field that does not fit is left out whole")
 }
 
@@ -1174,7 +1174,7 @@ func TestEncodeAutoRouteDetailShrinksToFit(t *testing.T) {
 			Trace: &autorouter.Trace{Judgment: autorouter.JudgmentLive},
 		}
 
-		encoded := encodeAutoRouteDetail(result, nil)
+		encoded := encodeAutoRouteDetail(result, nil, "")
 		var got autoRouteDetailView
 		require.NoError(t, common.UnmarshalJsonStr(encoded, &got))
 		assert.Nil(t, got.Truncated)
@@ -1212,7 +1212,7 @@ func TestEncodeAutoRouteDetailShrinksToFit(t *testing.T) {
 		require.NoError(t, err)
 		originalBand := append([]autorouter.Candidate(nil), pick.Band...)
 
-		encoded := encodeAutoRouteDetail(result, nil)
+		encoded := encodeAutoRouteDetail(result, nil, "")
 		assert.LessOrEqual(t, len(encoded), model.AutoRouteLogDetailMax)
 		var got autoRouteDetailView
 		require.NoError(t, common.UnmarshalJsonStr(encoded, &got))
@@ -1301,7 +1301,7 @@ func TestEncodeAutoRouteDetailShrinksToFit(t *testing.T) {
 		}
 		longError := strings.Repeat("长", 30000)
 
-		encoded := encodeAutoRouteDetail(result, errors.New(longError))
+		encoded := encodeAutoRouteDetail(result, errors.New(longError), "")
 		assert.LessOrEqual(t, len(encoded), model.AutoRouteLogDetailMax)
 		assert.True(t, utf8.ValidString(encoded))
 		var got autoRouteDetailView
@@ -1326,7 +1326,7 @@ func TestEncodeAutoRouteDetailShrinksToFit(t *testing.T) {
 			Trace: &autorouter.Trace{Judgment: autorouter.JudgmentLive},
 		}
 
-		encoded := encodeAutoRouteDetail(result, nil)
+		encoded := encodeAutoRouteDetail(result, nil, "")
 		var got autoRouteDetailView
 		require.NoError(t, common.UnmarshalJsonStr(encoded, &got))
 		require.NotNil(t, got.Result)

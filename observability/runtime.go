@@ -616,9 +616,16 @@ func (r *Runtime) EnrichLogOther(ctx context.Context, other map[string]interface
 		other["admin_info"] = adminInfo
 	}
 	adminInfo["otel_trace_id"] = traceID
-	if r.langfuseHost != "" && r.langfuseProject != "" {
-		adminInfo["langfuse_trace_url"] = fmt.Sprintf("%s/project/%s/traces/%s", r.langfuseHost, r.langfuseProject, traceID)
+	if traceURL := r.langfuseTraceURL(traceID); traceURL != "" {
+		adminInfo["langfuse_trace_url"] = traceURL
 	}
+}
+
+func (r *Runtime) langfuseTraceURL(traceID string) string {
+	if r.langfuseHost == "" || r.langfuseProject == "" {
+		return ""
+	}
+	return fmt.Sprintf("%s/project/%s/traces/%s", r.langfuseHost, r.langfuseProject, traceID)
 }
 
 func (r *Runtime) FinishLLM(ctx context.Context, span trace.Span, err error, info *relaycommon.RelayInfo) {
