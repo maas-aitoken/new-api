@@ -271,6 +271,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			break
 		}
 		relayInfo.StreamStatus = nil
+		common.SetContextKey(c, constant.ContextKeyResponseStreamFailureWritten, false)
 		relayInfo.PerformanceBusinessRejection = false
 		// 拒答原因按尝试记：上一次被改判的拒答不能带进这次成功的消费日志。
 		common.SetContextKey(c, constant.ContextKeyAdminRejectReason, "")
@@ -535,6 +536,10 @@ func writeRelayStreamError(c *gin.Context, format types.RelayFormat, apiError *t
 		common.SetContextKey(c, constant.ContextKeyResponseStreamStatus, status)
 	}
 	status.MarkFailed(string(apiError.GetErrorCode()), string(apiError.GetErrorType()), apiError.StatusCode)
+	// 适配器已把协议级失败事件写给客户端时只记状态，不再重复写错误帧。
+	if common.GetContextKeyBool(c, constant.ContextKeyResponseStreamFailureWritten) {
+		return
+	}
 	upstreamURLs := common.UpstreamAddresses(c)
 	if format == types.RelayFormatClaude {
 		_ = helper.ClaudeData(c, dto.ClaudeResponse{Type: "error", Error: apiError.ToClaudeError(upstreamURLs...)})

@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sync"
 	"time"
 
@@ -96,9 +97,27 @@ func LogDebug(ctx context.Context, msg string, args ...any) {
 	}
 }
 
+// isNilContext reports whether ctx is nil, including a typed nil pointer
+// (for example, a nil *gin.Context) boxed into the context.Context
+// interface. A plain `ctx != nil` check is true for a typed nil pointer,
+// because the interface value itself is non-nil; calling ctx.Value on that
+// then panics inside the pointer's own Value method.
+func isNilContext(ctx context.Context) bool {
+	if ctx == nil {
+		return true
+	}
+	value := reflect.ValueOf(ctx)
+	switch value.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return value.IsNil()
+	default:
+		return false
+	}
+}
+
 func logHelper(ctx context.Context, level string, msg string) {
 	var id any = "SYSTEM"
-	if ctx != nil {
+	if !isNilContext(ctx) {
 		if requestID := ctx.Value(common.RequestIdKey); requestID != nil {
 			id = requestID
 		}

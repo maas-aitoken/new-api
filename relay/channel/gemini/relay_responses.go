@@ -95,6 +95,7 @@ func GeminiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, r
 	}
 	hostedBridge := relayconvert.NewGeminiHostedStreamBridge()
 	var streamErr *types.NewAPIError
+	failureWritten := false
 
 	sendEvent := func(event relayconvert.ChatToResponsesStreamEvent) bool {
 		data, err := common.Marshal(event.Payload)
@@ -123,6 +124,9 @@ func GeminiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, r
 			}
 			if !sendEvent(event) {
 				return true
+			}
+			if event.Type == "response.failed" && !info.ResponseHeld {
+				failureWritten = true
 			}
 		}
 		return true
@@ -154,8 +158,9 @@ func GeminiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, r
 		return sendChunk(geminiResponse)
 	})
 	if streamAPIError != nil {
-		if failResponsesStream(streamAPIError) && streamErr == nil {
-			return usage, nil
+		failResponsesStream(streamAPIError)
+		if failureWritten {
+			common.SetContextKey(c, constant.ContextKeyResponseStreamFailureWritten, true)
 		}
 		return usage, streamAPIError
 	}

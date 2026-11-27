@@ -654,6 +654,97 @@ func TestGeminiStreamHandlerEmptyUsageMetadataBuildsEstimatedBillingUsage(t *tes
 	require.True(t, common.GetContextKeyBool(c, constant.ContextKeyLocalCountTokens))
 }
 
+func TestGeminiResponsesStreamHandlerReturnsUpstreamFailure(t *testing.T) {
+	oldStreamingTimeout := constant.StreamingTimeout
+	constant.StreamingTimeout = 300
+	t.Cleanup(func() { constant.StreamingTimeout = oldStreamingTimeout })
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	body := "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"partial\"}]}}]}\n" +
+		"data: {\"error\":{\"code\":502,\"message\":\"upstream failure\",\"status\":\"UNAVAILABLE\"}}\n"
+	_, apiErr := GeminiResponsesStreamHandler(c, newGeminiResponsesRelayInfo(true), &http.Response{Body: io.NopCloser(strings.NewReader(body))})
+	require.NotNil(t, apiErr)
+	assert.Contains(t, recorder.Body.String(), "event: response.failed")
+	assert.NotContains(t, recorder.Body.String(), "event: response.completed")
+}
+
+func TestGeminiStreamHandlerAcceptsBlockedPrompt(t *testing.T) {
+	oldStreamingTimeout := constant.StreamingTimeout
+	constant.StreamingTimeout = 300
+	t.Cleanup(func() { constant.StreamingTimeout = oldStreamingTimeout })
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	info := &relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{UpstreamModelName: "gemini-test"}}
+	body := `data: {"promptFeedback":{"blockReason":"SAFETY"}}` + "\n"
+	_, apiErr := geminiStreamHandler(c, info, &http.Response{Body: io.NopCloser(strings.NewReader(body))}, func(string, *dto.GeminiChatResponse) bool { return true })
+	require.Nil(t, apiErr)
+	assert.True(t, info.PerformanceBusinessRejection)
+}
+
+func TestGeminiStreamHandlerRejectsUpstreamErrorAndMissingTerminal(t *testing.T) {
+	oldStreamingTimeout := constant.StreamingTimeout
+	constant.StreamingTimeout = 300
+	t.Cleanup(func() { constant.StreamingTimeout = oldStreamingTimeout })
+
+	tests := []struct {
+		name          string
+		streamBody    string
+		wantOutcome   relaycommon.ResponseOutcome
+		wantErrorCode string
+		wantStatus    int
+	}{
+		{
+			name:        "error null is not an upstream error",
+			streamBody:  "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"hi\"}]},\"finishReason\":\"STOP\"}],\"error\":null}\n",
+			wantOutcome: relaycommon.ResponseOutcomeCompleted,
+		},
+		{
+			name: "upstream error envelope",
+			streamBody: "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"thinking\",\"thought\":true}]}}]}\n" +
+				"data: {\"error\":{\"code\":502,\"message\":\"upstream empty response\",\"status\":\"UNAVAILABLE\",\"details\":[{\"reason\":\"gemini_inference_invalid_output\"}]}}\n",
+			wantOutcome:   relaycommon.ResponseOutcomeFailed,
+			wantErrorCode: "gemini_inference_invalid_output",
+			wantStatus:    502,
+		},
+		{
+			name:        "eof without finish reason",
+			streamBody:  "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"thinking\",\"thought\":true}]}}]}\n",
+			wantOutcome: relaycommon.ResponseOutcomeIncomplete,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+			info := &relaycommon.RelayInfo{
+				OriginModelName: "gemini-3-flash-preview",
+				ChannelMeta:     &relaycommon.ChannelMeta{UpstreamModelName: "gemini-3-flash-preview"},
+			}
+
+			_, apiErr := geminiStreamHandler(c, info, &http.Response{Body: io.NopCloser(strings.NewReader(tt.streamBody))}, func(string, *dto.GeminiChatResponse) bool {
+				return true
+			})
+
+			if tt.name == "error null is not an upstream error" {
+				require.Nil(t, apiErr)
+				assert.False(t, info.StreamStatus.HasErrors())
+				return
+			}
+			require.NotNil(t, apiErr)
+			require.NotNil(t, info.StreamStatus)
+			assert.Equal(t, tt.wantOutcome, relaycommon.ResponseOutcome(info.StreamStatus.ResponseOutcome()))
+			assert.True(t, info.StreamStatus.HasErrors())
+			if tt.wantErrorCode != "" {
+				snapshot := info.StreamStatus.OutcomeSnapshot()
+				assert.Equal(t, tt.wantErrorCode, snapshot.ErrorCode)
+				assert.Equal(t, tt.wantStatus, snapshot.ErrorStatus)
+			}
+		})
+	}
+}
+
 // Google Search grounding records the unique trimmed non-empty queries
 // (webSearchQueries and imageSearchQueries of every candidate, across every
 // stream frame) under google_search and one grounded prompt when any query
