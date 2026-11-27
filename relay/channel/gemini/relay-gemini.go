@@ -227,6 +227,27 @@ func geminiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 	responseText := strings.Builder{}
 
 	helper.StreamScannerHandler(c, resp, info, func(data string, sr *helper.StreamResult) {
+		errorValue := ojson.Get(data, "error")
+		if errorValue.Exists() && errorValue.Type != ojson.Null {
+			message := errorValue.Get("message").Str
+			if message == "" {
+				message = "Gemini stream returned an upstream error"
+			}
+			errorCode := errorValue.Get("details.0.reason").Str
+			statusCode := int(errorValue.Get("code").Int())
+			if statusCode < 100 || statusCode > 599 {
+				statusCode = http.StatusBadGateway
+			}
+			info.StreamStatus.MarkFailed(errorCode, "upstream_error", statusCode)
+			streamErr = types.WithOpenAIError(types.OpenAIError{
+				Message: fmt.Sprintf("Gemini stream error (%s): %s", errorCode, message),
+				Type:    "upstream_error",
+				Code:    errorCode,
+			}, statusCode)
+			sr.Stop(streamErr)
+			return
+		}
+
 		var geminiResponse dto.GeminiChatResponse
 		if err := common.UnmarshalJsonStr(data, &geminiResponse); err != nil {
 			streamErr = fmt.Errorf("unmarshal Gemini stream response: %w", err)
@@ -236,6 +257,7 @@ func geminiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 
 		if len(geminiResponse.Candidates) == 0 && geminiResponse.PromptFeedback != nil && geminiResponse.PromptFeedback.BlockReason != nil {
 			info.PerformanceBusinessRejection = true
+			info.StreamStatus.MarkCompleted()
 			common.SetContextKey(c, constant.ContextKeyAdminRejectReason, fmt.Sprintf("gemini_block_reason=%s", *geminiResponse.PromptFeedback.BlockReason))
 		}
 		info.ObserveResponseModel(ojson.Get(data, "modelVersion").Str)
@@ -280,6 +302,11 @@ func geminiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 		}
 	})
 	info.StreamStatus.RequireTerminal()
+	if streamErr == nil && info.StreamStatus.EndReason == relaycommon.StreamEndReasonEOF && info.StreamStatus.ResponseOutcome() == "" {
+		info.StreamStatus.MarkIncomplete("missing_terminal")
+		streamErr = errors.New("Gemini stream ended without a terminal event")
+		info.StreamStatus.RecordError(streamErr.Error())
+	}
 
 	if !hasBillableUsageMetadata {
 		if info.ReceivedResponseCount > 0 {

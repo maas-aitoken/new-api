@@ -138,9 +138,10 @@ const (
 	ContextKeyAdminRejectReason ContextKey = "admin_reject_reason"
 
 	// ContextKeyLanguage stores the user's language preference for i18n
-	ContextKeyLanguage             ContextKey = "language"
-	ContextKeyIsStream             ContextKey = "is_stream"
-	ContextKeyResponseStreamStatus ContextKey = "response_stream_status"
+	ContextKeyLanguage                     ContextKey = "language"
+	ContextKeyIsStream                     ContextKey = "is_stream"
+	ContextKeyResponseStreamStatus         ContextKey = "response_stream_status"
+	ContextKeyResponseStreamFailureWritten ContextKey = "response_stream_failure_written"
 	// 已发给客户端的心跳（": PING"）字节数，值是 *atomic.Int64。重试判断用写出的总字节数减去它，
 	// 判断客户端是否已经收到响应正文：只发过心跳还能重试，收到过正文就不能再重试。
 	ContextKeyStreamHeartbeatBytes ContextKey = "stream_heartbeat_bytes"
