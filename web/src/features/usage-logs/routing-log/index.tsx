@@ -30,7 +30,7 @@ export function RoutingLogs() {
       <SectionPageLayout.Title>{t('Routing logs')}</SectionPageLayout.Title>
       <SectionPageLayout.Content>
         <div className='flex h-full min-h-0 flex-col'>
-          <div className='min-h-0 flex-1'>
+          <div className='min-h-0 flex-1 overflow-y-auto'>
             <RouteLogList scope='self' />
           </div>
         </div>
