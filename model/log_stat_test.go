@@ -34,19 +34,26 @@ func TestSumUsedQuotaKeepsAggregateQueriesIndependent(t *testing.T) {
 
 	now := time.Now().Unix()
 	logs := []Log{
-		{CreatedAt: now, Type: LogTypeConsume, Username: "alice", TokenName: "token", ModelName: "gpt", ChannelId: 3, Group: "default", Quota: 100, PromptTokens: 10, CompletionTokens: 5, FastMode: true},
-		{CreatedAt: now, Type: LogTypeConsume, Username: "alice", TokenName: "token", ModelName: "gpt", ChannelId: 3, Group: "default", Quota: 200, PromptTokens: 20, CompletionTokens: 10},
+		{CreatedAt: now, Type: LogTypeConsume, Username: "alice", TokenName: "token", ModelName: "gpt", ChannelId: 3, Group: "default", Quota: 100, PromptTokens: 10, CompletionTokens: 5, FastMode: true, RequestId: "req-discounted", Other: `{"cost_multiplier":0.8,"list_quota_delta":25}`},
+		{CreatedAt: now, Type: LogTypeConsume, Username: "alice", TokenName: "token", ModelName: "gpt", ChannelId: 3, Group: "default", Quota: 200, PromptTokens: 20, CompletionTokens: 10, RequestId: "req-list-price"},
 		{CreatedAt: now, Type: LogTypeRefund, Username: "alice", TokenName: "token", ModelName: "gpt", ChannelId: 3, Group: "default", Quota: 999, FastMode: true},
 		{CreatedAt: now, Type: LogTypeConsume, Username: "bob", TokenName: "token", ModelName: "gpt", ChannelId: 3, Group: "default", Quota: 999, FastMode: true},
 	}
 	require.NoError(t, db.Create(&logs).Error)
 
-	stat, err := SumUsedQuota(0, now-1, now+1, "gpt", "alice", "token", 3, "default", false, false, nil)
+	stat, err := SumUsedQuota(0, now-1, now+1, "gpt", "alice", "token", 3, "default", false, false, nil, "")
 	require.NoError(t, err)
 	assert.Equal(t, 300, stat.Quota)
+	assert.EqualValues(t, 325, stat.ListQuota)
 	assert.Equal(t, 2, stat.Rpm)
 	assert.Equal(t, 45, stat.Tpm)
 	assert.EqualValues(t, 2, stat.Total)
 	assert.EqualValues(t, 1, stat.Fast)
 	assert.Equal(t, 0.5, stat.FastRatio)
+
+	one, err := SumUsedQuota(0, now-1, now+1, "", "alice", "", 0, "", false, false, nil, "req-discounted")
+	require.NoError(t, err)
+	assert.Equal(t, 100, one.Quota)
+	assert.EqualValues(t, 125, one.ListQuota)
+	assert.EqualValues(t, 1, one.Total)
 }

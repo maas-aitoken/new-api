@@ -288,7 +288,7 @@ func GetLogsStat(c *gin.Context) {
 	if !ok || !validateLogSpecialFilterTimeRange(c, streamError, retry, startTimestamp, endTimestamp) {
 		return
 	}
-	stat, err := model.SumUsedQuota(logType, startTimestamp, endTimestamp, modelName, username, tokenName, channel, group, streamError, retry, autoRoutedFromQuery(c))
+	stat, err := model.SumUsedQuota(logType, startTimestamp, endTimestamp, modelName, username, tokenName, channel, group, streamError, retry, autoRoutedFromQuery(c), c.Query("request_id"))
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -299,6 +299,7 @@ func GetLogsStat(c *gin.Context) {
 		"message": "",
 		"data": gin.H{
 			"quota":       stat.Quota,
+			"list_quota":  stat.ListQuota,
 			"rpm":         stat.Rpm,
 			"tpm":         stat.Tpm,
 			"total_count": stat.Total,
@@ -329,7 +330,7 @@ func GetLogsSelfStat(c *gin.Context) {
 	if !ok || !validateLogSpecialFilterTimeRange(c, streamError, retry, startTimestamp, endTimestamp) {
 		return
 	}
-	quotaNum, err := model.SumUsedQuota(logType, startTimestamp, endTimestamp, modelName, username, tokenName, channel, group, streamError, retry, autoRoutedFromQuery(c))
+	quotaNum, err := model.SumUsedQuota(logType, startTimestamp, endTimestamp, modelName, username, tokenName, channel, group, streamError, retry, autoRoutedFromQuery(c), c.Query("request_id"))
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -340,6 +341,7 @@ func GetLogsSelfStat(c *gin.Context) {
 		"message": "",
 		"data": gin.H{
 			"quota":       quotaNum.Quota,
+			"list_quota":  quotaNum.ListQuota,
 			"rpm":         quotaNum.Rpm,
 			"tpm":         quotaNum.Tpm,
 			"total_count": quotaNum.Total,
